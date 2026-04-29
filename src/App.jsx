@@ -3,42 +3,11 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { 
-  LayoutDashboard, 
-  Users, 
-  FolderKanban, 
-  CalendarDays, 
-  LogOut, 
-  Plus, 
-  X, 
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  Building2,
-  Wallet,
-  TrendingUp,
-  AlertCircle,
-  Edit,
-  Trash2,
-  Info,
-  ListTodo,
-  CheckCircle2,
-  Circle,
-  Clock,
-  FileText,
-  Upload,
-  Eye,
-  FolderOpen,
-  Settings,
-  Briefcase,
-  UserPlus,
-  ShieldCheck,
-  CreditCard,
-  Paperclip,
-  DollarSign,
-  BriefcaseBusiness,
-  Settings2,
-  HardHat,
-  MapPin
+  LayoutDashboard, Users, FolderKanban, CalendarDays, LogOut, Plus, X, Check,
+  ChevronLeft, ChevronRight, Building2, Wallet, TrendingUp, AlertCircle, Edit,
+  Trash2, Info, ListTodo, CheckCircle2, Circle, Clock, FileText, Upload, Eye,
+  FolderOpen, Settings, Briefcase, UserPlus, ShieldCheck, CreditCard, Paperclip,
+  DollarSign, BriefcaseBusiness, Settings2, HardHat, MapPin, CheckSquare
 } from 'lucide-react';
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
@@ -87,6 +56,7 @@ const maskCEP = (v) => {
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 const FASES_ANALITICAS = ['LEVANTAMENTO', 'ESTUDO PRELIMINAR', 'PROJETO CRIATIVO', 'DETALHAMENTO', 'HOMOLOGAÇÃO', 'PROJETO FINALIZADO'];
+const TIPOS_PROJETO = ['INTERIORES', 'ARQUITETURA', 'COMPLEMENTARES', '3D DESIGN', 'SERVIÇOS DIVERSOS'];
 const ESTADOS_BR = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO','EX'];
 const SCREENS = [
   {id: 'dashboard', label: 'Dashboard'}, 
@@ -106,7 +76,11 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       try {
-        await signInAnonymously(auth);
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
       } catch (error) {
         console.error("Erro Auth:", error);
       }
@@ -257,6 +231,7 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
   const [checklists, setChecklists] = useState([]);
   const [companyInfo, setCompanyInfo] = useState(null);
   const [companyUsers, setCompanyUsers] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState([]); // Formas de Pagamento
   
   const [targetProjectToEdit, setTargetProjectToEdit] = useState(null);
 
@@ -271,13 +246,14 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
     const uProjects = onSnapshot(baseCol('projects'), snap => setProjects(extract(snap)), errHandler);
     const uChecklists = onSnapshot(baseCol('checklists'), snap => setChecklists(extract(snap)), errHandler);
     const uUsers = onSnapshot(baseCol('app_accounts'), snap => setCompanyUsers(extract(snap)), errHandler);
+    const uPayments = onSnapshot(baseCol('payment_methods'), snap => setPaymentMethods(extract(snap)), errHandler);
     
     const uCompany = onSnapshot(baseCol('company_info'), snap => { 
       const info = snap.docs.map(d => ({id: d.id, ...d.data()})).find(d => d.workspaceId === workspaceId);
       if (info) setCompanyInfo(info); 
     }, errHandler);
 
-    return () => { uClients(); uProjects(); uChecklists(); uUsers(); uCompany(); };
+    return () => { uClients(); uProjects(); uChecklists(); uUsers(); uPayments(); uCompany(); };
   }, [workspaceId]);
 
   const hasScreenAccess = (screenId) => appUser.role === 'gestor' || (appUser.permissions?.screens || []).includes(screenId);
@@ -294,7 +270,7 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
   const renderView = () => {
     switch (currentView) {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} /> : <NoAccess />;
-      case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView workspaceId={workspaceId} projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={() => setTargetProjectToEdit(null)} appUser={appUser} /> : <NoAccess />;
+      case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView workspaceId={workspaceId} projects={allowedProjects} clients={clients} companyUsers={companyUsers} paymentMethods={paymentMethods} targetProject={targetProjectToEdit} clearTargetProject={() => setTargetProjectToEdit(null)} appUser={appUser} /> : <NoAccess />;
       case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView workspaceId={workspaceId} projects={allowedProjects} appUser={appUser} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView workspaceId={workspaceId} projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView workspaceId={workspaceId} clients={clients} projects={allowedProjects} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} appUser={appUser} /> : <NoAccess />;
@@ -726,7 +702,6 @@ function ClientModal({ workspaceId, client, onClose }) {
     e.preventDefault();
     if (!formData.nome) return;
     
-    // Validações Manuais
     if (formData.email && !isValidEmail(formData.email)) return setAlertMsg("Por favor, informe um e-mail válido.");
     if (formData.cpf && formData.cpf.replace(/\D/g, '').length !== 11) return setAlertMsg("O CPF deve conter 11 dígitos numéricos.");
 
@@ -743,7 +718,6 @@ function ClientModal({ workspaceId, client, onClose }) {
         <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white rounded-t-2xl"><h2 className="text-lg font-bold uppercase tracking-wide">{client ? 'Editar' : 'Cadastrar'} Cliente</h2><button onClick={onClose}><X size={20} /></button></div>
         
         <form id="cform" onSubmit={handleSubmit} className="p-6 overflow-y-auto flex-1 space-y-6">
-          {/* Dados Pessoais */}
           <div>
             <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Dados Pessoais</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -755,7 +729,6 @@ function ClientModal({ workspaceId, client, onClose }) {
             </div>
           </div>
 
-          {/* Endereço */}
           <div>
              <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Endereço</h3>
              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -786,8 +759,10 @@ function ClientModal({ workspaceId, client, onClose }) {
 }
 
 // --- VISÃO: PROJETOS E DOCUMENTOS ---
-function ProjetosView({ workspaceId, projects, clients, companyUsers, targetProject, clearTargetProject, appUser }) {
+function ProjetosView({ workspaceId, projects, clients, companyUsers, paymentMethods, targetProject, clearTargetProject, appUser }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isPaymentMethodsModalOpen, setIsPaymentMethodsModalOpen] = useState(false);
+  
   const [editingProject, setEditingProject] = useState(null);
   const [docsModalProject, setDocsModalProject] = useState(null);
   const [filterClient, setFilterClient] = useState('');
@@ -816,7 +791,18 @@ function ProjetosView({ workspaceId, projects, clients, companyUsers, targetProj
     <div className="h-full flex flex-col space-y-4 pt-2">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight border-b-4 border-[#1e5aa0] pb-1">Gestão de Projetos</h3>
-        {canCreate && <button onClick={() => { setEditingProject(null); setIsModalOpen(true); }} className="bg-[#1e5aa0] hover:bg-[#154278] text-white px-4 py-2.5 rounded-lg font-bold flex items-center justify-center space-x-2 transition-colors shadow-sm w-full md:w-auto"><Plus size={18} /><span>Lançar Projeto</span></button>}
+        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+          {appUser.role === 'gestor' && (
+            <button onClick={() => setIsPaymentMethodsModalOpen(true)} className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-lg font-bold flex items-center justify-center space-x-2 transition-colors shadow-sm w-full sm:w-auto">
+              <CreditCard size={18} /><span>Formas de Pagto</span>
+            </button>
+          )}
+          {canCreate && (
+            <button onClick={() => { setEditingProject(null); setIsModalOpen(true); }} className="bg-[#1e5aa0] hover:bg-[#154278] text-white px-4 py-2.5 rounded-lg font-bold flex items-center justify-center space-x-2 transition-colors shadow-sm w-full sm:w-auto">
+              <Plus size={18} /><span>Lançar Projeto</span>
+            </button>
+          )}
+        </div>
       </div>
       <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div><label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-widest">Buscar (Projeto/Cliente/Resp)</label><input type="text" value={filterClient} onChange={(e) => setFilterClient(e.target.value)} className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none text-sm font-medium"/></div>
@@ -832,7 +818,10 @@ function ProjetosView({ workspaceId, projects, clients, companyUsers, targetProj
                   <td className="p-4">
                     <div className="font-black uppercase text-xs text-slate-800 truncate">{p.nomeProjeto || 'SEM NOME'}</div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase mt-0.5">{p.clientName}</div>
-                    {p.responsavelNome && <div className="text-[9px] font-bold text-[#1e5aa0] uppercase mt-1 bg-blue-50 border border-blue-100 inline-block px-1.5 py-0.5 rounded">Resp: {p.responsavelNome}</div>}
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      <div className="text-[9px] font-bold text-slate-600 uppercase bg-slate-100 border border-slate-200 inline-block px-1.5 py-0.5 rounded">{p.tipoProjeto || 'INTERIORES'}</div>
+                      {p.responsavelNome && <div className="text-[9px] font-bold text-[#1e5aa0] uppercase bg-blue-50 border border-blue-100 inline-block px-1.5 py-0.5 rounded">Resp: {p.responsavelNome.split(' ')[0]}</div>}
+                    </div>
                   </td>
                   <td className="p-4 text-center"><span className={`text-[9px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border ${p.status==='EM ANDAMENTO'?'bg-blue-50 text-blue-700 border-blue-200':p.status==='ENTREGUE'?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-red-50 text-red-700 border-red-200'}`}>{p.status}</span></td>
                   <td className="p-4 text-center font-bold text-xs">{formatDate(p.dataFechamento)}</td>
@@ -849,10 +838,76 @@ function ProjetosView({ workspaceId, projects, clients, companyUsers, targetProj
           </table>
         </div>
       </div>
-      {isModalOpen && <ProjectModal workspaceId={workspaceId} clients={clients} companyUsers={companyUsers} project={editingProject} onClose={() => setIsModalOpen(false)} />}
+      {isModalOpen && <ProjectModal workspaceId={workspaceId} clients={clients} companyUsers={companyUsers} paymentMethods={paymentMethods} project={editingProject} onClose={() => setIsModalOpen(false)} />}
+      {isPaymentMethodsModalOpen && <PaymentMethodsModal workspaceId={workspaceId} paymentMethods={paymentMethods} onClose={() => setIsPaymentMethodsModalOpen(false)} />}
       {docsModalProject && <DocumentsModal workspaceId={workspaceId} project={docsModalProject} onClose={() => setDocsModalProject(null)} />}
       {confirmDialog && <ConfirmModal title={confirmDialog.title} message={confirmDialog.message} onConfirm={confirmDialog.onConfirm} onCancel={() => setConfirmDialog(null)} />}
       {alertDialog && <AlertModal title={alertDialog.title} message={alertDialog.message} onClose={() => setAlertDialog(null)} />}
+    </div>
+  );
+}
+
+// --- MODAL: FORMAS DE PAGAMENTO ---
+function PaymentMethodsModal({ workspaceId, paymentMethods, onClose }) {
+  const [form, setForm] = useState({ nome: '', parcelas: '', prazoVencimento: '' });
+
+  const handleAdd = async (e) => {
+    e.preventDefault();
+    if (!form.nome || !form.parcelas || !form.prazoVencimento) return;
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'payment_methods'), { 
+      workspaceId, 
+      nome: form.nome.toUpperCase(), 
+      parcelas: parseInt(form.parcelas), 
+      prazoVencimento: parseInt(form.prazoVencimento) 
+    });
+    setForm({ nome: '', parcelas: '', prazoVencimento: '' });
+  };
+
+  const handleDelete = async (id) => {
+    if (window.confirm("Deseja excluir esta forma de pagamento?")) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payment_methods', id));
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
+      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white shrink-0">
+          <h2 className="text-lg font-bold uppercase tracking-wide flex items-center gap-2"><CreditCard size={20}/> Formas de Pagamento (Personalizadas)</h2>
+          <button onClick={onClose} className="hover:bg-[#154278] p-1 rounded"><X size={20} /></button>
+        </div>
+        
+        <div className="p-6 bg-slate-50 border-b shrink-0">
+          <form onSubmit={handleAdd} className="flex flex-col gap-4">
+            <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest border-b pb-2">Cadastrar Nova Regra</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome (Ex: Semestral)</label><input type="text" required value={form.nome} onChange={e=>setForm({...form, nome: e.target.value})} className="w-full p-2 border rounded-lg outline-none focus:ring-2 font-bold text-sm uppercase"/></div>
+              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Qtd de Parcelas</label><input type="number" min="1" required value={form.parcelas} onChange={e=>setForm({...form, parcelas: e.target.value})} className="w-full p-2 border rounded-lg outline-none focus:ring-2 font-bold text-sm text-[#1e5aa0]"/></div>
+              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Intervalo (Em Dias)</label><input type="number" min="0" required value={form.prazoVencimento} onChange={e=>setForm({...form, prazoVencimento: e.target.value})} placeholder="Ex: 30" className="w-full p-2 border rounded-lg outline-none focus:ring-2 font-bold text-sm text-[#1e5aa0]"/></div>
+            </div>
+            <div className="flex justify-end"><button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase px-4 py-2 rounded-lg shadow-sm flex gap-2 items-center"><Plus size={14}/> Adicionar Forma</button></div>
+          </form>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 bg-white">
+          <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest border-b pb-2 mb-4">Regras Cadastradas</h3>
+          {paymentMethods.length > 0 ? (
+            <div className="space-y-3">
+              {paymentMethods.map(pm => (
+                <div key={pm.id} className="flex justify-between items-center border border-slate-200 rounded-xl p-3 shadow-sm hover:border-slate-300 transition-colors">
+                  <div>
+                    <h4 className="font-black text-slate-800 uppercase text-sm">{pm.nome}</h4>
+                    <p className="text-xs font-bold text-slate-500 mt-1">Gera <span className="text-[#1e5aa0]">{pm.parcelas} parcelas</span> com intervalo de <span className="text-[#1e5aa0]">{pm.prazoVencimento} dias</span> entre elas.</p>
+                  </div>
+                  <button onClick={() => handleDelete(pm.id)} className="text-red-400 hover:text-red-600 p-2"><Trash2 size={18}/></button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8"><CreditCard size={32} className="mx-auto text-slate-300 mb-2"/><p className="text-slate-400 font-bold text-sm">Nenhuma regra personalizada cadastrada.</p></div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -922,16 +977,116 @@ function DocumentsModal({ workspaceId, project, onClose }) {
   );
 }
 
-function ProjectModal({ workspaceId, clients, companyUsers, project, onClose }) {
+function ProjectModal({ workspaceId, clients, companyUsers, paymentMethods, project, onClose }) {
   const isEditing = !!project;
   const hasPaid = isEditing && project.parcelas?.some(p => p.paga);
+  
+  // Combina as formas de pagamento customizadas com as padrões do sistema
+  const customPaymentOptions = (paymentMethods || []).map(m => m.nome);
+  const paymentOptions = ['A VISTA', ...customPaymentOptions, ...Array.from({length: 12}, (_, i) => `CARTAO ${i+1}X`), ...Array.from({length: 4}, (_, i) => `BOLETO ${i+1}X`)];
+  
   const [formData, setFormData] = useState(project || { 
-    clientId: '', responsavelId: '', nomeProjeto: '', dataFechamento: getToday(), formaPagamento: 'A VISTA', valorTotal: '', status: 'EM ANDAMENTO', faseAnalitica: 'LEVANTAMENTO',
+    clientId: '', responsavelId: '', nomeProjeto: '', tipoProjeto: 'INTERIORES', dataFechamento: getToday(), formaPagamento: 'A VISTA', valorTotal: '', status: 'EM ANDAMENTO', faseAnalitica: 'LEVANTAMENTO',
     usarEnderecoCliente: false, cep: '', rua: '', numero: '', bairro: '', cidade: '', estado: ''
   });
   
-  const paymentOptions = ['A VISTA', ...Array.from({length: 12}, (_, i) => `CARTAO ${i+1}X`), ...Array.from({length: 4}, (_, i) => `BOLETO ${i+1}X`)];
-  
+  // Controle de Parcelas Customizadas
+  const [tempParcelas, setTempParcelas] = useState(isEditing ? project.parcelas || [] : []);
+  const [showParcelas, setShowParcelas] = useState(false);
+  const initialRender = useRef(true);
+
+  // Gera parcelas automaticamente baseado no formulário
+  useEffect(() => {
+    if (initialRender.current) {
+      initialRender.current = false;
+      if (isEditing && project.parcelas?.length) {
+        // Assegura que todas tenham a string para evitar o "pulo" do cursor se for editar
+        setTempParcelas(project.parcelas.map(p => ({ ...p, valorStr: p.valorStr || p.valor.toFixed(2) })));
+        return; 
+      }
+    }
+    if (!hasPaid) {
+      const vNum = parseFloat(String(formData.valorTotal).replace(',', '.')) || 0;
+      
+      let count = 1;
+      let prazoDias = 30;
+      let isCustom = false;
+
+      const customMethod = (paymentMethods || []).find(m => m.nome === formData.formaPagamento);
+      
+      if (customMethod) {
+        count = customMethod.parcelas || 1;
+        prazoDias = customMethod.prazoVencimento || 30;
+        isCustom = true;
+      } else if (formData.formaPagamento.includes('X')) {
+        count = parseInt(formData.formaPagamento.replace(/\D/g, '')) || 1;
+      }
+
+      const novas = Array.from({length: count}).map((_, i) => {
+        const d = new Date(formData.dataFechamento);
+        d.setMinutes(d.getMinutes() + d.getTimezoneOffset());
+        
+        if (isCustom) {
+           d.setDate(d.getDate() + (prazoDias * (i + 1))); // Soma os dias de intervalo
+        } else {
+           d.setMonth(d.getMonth() + i); // Comportamento Padrão Mensal
+        }
+
+        const parcelVal = vNum / count;
+        return { id: generateId(), numero: i + 1, valor: parcelVal, valorStr: parcelVal.toFixed(2), dataVencimento: d.toISOString().split('T')[0], paga: false };
+      });
+      setTempParcelas(novas);
+    }
+  }, [formData.formaPagamento, formData.valorTotal, formData.dataFechamento, paymentMethods]);
+
+  // Função aprimorada para evitar pulo de cursor e limitar valor máximo
+  const handleParcelaStrChange = (index, rawStr) => {
+    let updated = [...tempParcelas];
+    
+    // 1. Guarda a string exata que o usuário digitou (ex: "1.") para não quebrar o cursor
+    updated[index].valorStr = rawStr;
+    
+    // 2. Extrai o número para cálculo
+    let newVal = parseFloat(rawStr) || 0;
+    let valorTotalProjeto = parseFloat(String(formData.valorTotal).replace(',', '.')) || 0;
+    
+    // 3. Calcula o quanto já está pago e travado
+    let paidSum = updated.filter(p => p.paga).reduce((acc, p) => acc + p.valor, 0);
+    
+    // 4. O máximo que esta parcela pode assumir é o (Total do Projeto - O que já foi pago)
+    let maxAllowed = valorTotalProjeto - paidSum;
+
+    if (newVal > maxAllowed) {
+      alert(`O valor digitado excede o total do contrato. O máximo permitido para compor esta parcela é ${formatCurrency(maxAllowed)}`);
+      // Aborta a atualização para bloquear o input
+      return; 
+    }
+
+    // Atualiza o valor numérico da parcela
+    updated[index].valor = newVal;
+
+    // 5. Rebalanceamento Igualitário: Distribui o que sobrou igualmente entre as outras parcelas editáveis
+    let modifiable = updated.map((p, i) => ({...p, originalIndex: i})).filter(p => p.originalIndex !== index && !p.paga);
+
+    if (modifiable.length > 0) {
+      let targetSumRemaining = maxAllowed - newVal; // O montante que as OUTRAS parcelas precisam cobrir
+      let perItem = targetSumRemaining / modifiable.length;
+      
+      modifiable.forEach(m => {
+        updated[m.originalIndex].valor = perItem;
+        updated[m.originalIndex].valorStr = perItem.toFixed(2); // Formata bonitinho para as outras
+      });
+    }
+
+    setTempParcelas(updated);
+  };
+
+  const handleDateChange = (index, newDate) => {
+    let updated = [...tempParcelas];
+    updated[index].dataVencimento = newDate;
+    setTempParcelas(updated);
+  };
+
   const buscarCEP = async (valorCep) => {
     const raw = valorCep.replace(/\D/g, '');
     if (raw.length !== 8) return;
@@ -969,15 +1124,26 @@ function ProjectModal({ workspaceId, clients, companyUsers, project, onClose }) 
     e.preventDefault();
     const client = clients.find(c => c.id === formData.clientId);
     const responsavel = (companyUsers || []).find(u => u.id === formData.responsavelId);
-    let novasParcelas = isEditing ? project.parcelas : [];
-
-    if (!hasPaid && (!isEditing || formData.valorTotal !== project.valorTotal || formData.formaPagamento !== project.formaPagamento || formData.dataFechamento !== project.dataFechamento)) {
-      const vNum = parseFloat(String(formData.valorTotal).replace(',', '.'));
-      let count = formData.formaPagamento.includes('X') ? parseInt(formData.formaPagamento.replace(/\D/g, '')) : 1;
-      novasParcelas = Array.from({length: count}).map((_, i) => { const d = new Date(formData.dataFechamento); d.setMinutes(d.getMinutes() + d.getTimezoneOffset()); d.setMonth(d.getMonth() + i); return { id: generateId(), numero: i + 1, valor: vNum / count, dataVencimento: d.toISOString().split('T')[0], paga: false }; });
+    
+    // Calcula diferença se tiver falha de arredondamento antes de salvar
+    let somaParcelas = tempParcelas.reduce((acc, p) => acc + p.valor, 0);
+    let valorTotalProjeto = parseFloat(String(formData.valorTotal).replace(',', '.'));
+    
+    // Validação de segurança pro valor total bater
+    if (Math.abs(somaParcelas - valorTotalProjeto) > 0.05) {
+       alert("A soma das parcelas não bate com o valor do contrato. Ajuste os valores.");
+       setShowParcelas(true);
+       return;
     }
 
-    const pData = { ...formData, workspaceId, clientName: client?.nome || '', responsavelNome: responsavel?.nome || '', valorTotal: parseFloat(String(formData.valorTotal).replace(',', '.')), parcelas: novasParcelas };
+    // Antes de salvar, limpamos a sujeira das strings
+    const finalParcelas = tempParcelas.map(p => {
+       const clean = {...p};
+       delete clean.valorStr;
+       return clean;
+    });
+
+    const pData = { ...formData, workspaceId, clientName: client?.nome || '', responsavelNome: responsavel?.nome || '', valorTotal: valorTotalProjeto, parcelas: finalParcelas };
     if (isEditing) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', project.id), pData);
     else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), pData);
     onClose();
@@ -995,6 +1161,7 @@ function ProjectModal({ workspaceId, clients, companyUsers, project, onClose }) 
             <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Dados Gerais</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="sm:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome do Projeto *</label><input required name="nomeProjeto" value={formData.nomeProjeto} onChange={e=>setFormData({...formData, nomeProjeto: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-[#1e5aa0] font-bold text-slate-800" /></div>
+              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Tipo de Projeto</label><select value={formData.tipoProjeto} onChange={e=>setFormData({...formData, tipoProjeto: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0] font-bold text-slate-700 text-sm">{TIPOS_PROJETO.map(t=><option key={t}>{t}</option>)}</select></div>
               <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Cliente *</label><select required value={formData.clientId} onChange={handleClientChange} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0] font-medium text-sm"><option value=""></option>{clients.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div>
               <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Responsável</label><select value={formData.responsavelId || ''} onChange={e=>setFormData({...formData, responsavelId: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0] font-medium text-sm"><option value="">Sem responsável</option>{(companyUsers||[]).map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
             </div>
@@ -1026,10 +1193,34 @@ function ProjectModal({ workspaceId, clients, companyUsers, project, onClose }) 
               {isEditing && <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Status</label><select value={formData.status} onChange={e=>setFormData({...formData, status: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white outline-none text-sm font-black"><option>EM ANDAMENTO</option><option>ENTREGUE</option><option>CANCELADO</option></select></div>}
               <div className={!isEditing ? "col-span-2" : "col-span-2"}><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Valor Contrato (R$) *</label><input required type="number" step="0.01" value={formData.valorTotal} onChange={e=>setFormData({...formData, valorTotal: e.target.value})} disabled={hasPaid} className="w-full p-2.5 border rounded-lg outline-none font-black text-slate-800 focus:ring-2 disabled:bg-slate-100" /></div>
             </div>
+            
             <div className="mt-4"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Forma de Pagamento *</label><select required value={formData.formaPagamento} onChange={e=>setFormData({...formData, formaPagamento: e.target.value})} disabled={hasPaid} className="w-full p-2.5 border rounded-lg bg-white outline-none font-bold text-sm disabled:bg-slate-100">{paymentOptions.map(o => <option key={o}>{o}</option>)}</select></div>
+            
+            {/* Controle Avançado das Parcelas */}
+            {tempParcelas.length > 0 && (
+              <div className="mt-4 animate-in fade-in">
+                <button type="button" onClick={()=>setShowParcelas(!showParcelas)} className="text-[#1e5aa0] font-bold text-xs flex items-center gap-1 hover:text-[#154278] transition-colors bg-blue-50 px-3 py-2 rounded-lg border border-blue-100"><Settings2 size={14}/> {showParcelas ? 'Ocultar Parcelas' : 'Ajustar Datas e Valores das Parcelas (Avançado)'}</button>
+                {showParcelas && (
+                  <div className="mt-3 space-y-2 border border-slate-200 rounded-lg p-3 bg-slate-50 shadow-inner">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Ao alterar o valor de uma parcela, o restante da diferença é dividido entre as outras.</p>
+                    {tempParcelas.map((p, idx) => (
+                        <div key={idx} className="flex gap-2 items-center">
+                            <span className="text-xs font-black text-slate-400 w-6">{idx+1}º</span>
+                            <input type="date" value={p.dataVencimento} onChange={e=>handleDateChange(idx, e.target.value)} disabled={p.paga} className="p-2 border rounded-lg text-sm outline-none focus:ring-2 flex-1 font-bold text-slate-700 disabled:bg-slate-100" />
+                            <input type="number" step="0.01" value={p.valorStr !== undefined ? p.valorStr : (p.valor || 0).toFixed(2)} onChange={e=>handleParcelaStrChange(idx, e.target.value)} disabled={p.paga} className="p-2 border rounded-lg text-sm outline-none focus:ring-2 w-32 text-right font-black text-[#1e5aa0] disabled:bg-slate-100 disabled:text-slate-400" />
+                        </div>
+                    ))}
+                    <div className="flex justify-between items-center pt-3 border-t border-slate-200 mt-3">
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Soma das parcelas:</span>
+                        <span className={`text-sm font-black ${Math.abs(tempParcelas.reduce((a,b)=>a+b.valor,0) - (parseFloat(formData.valorTotal)||0)) > 0.05 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(tempParcelas.reduce((a,b)=>a+b.valor,0))}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </form>
-        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-200 rounded-lg">Cancelar</button><button form="pform" type="submit" disabled={!clients.length} className="px-5 py-2.5 bg-[#1e5aa0] text-white font-bold hover:bg-[#154278] rounded-lg shadow-sm">Confirmar</button></div>
+        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-200 rounded-lg">Cancelar</button><button form="pform" type="submit" disabled={!clients.length} className="px-5 py-2.5 bg-[#1e5aa0] text-white font-bold hover:bg-[#154278] rounded-lg shadow-sm">Confirmar Lançamento</button></div>
       </div>
     </div>
   );
@@ -1215,6 +1406,7 @@ function ChecklistView({ workspaceId, projects, checklists, companyUsers, appUse
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [manageModalData, setManageModalData] = useState(null); 
   const [searchTerm, setSearchTerm] = useState('');
+  const [viewFinished, setViewFinished] = useState(false); // Nova aba de Projetos Concluídos
   
   const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
   const canDelete = appUser.role === 'gestor' || appUser.permissions?.delete;
@@ -1231,16 +1423,30 @@ function ChecklistView({ workspaceId, projects, checklists, companyUsers, appUse
   
   const delChk = async (id) => { if(canDelete && window.confirm('Excluir tarefa?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', id)); };
 
-  const fProjs = projects.filter(p => p.clientName.toLowerCase().includes(searchTerm.toLowerCase()));
   const visibleChecklists = checklists.filter(c => appUser.role === 'gestor' || !c.responsavelId || c.responsavelId === appUser.id);
+  
+  // Filtro que separa Projetos em Andamento dos Finalizados
+  const fProjs = projects.filter(p => {
+    const matchSearch = p.clientName.toLowerCase().includes(searchTerm.toLowerCase());
+    const isFinished = p.faseAnalitica === 'PROJETO FINALIZADO';
+    return matchSearch && (viewFinished ? isFinished : !isFinished);
+  });
 
   return (
     <div className="h-full flex flex-col space-y-4 pt-2">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b-4 border-[#1e5aa0] pb-2">
         <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Tarefas & Evolução</h3>
-        {canCreate && <button onClick={() => setIsModalOpen(true)} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 hover:bg-[#154278] shadow-sm"><ListTodo size={18} /><span>Nova Tarefa</span></button>}
+        {canCreate && <button onClick={() => setIsModalOpen(true)} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 hover:bg-[#154278] shadow-sm w-full md:w-auto justify-center"><ListTodo size={18} /><span>Nova Tarefa</span></button>}
       </div>
-      <div><input type="text" placeholder="Buscar projeto..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none text-sm font-medium" /></div>
+
+      {/* Controles: Busca e Abas */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1"><input type="text" placeholder="Buscar por cliente..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none text-sm font-medium" /></div>
+        <div className="flex bg-slate-200 p-1 rounded-lg shrink-0">
+          <button onClick={() => setViewFinished(false)} className={`flex-1 sm:flex-none px-4 py-2 text-xs uppercase tracking-wider font-black rounded-md transition-colors ${!viewFinished ? 'bg-white text-[#1e5aa0] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Em Andamento</button>
+          <button onClick={() => setViewFinished(true)} className={`flex-1 sm:flex-none px-4 py-2 text-xs uppercase tracking-wider font-black rounded-md transition-colors ${viewFinished ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><CheckSquare size={14} className="inline mr-1 -mt-0.5"/> Concluídos</button>
+        </div>
+      </div>
       
       <div className="flex-1 overflow-y-auto space-y-6 pb-6">
         {fProjs.map(p => {
@@ -1285,7 +1491,7 @@ function ChecklistView({ workspaceId, projects, checklists, companyUsers, appUse
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => setManageModalData({ checklist: c, project: p })} className="bg-white border hover:bg-slate-50 text-[#1e5aa0] px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-colors shadow-sm flex gap-1 items-center"><Settings2 size={14} className="hidden sm:block"/> Detalhes</button>
+                        <button onClick={() => setManageModalData({ checklistId: c.id, project: p })} className="bg-white border hover:bg-slate-50 text-[#1e5aa0] px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-colors shadow-sm flex gap-1 items-center"><Settings2 size={14} className="hidden sm:block"/> Detalhes</button>
                         <button onClick={()=>delChk(c.id)} className="text-slate-300 hover:text-red-500 p-1.5"><Trash2 size={16}/></button>
                       </div>
                     </div>
@@ -1296,9 +1502,12 @@ function ChecklistView({ workspaceId, projects, checklists, companyUsers, appUse
             </div>
           );
         })}
+        {fProjs.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-12 text-slate-400 border border-dashed rounded-xl bg-white"><FolderKanban size={48} className="mb-3 opacity-30"/><p className="font-bold">Nenhum projeto encontrado nesta visualização.</p></div>
+        )}
       </div>
       {isModalOpen && <ChecklistModal workspaceId={workspaceId} projects={projects} companyUsers={companyUsers} onClose={() => setIsModalOpen(false)} />}
-      {manageModalData && <ChecklistManageModal workspaceId={workspaceId} appUser={appUser} project={manageModalData.project} checklist={manageModalData.checklist} onClose={() => setManageModalData(null)} />}
+      {manageModalData && <ChecklistManageModal workspaceId={workspaceId} appUser={appUser} project={manageModalData.project} checklistId={manageModalData.checklistId} checklists={checklists} onClose={() => setManageModalData(null)} />}
     </div>
   );
 }
@@ -1343,9 +1552,11 @@ function ChecklistModal({ workspaceId, projects, companyUsers, onClose }) {
   );
 }
 
-function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClose }) {
-  const [activeTab, setActiveTab] = useState(checklist.solicitaOrcamento ? 'ORCAMENTOS' : 'DOCUMENTOS');
+function ChecklistManageModal({ workspaceId, appUser, project, checklistId, checklists, onClose }) {
+  // Pega a versão mais atualizada da tarefa direto do banco escutado
+  const liveChecklist = checklists.find(c => c.id === checklistId);
   
+  const [activeTab, setActiveTab] = useState(liveChecklist?.solicitaOrcamento ? 'ORCAMENTOS' : 'DOCUMENTOS');
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
@@ -1353,13 +1564,20 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
   const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
   const [showOrcForm, setShowOrcForm] = useState(false);
   const [orcForm, setOrcForm] = useState({ categoria: 'Serviço', observacao: '', nomeProfissional: '', dadosProfissional: '', valor: '' });
+  
+  // Controle para edição em tempo real do valor do orçamento já lançado
+  const [editingOrcId, setEditingOrcId] = useState(null);
+  const [editingOrcValor, setEditingOrcValor] = useState('');
 
   useEffect(() => {
+    if (!liveChecklist) return;
     const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), (snap) => {
-      setDocuments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(d => d.checklistId === checklist.id && d.workspaceId === workspaceId));
+      setDocuments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(d => d.checklistId === liveChecklist.id && d.workspaceId === workspaceId));
     });
     return () => unsub();
-  }, [workspaceId, checklist.id]);
+  }, [workspaceId, liveChecklist?.id]);
+
+  if (!liveChecklist) return null; // Previne crash caso a tarefa seja deletada com o modal aberto
 
   const handleUpload = async (e) => {
     const files = Array.from(e.target.files);
@@ -1371,8 +1589,8 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
         await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), { 
           workspaceId, 
           projectId: project.id, 
-          checklistId: checklist.id,
-          checklistDesc: checklist.descricao,
+          checklistId: liveChecklist.id,
+          checklistDesc: liveChecklist.descricao,
           uploadedBy: appUser.nome,
           nome: file.name, 
           tipo: file.type || 'application/octet-stream', 
@@ -1394,15 +1612,15 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
       id: generateId(), ...orcForm, valor: parseFloat(String(orcForm.valor).replace(',', '.')), 
       status: 'PENDENTE', dataCriacao: getToday(), criadoPor: appUser.nome 
     };
-    const updated = [...(checklist.orcamentos || []), newOrc];
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', checklist.id), { orcamentos: updated });
+    const updated = [...(liveChecklist.orcamentos || []), newOrc];
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
     setShowOrcForm(false);
     setOrcForm({ categoria: 'Serviço', observacao: '', nomeProfissional: '', dadosProfissional: '', valor: '' });
   };
 
   const changeOrcStatus = async (orcId, newStatus) => {
     if (!canEdit) return;
-    const updated = (checklist.orcamentos || []).map(o => {
+    const updated = (liveChecklist.orcamentos || []).map(o => {
       if (o.id === orcId) {
         if (newStatus === 'APROVADO') return { ...o, status: newStatus, dataAprovacao: getToday(), aprovadoPor: appUser.nome };
         if (newStatus === 'REALIZADO') return { ...o, status: newStatus, dataRealizacao: getToday(), realizadoPor: appUser.nome };
@@ -1410,13 +1628,22 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
       }
       return o;
     });
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', checklist.id), { orcamentos: updated });
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
+  };
+
+  const saveOrcValue = async (orcId) => {
+    const updated = (liveChecklist.orcamentos || []).map(o => {
+      if (o.id === orcId) return { ...o, valor: parseFloat(String(editingOrcValor).replace(',', '.')) || 0 };
+      return o;
+    });
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
+    setEditingOrcId(null);
   };
 
   const deleteOrc = async (orcId) => {
     if(window.confirm('Excluir este orçamento?')) {
-      const updated = (checklist.orcamentos || []).filter(o => o.id !== orcId);
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', checklist.id), { orcamentos: updated });
+      const updated = (liveChecklist.orcamentos || []).filter(o => o.id !== orcId);
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
     }
   };
 
@@ -1426,17 +1653,17 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
         <div className="p-5 border-b border-slate-200 flex justify-between items-start bg-[#1e5aa0] text-white rounded-t-2xl shrink-0">
           <div className="pr-4">
             <p className="text-blue-200 text-[10px] font-black uppercase tracking-widest">{project.nomeProjeto || project.clientName}</p>
-            <h2 className="text-lg font-bold leading-tight mt-1">{checklist.descricao}</h2>
+            <h2 className="text-lg font-bold leading-tight mt-1">{liveChecklist.descricao}</h2>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-blue-800 rounded-full transition-colors shrink-0"><X size={20}/></button>
         </div>
 
-        <div className="flex bg-slate-50 border-b border-slate-200 shrink-0 px-4">
-          {checklist.solicitaOrcamento && <button onClick={()=>setActiveTab('ORCAMENTOS')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'ORCAMENTOS' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Orçamentos ({(checklist.orcamentos||[]).length})</button>}
-          <button onClick={()=>setActiveTab('DOCUMENTOS')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'DOCUMENTOS' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Documentos Anexos ({documents.length})</button>
+        <div className="flex bg-slate-50 border-b border-slate-200 shrink-0 px-4 overflow-x-auto">
+          {liveChecklist.solicitaOrcamento && <button onClick={()=>setActiveTab('ORCAMENTOS')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors whitespace-nowrap ${activeTab === 'ORCAMENTOS' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Orçamentos ({(liveChecklist.orcamentos||[]).length})</button>}
+          <button onClick={()=>setActiveTab('DOCUMENTOS')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors whitespace-nowrap ${activeTab === 'DOCUMENTOS' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Documentos Anexos ({documents.length})</button>
         </div>
 
-        {activeTab === 'ORCAMENTOS' && checklist.solicitaOrcamento && (
+        {activeTab === 'ORCAMENTOS' && liveChecklist.solicitaOrcamento && (
           <div className="flex-1 overflow-y-auto p-6 bg-slate-100 flex flex-col">
             <div className="flex justify-between items-center mb-4">
               <h3 className="font-black text-slate-700 uppercase tracking-tight"><DollarSign size={18} className="inline mr-1"/> Avaliação de Orçamentos</h3>
@@ -1448,7 +1675,7 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
                 <h4 className="text-xs font-black text-[#1e5aa0] uppercase mb-4 border-b pb-2">Novo Orçamento</h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Categoria *</label><select required value={orcForm.categoria} onChange={e=>setOrcForm({...orcForm, categoria: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-bold text-sm bg-white"><option>Serviço</option><option>Produto</option></select></div>
-                  <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Valor Final (R$) *</label><input type="number" step="0.01" required value={orcForm.valor} onChange={e=>setOrcForm({...orcForm, valor: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-black text-sm text-[#1e5aa0]" /></div>
+                  <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Valor Inicial (R$) *</label><input type="number" step="0.01" required value={orcForm.valor} onChange={e=>setOrcForm({...orcForm, valor: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-black text-sm text-[#1e5aa0]" /></div>
                   <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Nome Fornecedor/Profissional *</label><input required type="text" value={orcForm.nomeProfissional} onChange={e=>setOrcForm({...orcForm, nomeProfissional: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-bold text-sm" /></div>
                   <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Contato/Dados Básicos</label><input type="text" value={orcForm.dadosProfissional} onChange={e=>setOrcForm({...orcForm, dadosProfissional: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-medium text-sm" /></div>
                   <div className="sm:col-span-2"><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Observações do Orçamento</label><textarea required value={orcForm.observacao} onChange={e=>setOrcForm({...orcForm, observacao: e.target.value})} rows="2" className="w-full p-2 border rounded-lg outline-none resize-none font-medium text-sm"></textarea></div>
@@ -1458,7 +1685,7 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
             )}
 
             <div className="space-y-4">
-              {(checklist.orcamentos || []).map(o => (
+              {(liveChecklist.orcamentos || []).map(o => (
                 <div key={o.id} className={`bg-white border rounded-xl p-4 shadow-sm relative overflow-hidden transition-colors ${o.status === 'APROVADO' ? 'border-emerald-300 ring-1 ring-emerald-100' : o.status === 'REALIZADO' ? 'border-[#1e5aa0] bg-blue-50/30' : 'border-slate-200'}`}>
                   {canEdit && <button onClick={()=>deleteOrc(o.id)} className="absolute top-3 right-3 text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>}
                   
@@ -1469,7 +1696,18 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
                       <p className="text-xs font-bold text-slate-500 mt-0.5">{o.dadosProfissional}</p>
                     </div>
                     <div className="text-left sm:text-right">
-                      <p className={`text-xl font-black ${o.status === 'PENDENTE' ? 'text-slate-800' : o.status === 'APROVADO' ? 'text-emerald-600' : 'text-[#1e5aa0]'}`}>{formatCurrency(o.valor)}</p>
+                      {editingOrcId === o.id ? (
+                        <div className="flex items-center gap-2 justify-end bg-blue-50 p-1.5 rounded-lg border border-blue-100 animate-in fade-in">
+                          <input type="number" step="0.01" value={editingOrcValor} onChange={e=>setEditingOrcValor(e.target.value)} className="w-24 text-right p-1.5 border rounded outline-none font-black text-[#1e5aa0] text-sm" />
+                          <button onClick={()=>saveOrcValue(o.id)} className="bg-emerald-600 text-white p-1.5 rounded hover:bg-emerald-700"><Check size={14}/></button>
+                          <button onClick={()=>setEditingOrcId(null)} className="bg-red-500 text-white p-1.5 rounded hover:bg-red-600"><X size={14}/></button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center sm:justify-end gap-2 group">
+                          <p className={`text-xl font-black ${o.status === 'PENDENTE' ? 'text-slate-800' : o.status === 'APROVADO' ? 'text-emerald-600' : 'text-[#1e5aa0]'}`}>{formatCurrency(o.valor)}</p>
+                          {canEdit && o.status === 'PENDENTE' && <button onClick={()=>{setEditingOrcId(o.id); setEditingOrcValor(o.valor);}} className="text-slate-300 hover:text-[#1e5aa0] opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"><Edit size={16}/></button>}
+                        </div>
+                      )}
                       <p className="text-[9px] font-bold text-slate-400 uppercase mt-1">Lançado por {o.criadoPor?.split(' ')[0]}</p>
                     </div>
                   </div>
@@ -1497,7 +1735,7 @@ function ChecklistManageModal({ workspaceId, appUser, project, checklist, onClos
                   </div>
                 </div>
               ))}
-              {(checklist.orcamentos || []).length === 0 && !showOrcForm && (
+              {(liveChecklist.orcamentos || []).length === 0 && !showOrcForm && (
                 <div className="text-center py-10 bg-white border border-dashed rounded-xl"><BriefcaseBusiness size={32} className="mx-auto mb-2 text-slate-300"/><p className="text-sm font-bold text-slate-500">Nenhum orçamento cadastrado para esta tarefa.</p></div>
               )}
             </div>

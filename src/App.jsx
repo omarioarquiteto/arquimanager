@@ -20,12 +20,14 @@ const firebaseConfig = {
   appId: "1:148259023703:web:04a57624f1c526e4b0ac12",
   measurementId: "G-NW2WSES695"
 };
-
-// VOU PRECISA GARANTIR QUE ESTAS 4 LINHAS ESTEJAM EXATAMENTE AQUI:
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app); // <-- O seu código está sentindo falta desta linha!
+const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = 'arquimanager-producao';
+
+// EXTRAÇÃO RIGOROSA DO APP ID
+let safeAppId = 'arquimanager-producao';
+if (typeof __app_id !== 'undefined') { safeAppId = String(__app_id).split('_src')[0].split('/')[0]; }
+const appId = safeAppId;
 
 // --- UTILITÁRIOS ---
 const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
@@ -120,11 +122,10 @@ function LoginScreen({ firebaseUser, onUnlock }) {
     e.preventDefault(); setError('');
     const user = accounts.find(a => a.email === loginEmail && a.senha === loginSenha);
     if (user) {
-      // NOVA LÓGICA: Permite o login de contas antigas e dá acesso total
-      if (!user.companyId) {
-        user.companyId = 'legado';
-        user.role = 'gestor';
-      }
+      // COMPATIBILIDADE PARA CONTAS ANTIGAS (LEGADAS)
+      if (!user.companyId) user.companyId = 'legado';
+      if (!user.role) user.role = 'gestor'; // <--- Esta linha garante o acesso total!
+      
       onUnlock(user);
     } else setError('E-mail ou senha incorretos.');
   };
@@ -168,7 +169,7 @@ function LoginScreen({ firebaseUser, onUnlock }) {
           </form>
         ) : (
           <form onSubmit={handleRegisterCompany} className="space-y-4">
-            <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg text-xs text-blue-800 font-medium mb-4 flex gap-2"><ShieldCheck className="shrink-0 text-blue-600"/><span>Você será o Gestor e poderá convidar a sua equipe depois.</span></div>
+            <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg text-xs text-blue-800 font-medium mb-4 flex gap-2"><ShieldCheck className="shrink-0 text-blue-600"/><span>Você será o Gestor e poderá convidar a sua equipa depois.</span></div>
             <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Nome da Empresa *</label><input type="text" required value={empresaNome} onChange={e => setEmpresaNome(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none bg-slate-50" /></div>
             <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Seu Nome (Gestor) *</label><input type="text" required value={gestorNome} onChange={e => setGestorNome(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
             <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">E-mail de Acesso *</label><input type="email" required value={regEmail} onChange={e => setRegEmail(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
@@ -198,7 +199,6 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
   useEffect(() => {
     if (!firebaseUser || !appUser) return;
     const cid = appUser.companyId;
-    // NOVA LÓGICA: Permite visualizar dados antigos que não possuem o ID da empresa
     const filterByCompany = (snap) => snap.docs.map(d => ({id: d.id, ...d.data()})).filter(i => !i.companyId || i.companyId === cid);
     const errHandler = (err) => console.error("Firestore Listener Error:", err);
 
@@ -261,7 +261,7 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
           {hasScreenAccess('recebimentos') && <SidebarItem icon={<CalendarDays size={18}/>} label="Financeiro" active={currentView === 'recebimentos'} onClick={() => { setCurrentView('recebimentos'); setIsMobileMenuOpen(false); }} />}
           {hasScreenAccess('checklist') && <SidebarItem icon={<ListTodo size={18}/>} label="Tarefas & Orçamentos" active={currentView === 'checklist'} onClick={() => { setCurrentView('checklist'); setIsMobileMenuOpen(false); }} />}
           {hasScreenAccess('clients') && <SidebarItem icon={<Users size={18}/>} label="Clientes" active={currentView === 'clients'} onClick={() => { setCurrentView('clients'); setIsMobileMenuOpen(false); }} />}
-          {appUser.role === 'gestor' && <SidebarItem icon={<Settings size={18}/>} label="Equipe e Acessos" active={currentView === 'equipe'} onClick={() => { setCurrentView('equipe'); setIsMobileMenuOpen(false); }} />}
+          {appUser.role === 'gestor' && <SidebarItem icon={<Settings size={18}/>} label="Equipa e Acessos" active={currentView === 'equipe'} onClick={() => { setCurrentView('equipe'); setIsMobileMenuOpen(false); }} />}
         </nav>
         <div className="p-4 border-t border-slate-800"><button onClick={onLogout} className="flex items-center space-x-3 text-slate-400 hover:text-white w-full p-2 rounded-lg font-medium transition-colors"><LogOut size={18} /><span>Sair</span></button></div>
       </aside>
@@ -285,7 +285,7 @@ function NoAccess() {
   return <div className="h-full flex flex-col items-center justify-center text-slate-400"><ShieldCheck size={64} className="mb-4 opacity-50"/><p className="text-lg font-bold">Acesso Restrito</p><p className="text-sm">Não tem permissão para visualizar este ecrã.</p></div>;
 }
 
-// --- VISÃO: EQUIPE E EMPRESA (Somente Gestor) ---
+// --- VISÃO: EQUIPA E EMPRESA (Somente Gestor) ---
 function EquipeView({ companyUsers, projects, appUser, company }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
@@ -309,7 +309,7 @@ function EquipeView({ companyUsers, projects, appUser, company }) {
     <div className="h-full flex flex-col">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div>
-          <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Equipe & Acessos</h3>
+          <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Equipa & Acessos</h3>
           <p className="text-slate-500 text-sm">Faça a gestão de utilizadores, cargos e dados da empresa <strong className="text-[#1e5aa0]">{company?.nome}</strong>.</p>
         </div>
         <div className="flex gap-2">
@@ -630,6 +630,7 @@ function ProjetosView({ projects, clients, companyUsers, targetProject, clearTar
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [detailingProject, setDetailingProject] = useState(null); 
+  const [activeTab, setActiveTab] = useState('ativos');
   const [alertMsg, setAlertMsg] = useState('');
   const [confirmData, setConfirmData] = useState(null);
   
@@ -646,23 +647,37 @@ function ProjetosView({ projects, clients, companyUsers, targetProject, clearTar
     });
   };
 
+  const projetosAtivos = projects.filter(p => p.status !== 'ENTREGUE');
+  const projetosFinalizados = projects.filter(p => p.status === 'ENTREGUE');
+  const currentList = activeTab === 'ativos' ? projetosAtivos : projetosFinalizados;
+
   return (
     <div className="h-full flex flex-col">
       <div className="flex justify-between items-center mb-6">
         <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Projetos</h3>
         {canCreate && <button onClick={() => {setEditingProject(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Lançar Projeto</span></button>}
       </div>
+
+      <div className="flex gap-4 mb-4 border-b border-slate-200 shrink-0">
+        <button onClick={() => setActiveTab('ativos')} className={`pb-3 px-2 text-sm font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'ativos' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+          Em Andamento ({projetosAtivos.length})
+        </button>
+        <button onClick={() => setActiveTab('finalizados')} className={`pb-3 px-2 text-sm font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'finalizados' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+          Projetos Finalizados ({projetosFinalizados.length})
+        </button>
+      </div>
+
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 overflow-auto">
         <table className="w-full text-left text-sm min-w-[800px]">
           <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0 z-10"><tr><th className="p-4">Projeto</th><th className="p-4">Responsável</th><th className="p-4 text-center">Status</th><th className="p-4 text-center">Detalhamento da Obra</th><th className="p-4 text-right">Valor do Projeto</th><th className="p-4 text-center">Ações</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
-            {projects.map(p => {
+            {currentList.map(p => {
               const resp = companyUsers.find(u => u.id === p.responsavelId);
               return (
                 <tr key={p.id} className="hover:bg-slate-50">
                   <td className="p-4"><p className="font-bold text-slate-800">{p.nomeProjeto}</p><p className="text-xs text-slate-500">{p.clientName}</p></td>
                   <td className="p-4 font-bold text-xs text-slate-600 uppercase flex items-center gap-2 mt-2"><Briefcase size={14}/> {resp?.nome || 'Não Atribuído'}</td>
-                  <td className="p-4 text-center"><span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full font-bold text-[10px]">{p.status}</span></td>
+                  <td className="p-4 text-center"><span className={`px-3 py-1 rounded-full font-bold text-[10px] ${p.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>{p.status}</span></td>
                   <td className="p-4 text-center">
                     <button onClick={() => setDetailingProject(p)} className="bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 px-3 py-1.5 rounded-lg flex items-center justify-center space-x-1 mx-auto transition-colors font-bold text-xs uppercase">
                       <LayoutList size={16} /> <span>Checklist / Custos</span>
@@ -676,6 +691,7 @@ function ProjetosView({ projects, clients, companyUsers, targetProject, clearTar
                 </tr>
               )
             })}
+            {currentList.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-slate-400 font-medium">Nenhum projeto nesta categoria.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1122,8 +1138,8 @@ function ProjectModal({ appUser, clients, companyUsers, project, onClose }) {
 // --- RECEBIMENTOS COM RELATÓRIO E CALENDÁRIO DUPLO ---
 function RecebimentosView({ projects, canEdit, appUser }) {
   const [baseDate, setBaseDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [payModalData, setPayModalData] = useState(null);
-  const [selectedPayIndex, setSelectedPayIndex] = useState(0);
+  const [dayModalItems, setDayModalItems] = useState(null); // Itens do dia selecionado
+  const [payModalItem, setPayModalItem] = useState(null); // Parcela individual a ser paga
   const [showReportModal, setShowReportModal] = useState(false);
   const [confirmData, setConfirmData] = useState(null);
 
@@ -1136,17 +1152,17 @@ function RecebimentosView({ projects, canEdit, appUser }) {
     const form = e.target;
     const date = form.date.value;
     const formaRecebimento = form.formaRecebimento.value;
-    const targetItem = payModalData[selectedPayIndex];
 
-    const novas = targetItem.p.parcelas.map((x, i) => i === targetItem.index ? {...x, paga: true, dataRecebimento: date, formaRecebimento} : x);
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', targetItem.pId), { parcelas: novas });
-    setPayModalData(null);
-    setSelectedPayIndex(0);
+    const novas = payModalItem.p.parcelas.map((x, i) => i === payModalItem.index ? {...x, paga: true, dataRecebimento: date, formaRecebimento} : x);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', payModalItem.pId), { parcelas: novas });
+    setPayModalItem(null);
+    setDayModalItems(null); // Fecha a listagem do dia
   };
   
   const handleUndo = async (item) => {
     const novas = item.p.parcelas.map((x, i) => i === item.index ? {...x, paga: false, dataRecebimento: null, formaRecebimento: null} : x);
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', item.pId), { parcelas: novas });
+    setDayModalItems(null); // Fecha a listagem do dia
   };
 
   return (
@@ -1168,68 +1184,79 @@ function RecebimentosView({ projects, canEdit, appUser }) {
               currentDate={monthDate} 
               projects={projects} 
               canEdit={canEdit}
-              onOpenPayModal={(items) => { setPayModalData(items); setSelectedPayIndex(0); }}
-              onUndoPayment={(item) => {
-                setConfirmData({
-                  message: 'Desfazer o recebimento desta parcela?',
-                  onConfirm: async () => { await handleUndo(item); setConfirmData(null); }
-                });
-              }}
+              onOpenDayDetails={(items) => setDayModalItems(items)}
             />
           ))}
         </div>
       </div>
 
-      {payModalData && payModalData.length > 0 && (() => {
-        const targetItem = payModalData[selectedPayIndex];
-        return (
-          <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
-            <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
-              <div className="p-4 bg-emerald-600 text-white font-bold flex justify-between items-center uppercase">Confirmar Recebimento <button onClick={()=>setPayModalData(null)}><X size={20}/></button></div>
-              <form onSubmit={handlePay} className="p-6 flex flex-col gap-4">
-                
-                {payModalData.length > 1 ? (
-                  <div>
-                    <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Selecione a Parcela</label>
-                    <select value={selectedPayIndex} onChange={(e) => setSelectedPayIndex(Number(e.target.value))} className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm bg-white text-slate-800">
-                      {payModalData.map((item, idx) => (
-                        <option key={idx} value={idx}>{item.p.nomeProjeto} - {formatCurrency(item.valor)}</option>
-                      ))}
-                    </select>
+      {dayModalItems && !payModalItem && (
+        <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-lg flex flex-col shadow-2xl overflow-hidden max-h-[90vh]">
+            <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase">Lançamentos do Dia <button onClick={()=>setDayModalItems(null)}><X size={20}/></button></div>
+            <div className="p-6 overflow-y-auto space-y-3">
+              {dayModalItems.map((item, idx) => (
+                <div key={idx} className={`p-4 rounded-xl border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 ${item.paga ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+                  <div className="flex-1">
+                    <p className="font-black text-slate-800 text-sm uppercase">{item.p.nomeProjeto}</p>
+                    <p className="text-xs text-slate-500 uppercase">{item.p.clientName}</p>
+                    <p className={`font-black text-lg mt-1 ${item.paga ? 'text-emerald-600' : 'text-amber-600'}`}>{formatCurrency(item.valor)}</p>
+                    {item.paga && <p className="text-[10px] text-emerald-700 font-bold mt-1 uppercase">Pago em: {formatDate(item.dataRecebimento)} via {item.formaRecebimento}</p>}
                   </div>
-                ) : (
-                  <>
-                    <div><p className="text-xs text-slate-500 uppercase font-bold">Projeto</p><p className="font-black text-slate-800">{targetItem.p.nomeProjeto}</p></div>
-                    <div><p className="text-xs text-slate-500 uppercase font-bold">Valor da Parcela</p><p className="font-black text-2xl text-emerald-600">{formatCurrency(targetItem.valor)}</p></div>
-                  </>
-                )}
-                
-                <div>
-                  <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Forma de Recebimento *</label>
-                  <select name="formaRecebimento" required className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm bg-white text-slate-800">
-                    <option value="">Selecione...</option>
-                    <option value="PIX">PIX</option>
-                    <option value="DINHEIRO">DINHEIRO</option>
-                    <option value="CREDITO EM CONTA">CRÉDITO EM CONTA</option>
-                    <option value="CHEQUE">CHEQUE</option>
-                    <option value="PERMUTA">PERMUTA</option>
-                  </select>
+                  {canEdit && (
+                    <div className="shrink-0 w-full sm:w-auto">
+                      {!item.paga ? (
+                        <button onClick={() => setPayModalItem(item)} className="w-full bg-emerald-600 text-white px-5 py-2.5 rounded-lg font-bold text-xs hover:bg-emerald-700 shadow uppercase">Efetuar Baixa</button>
+                      ) : (
+                        <button onClick={() => {
+                          setConfirmData({
+                            message: 'Desfazer o recebimento desta parcela?',
+                            onConfirm: async () => { await handleUndo(item); setConfirmData(null); }
+                          });
+                        }} className="w-full bg-white border border-slate-300 text-slate-600 px-5 py-2.5 rounded-lg font-bold text-xs hover:bg-slate-100 shadow-sm uppercase">Desfazer</button>
+                      )}
+                    </div>
+                  )}
                 </div>
-
-                <div>
-                  <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Data em que o cliente pagou *</label>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={()=>{document.getElementById('pDate').value=getToday();}} className="bg-slate-100 font-bold text-slate-600 px-3 py-2 rounded-lg text-xs hover:bg-slate-200">Hoje</button>
-                    <input id="pDate" required name="date" type="date" defaultValue={getToday()} className="flex-1 border p-2 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm" />
-                  </div>
-                </div>
-                
-                <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3 rounded-xl mt-2 hover:bg-emerald-700 shadow-md">Confirmar Baixa</button>
-              </form>
+              ))}
             </div>
           </div>
-        );
-      })()}
+        </div>
+      )}
+
+      {payModalItem && (
+        <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[90] backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 bg-emerald-600 text-white font-bold flex justify-between items-center uppercase">Confirmar Recebimento <button onClick={()=>setPayModalItem(null)}><X size={20}/></button></div>
+            <form onSubmit={handlePay} className="p-6 flex flex-col gap-4">
+              <div><p className="text-xs text-slate-500 uppercase font-bold">Projeto</p><p className="font-black text-slate-800">{payModalItem.p.nomeProjeto}</p></div>
+              <div><p className="text-xs text-slate-500 uppercase font-bold">Valor da Parcela</p><p className="font-black text-2xl text-emerald-600">{formatCurrency(payModalItem.valor)}</p></div>
+
+              <div>
+                <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Forma de Recebimento *</label>
+                <select name="formaRecebimento" required className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm bg-white text-slate-800">
+                  <option value="">Selecione...</option>
+                  <option value="PIX">PIX</option>
+                  <option value="DINHEIRO">DINHEIRO</option>
+                  <option value="CREDITO EM CONTA">CRÉDITO EM CONTA</option>
+                  <option value="CHEQUE">CHEQUE</option>
+                  <option value="PERMUTA">PERMUTA</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Data em que o cliente pagou *</label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={()=>{document.getElementById('pDate').value=getToday();}} className="bg-slate-100 font-bold text-slate-600 px-3 py-2 rounded-lg text-xs hover:bg-slate-200">Hoje</button>
+                  <input id="pDate" required name="date" type="date" defaultValue={getToday()} className="flex-1 border p-2 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm" />
+                </div>
+              </div>
+              
+              <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3 rounded-xl mt-2 hover:bg-emerald-700 shadow-md">Confirmar Baixa</button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showReportModal && <FinancialReportModal projects={projects} onClose={()=>setShowReportModal(false)} />}
       {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
@@ -1237,7 +1264,7 @@ function RecebimentosView({ projects, canEdit, appUser }) {
   );
 }
 
-function CompactCalendar({ currentDate, projects, canEdit, onOpenPayModal, onUndoPayment }) {
+function CompactCalendar({ currentDate, projects, canEdit, onOpenDayDetails }) {
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -1281,12 +1308,7 @@ function CompactCalendar({ currentDate, projects, canEdit, onOpenPayModal, onUnd
           
           const handleDayClick = () => {
             if (!hasInstallments || !canEdit) return;
-            const unpaid = dayInstallments.filter(item => !item.paga);
-            if (unpaid.length > 0) {
-                onOpenPayModal(unpaid);
-            } else {
-                onUndoPayment(dayInstallments[0]);
-            }
+            onOpenDayDetails(dayInstallments);
           };
 
           return (
@@ -1376,7 +1398,6 @@ function FinancialReportModal({ projects, onClose }) {
 function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser, documents }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingChk, setEditingChk] = useState(null);
-  const [activeTab, setActiveTab] = useState('pendentes'); // NOVA ABA
   
   const myChecklists = useMemo(() => {
     return checklists.filter(c => c.assignedTo === appUser.id || c.assignedTo === 'ALL' || appUser.role === 'gestor')
@@ -1387,7 +1408,6 @@ function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser,
   }, [checklists, appUser]);
 
   const handleToggleConcluido = async (chk) => {
-    // O sistema já grava a data de conclusão automaticamente aqui:
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', chk.id), { concluido: !chk.concluido, dataConclusao: !chk.concluido ? getToday() : null });
   };
   
@@ -1399,33 +1419,17 @@ function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser,
     });
   };
 
-  // FILTROS DAS ABAS
-  const pendentes = myChecklists.filter(c => !c.concluido);
-  const concluidas = myChecklists.filter(c => c.concluido);
-  const currentList = activeTab === 'pendentes' ? pendentes : concluidas;
-
   return (
     <div className="h-full flex flex-col">
       <div className="flex justify-between items-center mb-6">
         <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tarefas & Orçamentos</h3>
         {canCreate && <button onClick={() => {setEditingChk(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Nova Tarefa</span></button>}
       </div>
-
-      {/* ABAS */}
-      <div className="flex gap-4 mb-4 border-b border-slate-200 shrink-0">
-        <button onClick={() => setActiveTab('pendentes')} className={`pb-3 px-2 text-sm font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'pendentes' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
-          Pendentes ({pendentes.length})
-        </button>
-        <button onClick={() => setActiveTab('concluidas')} className={`pb-3 px-2 text-sm font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'concluidas' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
-          Concluídas ({concluidas.length})
-        </button>
-      </div>
-
       <div className="flex-1 overflow-auto space-y-4 pb-12">
-        {currentList.map(chk => (
+        {myChecklists.map(chk => (
           <ChecklistCard key={chk.id} chk={chk} projects={projects} users={companyUsers} appUser={appUser} onToggle={()=>handleToggleConcluido(chk)} onEdit={()=>{setEditingChk(chk); setIsModalOpen(true);}} onDelete={()=>handleDelete(chk.id)} allDocs={documents} />
         ))}
-        {currentList.length === 0 && <div className="text-center text-slate-400 py-12 font-medium border border-dashed rounded-xl bg-white">Nenhuma tarefa nesta categoria.</div>}
+        {myChecklists.length === 0 && <div className="text-center text-slate-400 py-12 font-medium border border-dashed rounded-xl bg-white">Nenhuma tarefa atribuída a você no momento.</div>}
       </div>
       {isModalOpen && <ChecklistModal appUser={appUser} projects={projects} users={companyUsers} editingChk={editingChk} onClose={()=>setIsModalOpen(false)} />}
       {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
@@ -1449,12 +1453,12 @@ function ChecklistCard({ chk, projects, users, appUser, onToggle, onEdit, onDele
   };
 
   return (
-    <div className={`bg-white rounded-2xl border p-5 shadow-sm transition-all relative ${chk.concluido ? 'border-slate-200 bg-slate-50' : chk.requiresBudget ? 'border-amber-400 shadow-amber-100' : 'border-slate-200 hover:shadow-md'}`}>
+    <div className={`bg-white rounded-2xl border p-5 shadow-sm transition-all relative ${chk.concluido ? 'border-slate-200 opacity-70' : chk.requiresBudget ? 'border-amber-400 shadow-amber-100' : 'border-slate-200 hover:shadow-md'}`}>
       <div className="flex gap-4 items-start">
         <button onClick={onToggle} className="mt-1 transition-transform hover:scale-110">{chk.concluido ? <CheckCircle2 className="text-emerald-500" size={28}/> : <Circle className="text-slate-300 hover:text-[#1e5aa0]" size={28}/>}</button>
         <div className="flex-1">
           <div className="flex justify-between items-start">
-            <h4 className={`font-black text-lg ${chk.concluido?'line-through text-slate-500':'text-slate-800'}`}>{chk.descricao}</h4>
+            <h4 className={`font-black text-lg ${chk.concluido?'line-through text-slate-400':'text-slate-800'}`}>{chk.descricao}</h4>
             <div className="flex gap-2">
               {chk.requiresBudget && <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase">Orçamento Req.</span>}
               <button onClick={onEdit} className="text-slate-400 hover:text-[#1e5aa0]"><Edit size={16}/></button>
@@ -1465,19 +1469,13 @@ function ChecklistCard({ chk, projects, users, appUser, onToggle, onEdit, onDele
             <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded border uppercase">{p?.nomeProjeto || 'Projeto Indefinido'}</span>
             <span className="text-slate-500 flex items-center gap-1"><Users size={14}/> Resp: {resp?.nome || 'Todos'}</span>
             <span className={`flex items-center gap-1 ${new Date(chk.dataPrevista) < new Date(getToday()) && !chk.concluido ? 'text-red-600' : 'text-slate-500'}`}><Clock size={14}/> Prev: {formatDate(chk.dataPrevista)}</span>
-            
-            {/* EXIBIÇÃO DA DATA DE CONCLUSÃO */}
-            {chk.concluido && chk.dataConclusao && (
-              <span className="text-emerald-600 flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100"><CheckCircle2 size={14}/> Concluída a: {formatDate(chk.dataConclusao)}</span>
-            )}
-
             {!chk.requiresBudget && chk.valor > 0 && <span className="text-emerald-600 flex items-center gap-1"><DollarSign size={14}/> {formatCurrency(chk.valor)}</span>}
           </div>
 
           {chk.requiresBudget && (
             <div className="mt-4 border-t pt-4">
               <button onClick={()=>setShowBudgets(!showBudgets)} className="w-full bg-amber-50 text-amber-800 font-bold text-xs py-2 rounded-lg border border-amber-200 uppercase tracking-wide">
-                {showBudgets ? 'Ocultar Orçamentos' : `Gerenciar Orçamentos (${(chk.budgets||[]).length})`}
+                {showBudgets ? 'Ocultar Orçamentos' : `Gerir Orçamentos (${(chk.budgets||[]).length})`}
               </button>
               {showBudgets && (
                 <div className="mt-3 space-y-3">
@@ -1578,7 +1576,7 @@ function ChecklistModal({ appUser, projects, users, editingChk, onClose }) {
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Descrição da Tarefa *</label><input required value={formData.descricao} onChange={e=>setFormData({...formData, descricao: e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none font-bold text-slate-800 focus:border-[#1e5aa0]" /></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Projeto Vinculado *</label><select required value={formData.projectId} onChange={e=>setFormData({...formData, projectId: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none font-bold text-slate-700"><option></option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}</select></div>
-            <div><label className="text-xs font-bold text-slate-500 uppercase">Atribuir a</label><select value={formData.assignedTo} onChange={e=>setFormData({...formData, assignedTo: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none"><option value="ALL">Toda a Equipe</option>{users.map(u=><option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Atribuir a</label><select value={formData.assignedTo} onChange={e=>setFormData({...formData, assignedTo: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none"><option value="ALL">Toda a Equipa</option>{users.map(u=><option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Data Limite *</label><input required type="date" value={formData.dataPrevista} onChange={e=>setFormData({...formData, dataPrevista: e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none" /></div>
             {!formData.requiresBudget && <div><label className="text-xs font-bold text-slate-500 uppercase">Custo da Tarefa (Opcional - R$)</label><input type="number" step="0.01" value={formData.valor} onChange={e=>setFormData({...formData, valor: e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none" /></div>}
           </div>

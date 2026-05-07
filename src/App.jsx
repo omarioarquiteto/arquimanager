@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { 
   LayoutDashboard, Users, FolderKanban, CalendarDays, LogOut, Plus, X, Check,
-  ChevronLeft, ChevronRight, Building2, Wallet, TrendingUp, AlertCircle, Edit,
-  Trash2, Info, ListTodo, CheckCircle2, Circle, Clock, FileText, Upload, Eye,
-  FolderOpen, Settings, Briefcase, UserPlus, ShieldCheck, CreditCard, Paperclip,
-  DollarSign, BriefcaseBusiness, Settings2, HardHat, MapPin, CheckSquare
+  ChevronLeft, ChevronRight, Building2, Wallet, TrendingUp, AlertCircle, Edit, Trash2,
+  Info, ListTodo, CheckCircle2, Circle, Clock, FileText, Upload, Eye, FolderOpen,
+  UserPlus, ShieldCheck, Briefcase, Paperclip, DollarSign, CheckSquare, Settings,
+  Printer, LayoutList, Sofa, PaintBucket, Bed, Search, FileDown
 } from 'lucide-react';
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
@@ -27,190 +27,153 @@ const auth = getAuth(app); // <-- O seu código está sentindo falta desta linha
 const db = getFirestore(app);
 const appId = 'arquimanager-producao';
 
-// --- UTILITÁRIOS, MÁSCARAS E VALIDAÇÕES ---
+// --- UTILITÁRIOS ---
 const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
 const formatDate = (dateString) => {
   if (!dateString) return '';
-  const [year, month, day] = dateString.split('-');
+  const [year, month, day] = dateString?.split('T')[0].split('-');
+  if (!day) return '';
   return `${day}/${month}/${year.slice(2)}`;
 };
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const getToday = () => new Date().toISOString().split('T')[0];
 
-const maskPhone = (v) => {
-  if (!v) return '';
-  v = v.replace(/\D/g, "");
-  if (v.length <= 10) return v.replace(/(\d{2})(\d{4})(\d{0,4})/, "($1) $2-$3").replace(/-$/, "");
-  return v.replace(/(\d{2})(\d{5})(\d{0,4})/, "($1) $2-$3").replace(/-$/, "");
-};
-const maskCPF = (v) => {
-  if (!v) return '';
-  v = v.replace(/\D/g, "").slice(0, 11);
-  return v.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4").replace(/(-\d{2})\d+?$/, "$1");
-};
-const maskCEP = (v) => {
-  if (!v) return '';
-  v = v.replace(/\D/g, "").slice(0, 8);
-  return v.replace(/(\d{5})(\d{0,3})/, "$1-$2").replace(/-$/, "");
-};
-const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
 const FASES_ANALITICAS = ['LEVANTAMENTO', 'ESTUDO PRELIMINAR', 'PROJETO CRIATIVO', 'DETALHAMENTO', 'HOMOLOGAÇÃO', 'PROJETO FINALIZADO'];
-const TIPOS_PROJETO = ['INTERIORES', 'ARQUITETURA', 'COMPLEMENTARES', '3D DESIGN', 'SERVIÇOS DIVERSOS'];
-const ESTADOS_BR = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO','EX'];
-const SCREENS = [
-  {id: 'dashboard', label: 'Dashboard'}, 
-  {id: 'projetos', label: 'Projetos'}, 
-  {id: 'recebimentos', label: 'Financeiro'}, 
-  {id: 'checklist', label: 'Tarefas & Orçamentos'}, 
-  {id: 'clients', label: 'Clientes'}
-];
-const FORMAS_RECEBIMENTO = ["PIX", "DINHEIRO", "CREDITO EM CONTA", "CHEQUE", "PERMUTA"];
+const SCREENS = [{id: 'dashboard', label: 'Dashboard'}, {id: 'projetos', label: 'Projetos'}, {id: 'recebimentos', label: 'Financeiro'}, {id: 'checklist', label: 'Tarefas & Orçamentos'}, {id: 'clients', label: 'Clientes'}];
+const CATEGORIAS_AMBIENTE = ['Paredes', 'Esquadrias', 'Piso', 'Teto', 'Moveis', 'Decoração', 'Paisagismo', 'Revestimentos', 'Pedras', 'Louças', 'Metais', 'Outros'];
 
-// --- COMPONENTE PRINCIPAL ---
+// --- GERADOR DE RELATÓRIO NATIVO (HTML PARA IMPRESSÃO/PDF) ---
+const printReport = (title, htmlContent) => {
+  const win = window.open('', '_blank');
+  win.document.write(`
+    <html>
+      <head>
+        <title>${title}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; color: #333; line-height: 1.6; }
+          h1 { color: #1e5aa0; border-bottom: 2px solid #1e5aa0; padding-bottom: 10px; }
+          h2 { color: #444; margin-top: 30px; font-size: 18px; background: #f1f5f9; padding: 10px; border-radius: 5px; }
+          table { border-collapse: collapse; margin-top: 15px; width: 100%; }
+          th, td { border: 1px solid #ddd; padding: 10px; text-align: left; font-size: 14px; }
+          th { background-color: #1e5aa0; color: white; }
+          .total-box { margin-top: 30px; padding: 20px; background: #e0f2fe; border: 2px solid #bae6fd; border-radius: 8px; font-size: 18px; font-weight: bold; text-align: right; }
+          .total-box span { color: #0369a1; }
+          @media print { body { padding: 0; } }
+        </style>
+      </head>
+      <body>${htmlContent}</body>
+    </html>
+  `);
+  win.document.close();
+  setTimeout(() => { win.print(); }, 500);
+};
+
+// --- COMPONENTE PRINCIPAL (ROOT) ---
 export default function App() {
   const [firebaseUser, setFirebaseUser] = useState(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
   const [appUser, setAppUser] = useState(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
 
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Erro Auth:", error);
-      }
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
+        else await signInAnonymously(auth);
+      } catch (error) { console.error("Erro Auth:", error); }
     };
     initAuth();
 
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setFirebaseUser(currentUser);
-      setLoadingAuth(false);
-    });
-    return () => unsubscribe();
+    const unsub = onAuthStateChanged(auth, (user) => { setFirebaseUser(user); setLoadingAuth(false); });
+    return () => unsub();
   }, []);
 
-  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">Conectando ao ArquiManager Seguro...</div>;
-  
+  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">Conectando ao ArquiManager...</div>;
   if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} onUnlock={setAppUser} />;
 
   return <MainLayout firebaseUser={firebaseUser} appUser={appUser} onLogout={() => setAppUser(null)} />;
 }
 
-// --- TELA DE LOGIN ---
+// --- TELA DE LOGIN E CADASTRO DA EMPRESA ---
 function LoginScreen({ firebaseUser, onUnlock }) {
-  const [view, setView] = useState('login'); 
+  const [view, setView] = useState('login');
   const [error, setError] = useState('');
-  const [loadingLogin, setLoadingLogin] = useState(false);
   
   const [loginEmail, setLoginEmail] = useState('');
   const [loginSenha, setLoginSenha] = useState('');
   
   const [empresaNome, setEmpresaNome] = useState('');
-  const [empresaCnpj, setEmpresaCnpj] = useState('');
-  const [regNome, setRegNome] = useState('');
+  const [gestorNome, setGestorNome] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regSenha, setRegSenha] = useState('');
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoadingLogin(true);
+  const [accounts, setAccounts] = useState([]);
 
-    try {
-      const accSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'));
-      const accounts = accSnap.docs.map(d => ({id: d.id, ...d.data()}));
-      const account = accounts.find(a => a.email === loginEmail && a.senha === loginSenha);
+  useEffect(() => {
+    if (!firebaseUser) return;
+    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'), (snap) => {
+      setAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, err => console.error("Erro ao carregar contas:", err));
+    return () => unsub();
+  }, [firebaseUser]);
 
-      if (account) {
-        onUnlock(account);
-      } else {
-        setError('E-mail ou senha incorretos.');
+  const handleLogin = (e) => {
+    e.preventDefault(); setError('');
+    const user = accounts.find(a => a.email === loginEmail && a.senha === loginSenha);
+    if (user) {
+      // NOVA LÓGICA: Permite o login de contas antigas e dá acesso total
+      if (!user.companyId) {
+        user.companyId = 'legado';
+        user.role = 'gestor';
       }
-    } catch (err) {
-      setError('Erro ao validar acesso. Tente novamente.');
-      console.error(err);
-    }
-    setLoadingLogin(false);
+      onUnlock(user);
+    } else setError('E-mail ou senha incorretos.');
   };
 
-  const handleRegisterOffice = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoadingLogin(true);
-
-    if (!empresaNome || !empresaCnpj || !regNome || !regEmail || !regSenha) {
-      setError('Preencha todos os campos obrigatórios.');
-      setLoadingLogin(false); return;
-    }
+  const handleRegisterCompany = async (e) => {
+    e.preventDefault(); setError('');
+    if (!empresaNome || !gestorNome || !regEmail || !regSenha) return setError('Preencha todos os campos obrigatórios.');
+    if (accounts.some(a => a.email === regEmail)) return setError('Este e-mail já está em uso.');
 
     try {
-      const accSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'));
-      if (accSnap.docs.some(d => d.data().email === regEmail)) {
-        setError('Este e-mail já está em uso por outro escritório.');
-        setLoadingLogin(false); return;
-      }
-
-      const workspaceId = `ws_${Date.now().toString(36)}_${generateId()}`;
-
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'company_info'), { 
-        workspaceId, nome: empresaNome, cnpj: empresaCnpj, dataCriacao: new Date().toISOString() 
-      });
-
+      const companyId = generateId();
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'companies'), { nome: empresaNome, dataCriacao: getToday(), id: companyId });
+      
       const newGestor = { 
-        workspaceId, nome: regNome, email: regEmail, senha: regSenha, role: 'gestor', 
-        permissions: { create: true, edit: true, delete: true, screens: SCREENS.map(s => s.id) }, allowedProjects: 'ALL' 
+        nome: gestorNome, email: regEmail, senha: regSenha, companyId, role: 'gestor', 
+        permissions: { create: true, edit: true, delete: true, screens: SCREENS.map(s=>s.id) },
+        allowedProjects: 'ALL'
       };
-      
       const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'), newGestor);
-      
       onUnlock({ id: docRef.id, ...newGestor });
-    } catch (err) {
-      setError('Erro ao configurar escritório.');
-      console.error(err);
-    }
-    setLoadingLogin(false);
+    } catch (err) { setError('Erro ao cadastrar empresa. Tente novamente.'); console.error(err); }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
       <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-200">
         <div className="flex flex-col items-center mb-6">
-          <div className="bg-[#1e5aa0] p-4 rounded-xl text-white mb-4 shadow-lg shadow-blue-900/20"><Building2 size={40} /></div>
+          <div className="bg-[#1e5aa0] p-4 rounded-2xl text-white mb-4 shadow-lg shadow-blue-900/20"><Building2 size={40} /></div>
           <h1 className="text-2xl font-black text-slate-800 text-center tracking-tight">ArquiManager</h1>
-          <p className="text-slate-500 text-sm text-center font-medium">Acesso Restrito ao Escritório</p>
+          <p className="text-slate-500 text-sm text-center font-medium">Gestão Inteligente para Escritórios</p>
         </div>
+
         {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 font-medium border border-red-100 flex items-center"><AlertCircle size={16} className="mr-2 shrink-0"/> {error}</div>}
+
         {view === 'login' ? (
           <form onSubmit={handleLogin} className="space-y-4">
-            <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">E-mail Corporativo</label><input type="email" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none transition-all" placeholder="seu@email.com" /></div>
+            <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">E-mail</label><input type="email" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none transition-all" placeholder="seu@email.com" /></div>
             <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Senha</label><input type="password" required value={loginSenha} onChange={e => setLoginSenha(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none transition-all" placeholder="••••••••" /></div>
-            <button type="submit" disabled={loadingLogin} className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-lg hover:bg-[#154278] transition-colors shadow-md mt-2 disabled:opacity-50">{loadingLogin ? 'Validando...' : 'Acessar Sistema'}</button>
-            <div className="text-center pt-6 border-t border-slate-100 mt-6"><button type="button" onClick={() => {setView('registerOffice'); setError('');}} className="text-sm text-[#1e5aa0] hover:text-[#154278] font-bold">Cadastrar minha empresa (Novo Escritório)</button></div>
+            <button type="submit" className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-lg hover:bg-[#154278] transition-colors shadow-md mt-2">Aceder ao Sistema</button>
+            <div className="text-center pt-4 mt-4 border-t border-slate-100"><button type="button" onClick={() => {setView('registerCompany'); setError('');}} className="text-sm text-[#1e5aa0] hover:text-[#154278] font-bold">Dono de Escritório? Cadastre a sua Empresa</button></div>
           </form>
         ) : (
-          <form onSubmit={handleRegisterOffice} className="space-y-4">
-            <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg text-xs text-blue-800 font-medium mb-4 flex gap-2"><Building2 className="shrink-0 text-blue-600" size={20}/><span>Configure seu escritório. O cadastro de funcionários será feito internamente após o login.</span></div>
-            <div className="border-b border-slate-100 pb-4 mb-4">
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Dados da Empresa</h3>
-              <div className="space-y-3">
-                <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Nome do Escritório *</label><input type="text" required value={empresaNome} onChange={e => setEmpresaNome(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">CNPJ *</label><input type="text" required value={empresaCnpj} onChange={e => setEmpresaCnpj(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-              </div>
-            </div>
-            <div>
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Dados do Gestor (Acesso)</h3>
-              <div className="space-y-3">
-                <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Seu Nome *</label><input type="text" required value={regNome} onChange={e => setRegNome(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">E-mail *</label><input type="email" required value={regEmail} onChange={e => setRegEmail(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Senha *</label><input type="password" required value={regSenha} onChange={e => setRegSenha(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-              </div>
-            </div>
-            <button type="submit" disabled={loadingLogin} className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-lg hover:bg-[#154278] transition-colors shadow-md mt-4 disabled:opacity-50">{loadingLogin ? 'Criando Ambiente...' : 'Finalizar Cadastro e Entrar'}</button>
+          <form onSubmit={handleRegisterCompany} className="space-y-4">
+            <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg text-xs text-blue-800 font-medium mb-4 flex gap-2"><ShieldCheck className="shrink-0 text-blue-600"/><span>Você será o Gestor e poderá convidar a sua equipe depois.</span></div>
+            <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Nome da Empresa *</label><input type="text" required value={empresaNome} onChange={e => setEmpresaNome(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none bg-slate-50" /></div>
+            <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Seu Nome (Gestor) *</label><input type="text" required value={gestorNome} onChange={e => setGestorNome(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
+            <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">E-mail de Acesso *</label><input type="email" required value={regEmail} onChange={e => setRegEmail(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
+            <div><label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Senha *</label><input type="password" required value={regSenha} onChange={e => setRegSenha(e.target.value)} className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
+            <button type="submit" className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-lg hover:bg-[#154278] transition-colors shadow-md mt-2">Criar Empresa e Entrar</button>
             <div className="text-center pt-2"><button type="button" onClick={() => {setView('login'); setError('');}} className="text-sm text-slate-500 hover:text-slate-700 font-bold">Voltar para o Login</button></div>
           </form>
         )}
@@ -219,44 +182,39 @@ function LoginScreen({ firebaseUser, onUnlock }) {
   );
 }
 
-// --- LAYOUT PRINCIPAL ---
+// --- LAYOUT PRINCIPAL E GESTÃO DE ESTADO GLOBAL ---
 function MainLayout({ firebaseUser, appUser, onLogout }) {
-  const workspaceId = appUser.workspaceId; 
-  
   const [currentView, setCurrentView] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  
+  const [targetProjectToEdit, setTargetProjectToEdit] = useState(null);
+
+  const [company, setCompany] = useState(null);
+  const [companyUsers, setCompanyUsers] = useState([]);
   const [clients, setClients] = useState([]);
   const [projects, setProjects] = useState([]);
   const [checklists, setChecklists] = useState([]);
-  const [companyInfo, setCompanyInfo] = useState(null);
-  const [companyUsers, setCompanyUsers] = useState([]);
-  const [paymentMethods, setPaymentMethods] = useState([]); // Formas de Pagamento
-  
-  const [targetProjectToEdit, setTargetProjectToEdit] = useState(null);
+  const [documents, setDocuments] = useState([]);
 
   useEffect(() => {
-    if (!workspaceId) return;
-    
-    const baseCol = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
-    const extract = (snap) => snap.docs.map(d => ({id: d.id, ...d.data()})).filter(d => d.workspaceId === workspaceId);
+    if (!firebaseUser || !appUser) return;
+    const cid = appUser.companyId;
+    // NOVA LÓGICA: Permite visualizar dados antigos que não possuem o ID da empresa
+    const filterByCompany = (snap) => snap.docs.map(d => ({id: d.id, ...d.data()})).filter(i => !i.companyId || i.companyId === cid);
     const errHandler = (err) => console.error("Firestore Listener Error:", err);
 
-    const uClients = onSnapshot(baseCol('clients'), snap => setClients(extract(snap)), errHandler);
-    const uProjects = onSnapshot(baseCol('projects'), snap => setProjects(extract(snap)), errHandler);
-    const uChecklists = onSnapshot(baseCol('checklists'), snap => setChecklists(extract(snap)), errHandler);
-    const uUsers = onSnapshot(baseCol('app_accounts'), snap => setCompanyUsers(extract(snap)), errHandler);
-    const uPayments = onSnapshot(baseCol('payment_methods'), snap => setPaymentMethods(extract(snap)), errHandler);
-    
-    const uCompany = onSnapshot(baseCol('company_info'), snap => { 
-      const info = snap.docs.map(d => ({id: d.id, ...d.data()})).find(d => d.workspaceId === workspaceId);
-      if (info) setCompanyInfo(info); 
+    const uCompany = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'companies'), snap => {
+      const myComp = snap.docs.map(d => ({dbId: d.id, ...d.data()})).find(c => c.id === cid);
+      setCompany(myComp);
     }, errHandler);
 
-    return () => { uClients(); uProjects(); uChecklists(); uUsers(); uPayments(); uCompany(); };
-  }, [workspaceId]);
+    const uUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'), snap => setCompanyUsers(filterByCompany(snap)), errHandler);
+    const uClients = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), snap => setClients(filterByCompany(snap)), errHandler);
+    const uProjects = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), snap => setProjects(filterByCompany(snap)), errHandler);
+    const uChecklists = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'checklists'), snap => setChecklists(filterByCompany(snap)), errHandler);
+    const uDocs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), snap => setDocuments(filterByCompany(snap)), errHandler);
 
-  const hasScreenAccess = (screenId) => appUser.role === 'gestor' || (appUser.permissions?.screens || []).includes(screenId);
+    return () => { uCompany(); uUsers(); uClients(); uProjects(); uChecklists(); uDocs(); };
+  }, [firebaseUser, appUser]);
 
   const allowedProjects = useMemo(() => {
     if (appUser.role === 'gestor') return projects;
@@ -265,61 +223,55 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
     return projects.filter(p => projIds.includes(p.id));
   }, [projects, appUser]);
 
-  const closeMenu = () => setIsMobileMenuOpen(false);
+  const hasScreenAccess = (screenId) => appUser.role === 'gestor' || (appUser.permissions?.screens || []).includes(screenId);
+  const canCreate = appUser.role === 'gestor' || appUser.permissions?.create;
+  const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
+  const canDelete = appUser.role === 'gestor' || appUser.permissions?.delete;
 
   const renderView = () => {
+    if (appUser.role === 'cliente') return <div className="p-8 text-center"><h2 className="text-2xl font-bold text-slate-700">Área do Cliente</h2><p className="text-slate-500">Em breve poderá acompanhar os seus projetos aqui.</p></div>;
+    
     switch (currentView) {
-      case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} /> : <NoAccess />;
-      case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView workspaceId={workspaceId} projects={allowedProjects} clients={clients} companyUsers={companyUsers} paymentMethods={paymentMethods} targetProject={targetProjectToEdit} clearTargetProject={() => setTargetProjectToEdit(null)} appUser={appUser} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView workspaceId={workspaceId} projects={allowedProjects} appUser={appUser} /> : <NoAccess />;
-      case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView workspaceId={workspaceId} projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} /> : <NoAccess />;
-      case 'clients': return hasScreenAccess('clients') ? <ClientsView workspaceId={workspaceId} clients={clients} projects={allowedProjects} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} appUser={appUser} /> : <NoAccess />;
-      case 'equipe': return appUser.role === 'gestor' ? <EquipeView workspaceId={workspaceId} companyUsers={companyUsers} projects={projects} appUser={appUser} /> : <NoAccess />;
-      case 'minha-empresa': return appUser.role === 'gestor' ? <MinhaEmpresaView workspaceId={workspaceId} companyInfo={companyInfo} /> : <NoAccess />;
-      default: return <DashboardView projects={allowedProjects} checklists={checklists} />;
+      case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} /> : <NoAccess />;
+      case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
+      case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} canEdit={canEdit} appUser={appUser} /> : <NoAccess />;
+      case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
+      case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;
+      default: return <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} />;
     }
   };
 
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden font-sans">
-      {isMobileMenuOpen && <div className="fixed inset-0 bg-slate-900/50 z-30 md:hidden" onClick={closeMenu}></div>}
-
+      {isMobileMenuOpen && <div className="fixed inset-0 bg-slate-900/50 z-30 md:hidden" onClick={()=>setIsMobileMenuOpen(false)}></div>}
+      
       <aside className={`fixed md:static inset-y-0 left-0 w-64 bg-slate-900 text-slate-300 flex flex-col transition-transform transform z-40 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
-        <div className="p-6 flex items-center justify-between space-x-3 text-white border-b border-slate-800 shrink-0">
-          <div className="flex items-center space-x-3"><Building2 size={28} className="text-[#1e5aa0]" /><span className="text-xl font-bold tracking-tight">ARQUI<span className="font-light">MGR</span></span></div>
-          <button className="md:hidden text-slate-400 hover:text-white" onClick={closeMenu}><X size={24}/></button>
+        <div className="p-5 flex items-center justify-between border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-white"><Building2 size={24} className="text-[#1e5aa0]"/><span className="text-xl font-bold tracking-tight">ARQUI<span className="font-light">MGR</span></span></div>
+          <button className="md:hidden text-slate-400" onClick={()=>setIsMobileMenuOpen(false)}><X size={24}/></button>
         </div>
-
-        <div className="px-6 py-4 bg-slate-800/50 shrink-0">
-          <p className="text-[10px] text-slate-400 uppercase tracking-widest font-black">{appUser.role}</p>
+        <div className="px-5 py-4 bg-slate-800/40">
+          <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest">{appUser.role}</p>
           <p className="text-sm text-white font-bold truncate">{appUser.nome}</p>
-          <p className="text-[10px] text-slate-500 mt-1 truncate">{companyInfo?.nome || 'Escritório'}</p>
         </div>
-        
-        <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto">
-          {hasScreenAccess('dashboard') && <SidebarItem icon={<LayoutDashboard size={18} />} label="Dashboard" active={currentView === 'dashboard'} onClick={() => { setCurrentView('dashboard'); closeMenu(); }} />}
-          {hasScreenAccess('projetos') && <SidebarItem icon={<FolderKanban size={18} />} label="Projetos" active={currentView === 'projetos'} onClick={() => { setCurrentView('projetos'); closeMenu(); }} />}
-          {hasScreenAccess('recebimentos') && <SidebarItem icon={<CalendarDays size={18} />} label="Financeiro" active={currentView === 'recebimentos'} onClick={() => { setCurrentView('recebimentos'); closeMenu(); }} />}
-          {hasScreenAccess('checklist') && <SidebarItem icon={<ListTodo size={18} />} label="Tarefas" active={currentView === 'checklist'} onClick={() => { setCurrentView('checklist'); closeMenu(); }} />}
-          {hasScreenAccess('clients') && <SidebarItem icon={<Users size={18} />} label="Clientes" active={currentView === 'clients'} onClick={() => { setCurrentView('clients'); closeMenu(); }} />}
-          
-          {appUser.role === 'gestor' && (
-            <div className="pt-4 mt-4 border-t border-slate-800 space-y-1">
-              <SidebarItem icon={<Settings size={18} />} label="Equipe e Acessos" active={currentView === 'equipe'} onClick={() => { setCurrentView('equipe'); closeMenu(); }} />
-              <SidebarItem icon={<Briefcase size={18} />} label="Minha Empresa" active={currentView === 'minha-empresa'} onClick={() => { setCurrentView('minha-empresa'); closeMenu(); }} />
-            </div>
-          )}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {hasScreenAccess('dashboard') && <SidebarItem icon={<LayoutDashboard size={18}/>} label="Dashboard" active={currentView === 'dashboard'} onClick={() => { setCurrentView('dashboard'); setIsMobileMenuOpen(false); }} />}
+          {hasScreenAccess('projetos') && <SidebarItem icon={<FolderKanban size={18}/>} label="Projetos" active={currentView === 'projetos'} onClick={() => { setCurrentView('projetos'); setIsMobileMenuOpen(false); }} />}
+          {hasScreenAccess('recebimentos') && <SidebarItem icon={<CalendarDays size={18}/>} label="Financeiro" active={currentView === 'recebimentos'} onClick={() => { setCurrentView('recebimentos'); setIsMobileMenuOpen(false); }} />}
+          {hasScreenAccess('checklist') && <SidebarItem icon={<ListTodo size={18}/>} label="Tarefas & Orçamentos" active={currentView === 'checklist'} onClick={() => { setCurrentView('checklist'); setIsMobileMenuOpen(false); }} />}
+          {hasScreenAccess('clients') && <SidebarItem icon={<Users size={18}/>} label="Clientes" active={currentView === 'clients'} onClick={() => { setCurrentView('clients'); setIsMobileMenuOpen(false); }} />}
+          {appUser.role === 'gestor' && <SidebarItem icon={<Settings size={18}/>} label="Equipe e Acessos" active={currentView === 'equipe'} onClick={() => { setCurrentView('equipe'); setIsMobileMenuOpen(false); }} />}
         </nav>
-
-        <div className="p-4 border-t border-slate-800 shrink-0"><button onClick={onLogout} className="flex items-center space-x-3 text-slate-400 hover:text-white w-full p-2 rounded-lg transition-colors font-medium"><LogOut size={18} /><span>Sair do Sistema</span></button></div>
+        <div className="p-4 border-t border-slate-800"><button onClick={onLogout} className="flex items-center space-x-3 text-slate-400 hover:text-white w-full p-2 rounded-lg font-medium transition-colors"><LogOut size={18} /><span>Sair</span></button></div>
       </aside>
 
-      <main className="flex-1 overflow-auto flex flex-col w-full relative bg-slate-50">
+      <main className="flex-1 overflow-auto flex flex-col relative w-full">
         <div className="md:hidden bg-slate-900 text-white p-3 flex justify-between items-center shrink-0 z-20 sticky top-0 shadow-md">
-          <div className="flex items-center space-x-2"><Building2 size={20} className="text-[#1e5aa0]" /><span className="font-bold tracking-tight">ARQUI<span className="font-light">MGR</span></span></div>
+          <div className="flex items-center space-x-2"><Building2 size={20} className="text-[#1e5aa0]"/><span className="font-bold tracking-tight">ARQUI<span className="font-light">MGR</span></span></div>
           <button onClick={() => setIsMobileMenuOpen(true)}><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg></button>
         </div>
-        <div className="p-4 sm:p-6 flex-1 overflow-auto">{renderView()}</div>
+        <div className="p-4 sm:p-6 flex-1 overflow-auto bg-slate-50">{renderView()}</div>
       </main>
     </div>
   );
@@ -330,20 +282,22 @@ function SidebarItem({ icon, label, active, onClick }) {
 }
 
 function NoAccess() {
-  return <div className="h-full flex flex-col items-center justify-center text-slate-400"><ShieldCheck size={64} className="mb-4 opacity-50"/><p className="text-lg font-bold">Acesso Restrito</p><p className="text-sm">Você não tem permissão para visualizar esta tela.</p></div>;
+  return <div className="h-full flex flex-col items-center justify-center text-slate-400"><ShieldCheck size={64} className="mb-4 opacity-50"/><p className="text-lg font-bold">Acesso Restrito</p><p className="text-sm">Não tem permissão para visualizar este ecrã.</p></div>;
 }
 
-// --- VISÃO: EQUIPE E ACESSOS ---
-function EquipeView({ workspaceId, companyUsers, projects, appUser }) {
+// --- VISÃO: EQUIPE E EMPRESA (Somente Gestor) ---
+function EquipeView({ companyUsers, projects, appUser, company }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
+  
   const [alertMsg, setAlertMsg] = useState('');
   const [confirmData, setConfirmData] = useState(null);
 
   const handleDelete = (u) => {
-    if (u.id === appUser.id) return setAlertMsg("Você não pode excluir sua própria conta de Gestor.");
+    if (u.id === appUser.id) return setAlertMsg("Não pode excluir a sua própria conta.");
     setConfirmData({
-      message: `Remover o acesso de ${u.nome} do sistema?`,
+      message: `Remover ${u.nome} da empresa?`,
       onConfirm: async () => {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_accounts', u.id));
         setConfirmData(null);
@@ -353,13 +307,23 @@ function EquipeView({ workspaceId, companyUsers, projects, appUser }) {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex justify-between items-center mb-6">
-        <div><h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Equipe & Acessos</h3><p className="text-slate-500 text-sm">Cadastre seus funcionários e gerencie permissões.</p></div>
-        <button onClick={() => {setEditingUser(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278] transition-colors"><UserPlus size={18}/><span>Novo Funcionário</span></button>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div>
+          <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Equipe & Acessos</h3>
+          <p className="text-slate-500 text-sm">Faça a gestão de utilizadores, cargos e dados da empresa <strong className="text-[#1e5aa0]">{company?.nome}</strong>.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setIsCompanyModalOpen(true)} className="bg-white border border-slate-300 text-[#1e5aa0] px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-slate-50 transition-colors">
+            <Building2 size={18}/><span className="hidden sm:inline">Editar Empresa</span>
+          </button>
+          <button onClick={() => {setEditingUser(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278] transition-colors">
+            <UserPlus size={18}/><span className="hidden sm:inline">Novo Utilizador</span>
+          </button>
+        </div>
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex-1 overflow-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0"><tr><th className="p-3">Funcionário</th><th className="p-3">Cargo</th><th className="p-3">Permissões</th><th className="p-3 text-center">Ações</th></tr></thead>
+        <table className="w-full text-left text-sm min-w-[600px]">
+          <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0"><tr><th className="p-3">Utilizador</th><th className="p-3">Cargo</th><th className="p-3">Permissões</th><th className="p-3 text-center">Ações</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
             {companyUsers.map(u => (
               <tr key={u.id} className="hover:bg-slate-50">
@@ -375,25 +339,58 @@ function EquipeView({ workspaceId, companyUsers, projects, appUser }) {
           </tbody>
         </table>
       </div>
-      {isModalOpen && <UserModal workspaceId={workspaceId} projects={projects} editingUser={editingUser} onClose={()=>setIsModalOpen(false)} setAlertMsg={setAlertMsg} />}
-      {alertMsg && <AlertModal title="Aviso" message={alertMsg} onClose={() => setAlertMsg('')} />}
-      {confirmData && <ConfirmModal title="Confirmação" message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
+      {isCompanyModalOpen && <CompanyModal company={company} onClose={()=>setIsCompanyModalOpen(false)} />}
+      {isModalOpen && <UserModal appUser={appUser} projects={projects} editingUser={editingUser} onClose={()=>setIsModalOpen(false)} />}
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
     </div>
   );
 }
 
-function UserModal({ workspaceId, projects, editingUser, onClose, setAlertMsg }) {
+function CompanyModal({ company, onClose }) {
+  const [formData, setFormData] = useState({ 
+    nome: company?.nome || '', 
+    documento: company?.documento || '', 
+    telefone: company?.telefone || '',
+    endereco: company?.endereco || ''
+  });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      if (company && company.dbId) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', company.dbId), formData);
+      onClose();
+    } catch(err) { console.error(err); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl w-full max-w-lg flex flex-col shadow-2xl">
+        <div className="p-4 bg-[#1e5aa0] text-white rounded-t-2xl flex justify-between items-center"><h2 className="font-bold text-lg uppercase">Dados da Empresa</h2><button onClick={onClose}><X size={20}/></button></div>
+        <form id="compform" onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div><label className="text-xs font-bold text-slate-500 uppercase">Nome da Empresa / Escritório *</label><input required value={formData.nome} onChange={e=>setFormData({...formData, nome: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold text-slate-800" /></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="text-xs font-bold text-slate-500 uppercase">CNPJ / CPF</label><input value={formData.documento} onChange={e=>setFormData({...formData, documento: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Telefone de Contato</label><input value={formData.telefone} onChange={e=>setFormData({...formData, telefone: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+          </div>
+          <div><label className="text-xs font-bold text-slate-500 uppercase">Endereço Completo</label><input value={formData.endereco} onChange={e=>setFormData({...formData, endereco: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+        </form>
+        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 rounded-lg font-bold text-slate-600 hover:bg-slate-200">Cancelar</button><button form="compform" type="submit" className="px-5 py-2.5 rounded-lg font-bold text-white bg-[#1e5aa0] hover:bg-[#154278]">Salvar Dados</button></div>
+      </div>
+    </div>
+  );
+}
+
+function UserModal({ appUser, projects, editingUser, onClose }) {
   const [formData, setFormData] = useState(editingUser || {
     nome: '', email: '', senha: '', role: 'operador',
     permissions: { create: false, edit: false, delete: false, screens: ['dashboard'] }, allowedProjects: []
   });
-  const [isSaving, setIsSaving] = useState(false);
 
   const toggleScreen = (id) => {
     const s = formData.permissions.screens;
     setFormData({...formData, permissions: {...formData.permissions, screens: s.includes(id) ? s.filter(x=>x!==id) : [...s, id]}});
   };
-
   const toggleProject = (id) => {
     if (formData.allowedProjects === 'ALL') setFormData({...formData, allowedProjects: [id]});
     else {
@@ -404,180 +401,111 @@ function UserModal({ workspaceId, projects, editingUser, onClose, setAlertMsg })
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setIsSaving(true);
-    const data = { ...formData, workspaceId };
+    const data = { ...formData, companyId: appUser.companyId };
     if (data.role === 'gestor') { data.permissions = { create: true, edit: true, delete: true, screens: SCREENS.map(s=>s.id) }; data.allowedProjects = 'ALL'; }
-    
     try {
-      if (editingUser) {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_accounts', editingUser.id), data);
-      } else {
-        const accSnap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'));
-        if (accSnap.docs.some(d => d.data().email === data.email)) {
-          setAlertMsg('Este e-mail já está sendo utilizado em outra conta do sistema.');
-          setIsSaving(false); return;
-        }
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'), data);
-      }
+      if (editingUser) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'app_accounts', editingUser.id), data);
+      else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'app_accounts'), data);
       onClose();
-    } catch(err) { console.error(err); setAlertMsg("Erro ao salvar usuário."); }
-    setIsSaving(false);
+    } catch(err) { console.error(err); }
   };
 
   return (
     <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
       <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl">
-        <div className="p-4 bg-[#1e5aa0] text-white rounded-t-2xl flex justify-between items-center"><h2 className="font-bold text-lg uppercase">{editingUser ? 'Editar' : 'Novo'} Funcionário</h2><button onClick={onClose}><X size={20}/></button></div>
+        <div className="p-4 bg-[#1e5aa0] text-white rounded-t-2xl flex justify-between items-center"><h2 className="font-bold text-lg uppercase">{editingUser ? 'Editar' : 'Novo'} Utilizador</h2><button onClick={onClose}><X size={20}/></button></div>
         <form id="uform" onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-6">
-          <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-xs font-medium flex items-center gap-2"><Info size={16} className="shrink-0"/> Ao cadastrar, este funcionário já poderá fazer login pelo celular dele usando E-mail e Senha.</div>
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Nome Completo</label><input required value={formData.nome} onChange={e=>setFormData({...formData, nome: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 outline-none mt-1" /></div>
-            <div><label className="text-xs font-bold text-slate-500 uppercase">E-mail de Acesso</label><input required type="email" value={formData.email} onChange={e=>setFormData({...formData, email: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 outline-none mt-1" disabled={!!editingUser} /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">E-mail</label><input required type="email" value={formData.email} onChange={e=>setFormData({...formData, email: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 outline-none mt-1" disabled={!!editingUser} /></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Senha</label><input required type="text" value={formData.senha} onChange={e=>setFormData({...formData, senha: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 outline-none mt-1" /></div>
-            <div className="col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Cargo no Escritório</label>
-              <select value={formData.role} onChange={e=>setFormData({...formData, role: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none font-bold">
-                <option value="gestor">Gestor (Acesso Total)</option><option value="operador">Arquiteto / Operador</option><option value="prestador">Estagiário / Prestador</option>
+            <div className="col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Cargo</label>
+              <select value={formData.role} onChange={e=>setFormData({...formData, role: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none">
+                <option value="gestor">Gestor (Acesso Total)</option><option value="operador">Operador (Gerencia)</option><option value="prestador">Prestador (Tarefas e Docs)</option><option value="cliente">Cliente (Apenas visualização)</option>
               </select>
             </div>
           </div>
           {formData.role !== 'gestor' && (
             <div className="space-y-4 border-t pt-4">
               <div>
-                <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Telas Permitidas para este funcionário</label>
+                <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Ecrãs Permitidos</label>
                 <div className="flex flex-wrap gap-2">{SCREENS.map(s => <button type="button" key={s.id} onClick={()=>toggleScreen(s.id)} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${formData.permissions.screens.includes(s.id) ? 'bg-[#1e5aa0] text-white border-[#1e5aa0]' : 'bg-white text-slate-500'}`}>{s.label}</button>)}</div>
               </div>
-              <div className="flex gap-4 p-4 bg-slate-50 rounded-xl border flex-wrap">
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700"><input type="checkbox" checked={formData.permissions.create} onChange={e=>setFormData({...formData, permissions: {...formData.permissions, create: e.target.checked}})} className="w-4 h-4" /> Permitir ADICIONAR registros</label>
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700"><input type="checkbox" checked={formData.permissions.edit} onChange={e=>setFormData({...formData, permissions: {...formData.permissions, edit: e.target.checked}})} className="w-4 h-4" /> Permitir EDITAR registros</label>
+              <div className="flex gap-4 p-4 bg-slate-50 rounded-xl border">
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-700"><input type="checkbox" checked={formData.permissions.create} onChange={e=>setFormData({...formData, permissions: {...formData.permissions, create: e.target.checked}})} className="w-4 h-4" /> Permitir CRIAR</label>
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-700"><input type="checkbox" checked={formData.permissions.edit} onChange={e=>setFormData({...formData, permissions: {...formData.permissions, edit: e.target.checked}})} className="w-4 h-4" /> Permitir ALTERAR</label>
                 <label className="flex items-center gap-2 text-sm font-bold text-red-700"><input type="checkbox" checked={formData.permissions.delete} onChange={e=>setFormData({...formData, permissions: {...formData.permissions, delete: e.target.checked}})} className="w-4 h-4" /> Permitir EXCLUIR</label>
               </div>
               <div>
-                <div className="flex justify-between items-center mb-2"><label className="text-xs font-bold text-slate-500 uppercase">Projetos Visíveis</label><button type="button" onClick={()=>setFormData({...formData, allowedProjects: 'ALL'})} className="text-xs font-bold text-blue-600 hover:underline">Selecionar Todos</button></div>
-                <div className="max-h-32 overflow-y-auto border rounded-lg divide-y bg-slate-50">
+                <div className="flex justify-between items-center mb-2"><label className="text-xs font-bold text-slate-500 uppercase">Projetos Permitidos</label><button type="button" onClick={()=>setFormData({...formData, allowedProjects: 'ALL'})} className="text-xs font-bold text-blue-600">Selecionar Todos</button></div>
+                <div className="max-h-32 overflow-y-auto border rounded-lg divide-y">
                   {projects.map(p => (
-                    <label key={p.id} className="flex items-center gap-3 p-3 hover:bg-white cursor-pointer text-sm transition-colors">
-                      <input type="checkbox" checked={formData.allowedProjects === 'ALL' || (formData.allowedProjects || []).includes(p.id)} onChange={()=>toggleProject(p.id)} className="w-4 h-4" />
+                    <label key={p.id} className="flex items-center gap-3 p-2 hover:bg-slate-50 cursor-pointer text-sm">
+                      <input type="checkbox" checked={formData.allowedProjects === 'ALL' || (formData.allowedProjects || []).includes(p.id)} onChange={()=>toggleProject(p.id)} />
                       <span className="font-bold text-slate-700">{p.nomeProjeto}</span><span className="text-xs text-slate-400">({p.clientName})</span>
                     </label>
                   ))}
-                  {projects.length === 0 && <p className="text-xs text-slate-400 p-3 text-center">Nenhum projeto cadastrado na empresa.</p>}
                 </div>
               </div>
             </div>
           )}
         </form>
-        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 rounded-lg font-bold text-slate-600 hover:bg-slate-200">Cancelar</button><button form="uform" type="submit" disabled={isSaving} className="px-5 py-2.5 rounded-lg font-bold text-white bg-[#1e5aa0] hover:bg-[#154278] disabled:opacity-50">{isSaving ? 'Salvando...' : 'Salvar Funcionário'}</button></div>
+        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2 rounded-lg font-bold text-slate-600 hover:bg-slate-200">Cancelar</button><button form="uform" type="submit" className="px-5 py-2 rounded-lg font-bold text-white bg-[#1e5aa0] hover:bg-[#154278]">Salvar</button></div>
       </div>
     </div>
   );
 }
 
-// --- VISÃO: MINHA EMPRESA ---
-function MinhaEmpresaView({ workspaceId, companyInfo }) {
-  const [formData, setFormData] = useState({ nome: '', cnpj: '', emailContato: '', telefone: '', endereco: '', ...companyInfo });
-  const [isSaving, setIsSaving] = useState(false);
-  const [successMsg, setSuccessMsg] = useState('');
-
-  useEffect(() => { if (companyInfo) setFormData(prev => ({ ...prev, ...companyInfo })); }, [companyInfo]);
-
-  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setIsSaving(true);
-    try {
-      if (companyInfo?.id) {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'company_info', companyInfo.id), formData);
-      } else {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'company_info'), { ...formData, workspaceId });
-      }
-      setSuccessMsg('Dados da empresa atualizados com sucesso!');
-      setTimeout(() => setSuccessMsg(''), 3000);
-    } catch (error) { console.error(error); }
-    setIsSaving(false);
-  };
-
-  return (
-    <div className="max-w-4xl mx-auto space-y-6 pt-2">
-      <div className="flex justify-between items-center border-b-4 border-[#1e5aa0] pb-2"><h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Minha Empresa</h3></div>
-      {successMsg && <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 p-4 rounded-xl flex items-center shadow-sm font-bold"><CheckCircle2 className="mr-2" size={20} /> {successMsg}</div>}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8">
-        <div className="flex items-center space-x-4 mb-6 pb-6 border-b border-slate-100">
-          <div className="bg-blue-50 text-[#1e5aa0] p-4 rounded-full"><Building2 size={32} /></div>
-          <div><h4 className="text-lg font-bold text-slate-800">Dados do Escritório</h4><p className="text-sm text-slate-500">Informações fiscais e de contato da sua empresa.</p></div>
-        </div>
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Razão Social / Nome Fantasia *</label><input required type="text" name="nome" value={formData.nome} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none font-semibold text-slate-800" /></div>
-            <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">CNPJ *</label><input required type="text" name="cnpj" value={formData.cnpj} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none font-medium" /></div>
-            <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Telefone Comercial</label><input type="text" name="telefone" value={formData.telefone} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-            <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Endereço Completo</label><input type="text" name="endereco" value={formData.endereco} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" placeholder="Rua, Número, Bairro, Cidade - UF" /></div>
-          </div>
-          <div className="pt-6 border-t border-slate-100 flex justify-end"><button type="submit" disabled={isSaving} className="bg-[#1e5aa0] text-white px-6 py-3 rounded-lg font-bold hover:bg-[#154278] transition-colors shadow-md disabled:opacity-50">{isSaving ? 'Salvando...' : 'Salvar Alterações'}</button></div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-// --- VISÃO: DASHBOARD ---
-function DashboardView({ projects, checklists }) {
+// --- DASHBOARD ---
+function DashboardView({ projects, checklists, companyUsers, appUser }) {
   const totalValue = projects.reduce((sum, p) => sum + Number(p.valorTotal), 0);
-  const activeProjects = projects.filter(p => p.status === 'EM ANDAMENTO').length;
-  
   let received = 0, pending = 0;
-  projects.forEach(p => { (p.parcelas || []).forEach(parc => { if (parc.paga) received += Number(parc.valor); else pending += Number(parc.valor); }); });
+  projects.forEach(p => (p.parcelas || []).forEach(parc => { if (parc.paga) received += Number(parc.valor); else pending += Number(parc.valor); }));
 
   const limitDate = new Date(); limitDate.setDate(limitDate.getDate() + 3);
-  const upcomingChecklists = checklists.filter(c => {
-    if (c.concluido || !c.dataPrevista) return false;
-    const [y, m, d] = c.dataPrevista.split('-');
-    return new Date(y, m - 1, d) <= limitDate; 
-  }).sort((a,b) => new Date(a.dataPrevista) - new Date(b.dataPrevista));
+  const myTasks = checklists.filter(c => !c.concluido && (c.assignedTo === appUser.id || c.assignedTo === 'ALL' || appUser.role === 'gestor') && new Date(c.dataPrevista) <= limitDate).sort((a,b) => new Date(a.dataPrevista) - new Date(b.dataPrevista));
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-        <StatCard title="Total em Contratos" value={formatCurrency(totalValue)} icon={<Wallet className="text-blue-500" />} color="blue" />
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Contratos Totais" value={formatCurrency(totalValue)} icon={<Wallet className="text-blue-500" />} color="blue" />
         <StatCard title="Total Recebido" value={formatCurrency(received)} icon={<TrendingUp className="text-emerald-500" />} color="emerald" />
         <StatCard title="A Receber" value={formatCurrency(pending)} icon={<CalendarDays className="text-amber-500" />} color="amber" />
-        <StatCard title="Projetos Ativos" value={activeProjects} icon={<FolderKanban className="text-indigo-500" />} color="indigo" />
+        <StatCard title="Projetos Ativos" value={projects.filter(p => p.status === 'EM ANDAMENTO').length} icon={<FolderKanban className="text-indigo-500" />} color="indigo" />
       </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-        <div className="bg-white p-5 sm:p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col max-h-[400px]">
-          <h3 className="text-base sm:text-lg font-black text-slate-800 mb-4 border-b pb-2 flex items-center justify-between uppercase"><span>Evolução Projetos</span><span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">{projects.length} Lançados</span></h3>
-          <div className="overflow-y-auto pr-2 space-y-4 flex-1">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-96">
+          <h3 className="text-lg font-black text-slate-800 uppercase border-b pb-2 mb-4">Evolução dos Projetos</h3>
+          <div className="overflow-y-auto space-y-4 pr-2">
             {projects.map(p => {
               const currentFaseIndex = FASES_ANALITICAS.indexOf(p.faseAnalitica || 'LEVANTAMENTO');
               const percent = Math.round(((currentFaseIndex + 1) / FASES_ANALITICAS.length) * 100);
               return (
-                <div key={p.id} className="border border-slate-100 p-3 rounded-xl hover:bg-slate-50 transition-colors">
-                  <div className="flex justify-between items-center mb-2"><p className="font-bold text-slate-800 text-sm truncate pr-2 uppercase">{p.nomeProjeto || p.clientName}</p><span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${p.status === 'EM ANDAMENTO' ? 'bg-blue-100 text-blue-700' : p.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>{p.status}</span></div>
-                  <div className="flex justify-between text-xs mb-1 font-bold"><span className="text-slate-500">{p.faseAnalitica || 'LEVANTAMENTO'}</span><span className="text-[#1e5aa0]">{percent}%</span></div>
-                  <div className="w-full bg-slate-200 rounded-full h-1.5"><div className="bg-[#1e5aa0] h-1.5 rounded-full transition-all" style={{ width: `${percent}%` }}></div></div>
+                <div key={p.id} className="border border-slate-100 p-4 rounded-xl hover:shadow-md transition-shadow">
+                  <div className="flex justify-between items-center mb-2"><p className="font-bold text-slate-800 text-sm">{p.nomeProjeto}</p><span className="text-[10px] px-2 py-1 rounded-full font-bold bg-blue-100 text-blue-800">{p.status}</span></div>
+                  <div className="flex justify-between text-xs mb-1 font-medium"><span className="text-slate-500">{p.faseAnalitica || 'LEVANTAMENTO'}</span><span className="text-[#1e5aa0] font-black">{percent}%</span></div>
+                  <div className="w-full bg-slate-100 rounded-full h-2"><div className="bg-[#1e5aa0] h-2 rounded-full" style={{width: `${percent}%`}}></div></div>
                 </div>
               );
             })}
-            {projects.length === 0 && <p className="text-slate-400 text-sm text-center py-8">Nenhum projeto lançado.</p>}
+            {projects.length === 0 && <p className="text-slate-400 text-sm text-center pt-8">Nenhum projeto permitido para você.</p>}
           </div>
         </div>
-
-        <div className="bg-white p-5 sm:p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col max-h-[400px]">
-          <h3 className="text-base sm:text-lg font-black text-slate-800 mb-4 border-b pb-2 flex items-center justify-between uppercase"><span>Tarefas Pendentes</span><span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-1 rounded-full">Próx. 3 Dias</span></h3>
-          <div className="overflow-y-auto pr-2 space-y-3 flex-1">
-            {upcomingChecklists.map(chk => {
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-96">
+          <h3 className="text-lg font-black text-slate-800 uppercase border-b pb-2 mb-4">Suas Tarefas Pendentes (Até 3 dias)</h3>
+          <div className="overflow-y-auto space-y-3 pr-2">
+            {myTasks.map(chk => {
               const p = projects.find(proj => proj.id === chk.projectId);
               const isLate = new Date(chk.dataPrevista) < new Date(getToday());
               return (
-                <div key={chk.id} className="flex items-start space-x-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                  <div className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${isLate ? 'bg-red-500' : 'bg-amber-400'}`}></div>
-                  <div className="flex-1 min-w-0"><p className="text-sm font-bold text-slate-700 leading-tight">{chk.descricao}</p><p className="text-[10px] sm:text-xs text-slate-500 truncate mt-1 font-bold uppercase">{p ? (p.nomeProjeto || p.clientName) : 'Projeto Excluído'}</p></div>
-                  <div className={`text-xs font-black shrink-0 ${isLate ? 'text-red-600' : 'text-slate-500'}`}>{formatDate(chk.dataPrevista).substring(0, 5)}</div>
+                <div key={chk.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100 flex gap-3 items-start">
+                  <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${isLate ? 'bg-red-500' : 'bg-amber-400'}`}></div>
+                  <div className="flex-1"><p className="font-bold text-sm text-slate-800">{chk.descricao}</p><p className="text-[10px] font-bold text-slate-500 uppercase mt-1">{p?.nomeProjeto || 'Projeto Excluído'}</p></div>
+                  <div className={`text-xs font-black ${isLate ? 'text-red-600' : 'text-slate-600'}`}>{formatDate(chk.dataPrevista)}</div>
                 </div>
               );
             })}
-            {upcomingChecklists.length === 0 && <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-2 py-8"><CheckCircle2 size={32} className="text-emerald-400 opacity-50" /><p className="text-sm font-bold">Tudo em dia para os próximos dias!</p></div>}
+            {myTasks.length === 0 && <div className="text-center text-slate-400 py-12"><CheckCircle2 size={40} className="mx-auto mb-2 text-emerald-400 opacity-50"/><p>Tudo em dia!</p></div>}
           </div>
         </div>
       </div>
@@ -586,813 +514,976 @@ function DashboardView({ projects, checklists }) {
 }
 
 function StatCard({ title, value, icon, color }) {
-  const bgColors = { blue: 'bg-blue-50', emerald: 'bg-emerald-50', amber: 'bg-amber-50', indigo: 'bg-indigo-50' };
+  const bgColors = { blue: 'bg-blue-50 text-blue-600', emerald: 'bg-emerald-50 text-emerald-600', amber: 'bg-amber-50 text-amber-600', indigo: 'bg-indigo-50 text-indigo-600' };
   return (
-    <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center space-x-3 sm:space-x-4">
-      <div className={`p-3 sm:p-4 rounded-xl ${bgColors[color]} shrink-0`}>{icon}</div>
-      <div className="flex-1 min-w-0"><p className="text-[10px] sm:text-[11px] font-black text-slate-500 uppercase tracking-widest truncate">{title}</p><p className="text-lg lg:text-xl font-black text-slate-800 truncate mt-0.5" title={value}>{value}</p></div>
+    <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center space-x-4">
+      <div className={`p-4 rounded-xl ${bgColors[color]}`}>{icon}</div>
+      <div className="flex-1 min-w-0"><p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</p><p className="text-xl font-black text-slate-800 truncate">{value}</p></div>
     </div>
   );
 }
 
-// --- VISÃO: CLIENTES ---
-function ClientsView({ workspaceId, clients, projects, onOpenProject, appUser }) {
+// --- CLIENTES ---
+function ClientsView({ clients, projects, canCreate, canEdit, canDelete, appUser, onOpenProject }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
-  const [confirmDialog, setConfirmDialog] = useState(null);
-  const [alertDialog, setAlertDialog] = useState(null);
-  const [clientProjectsModal, setClientProjectsModal] = useState(null);
-
-  const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
-  const canDelete = appUser.role === 'gestor' || appUser.permissions?.delete;
-  const canCreate = appUser.role === 'gestor' || appUser.permissions?.create;
+  const [alertMsg, setAlertMsg] = useState('');
+  const [confirmData, setConfirmData] = useState(null);
 
   const handleDelete = (client) => {
-    if (projects.some(p => p.clientId === client.id)) return setAlertDialog({ title: 'Atenção', message: 'Há projetos lançados para esse cliente. Não é possível excluí-lo.' });
-    setConfirmDialog({ title: 'Excluir Cliente', message: 'Deseja realmente excluir o cadastro do cliente?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id)); setConfirmDialog(null); } });
-  };
-
-  return (
-    <div className="h-full flex flex-col pt-2">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-        <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight border-b-4 border-[#1e5aa0] pb-1">Meus Clientes</h3>
-        {canCreate && <button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="bg-[#1e5aa0] hover:bg-[#154278] text-white px-4 py-2.5 rounded-lg font-bold flex items-center justify-center space-x-2 transition-colors shadow-sm w-full sm:w-auto"><Plus size={18} /><span>Novo Cliente</span></button>}
-      </div>
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 flex flex-col overflow-hidden">
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse min-w-[800px]">
-            <thead><tr className="bg-[#5a82b5] text-white text-[10px] uppercase tracking-widest sticky top-0 z-10 shadow-sm"><th className="p-4 font-bold">Nome</th><th className="p-4 font-bold">Contato</th><th className="p-4 font-bold text-center">Projetos</th><th className="p-4 font-bold text-center">Ações</th></tr></thead>
-            <tbody className="divide-y divide-slate-100">
-              {clients.map(client => (
-                <tr key={client.id} className="hover:bg-slate-50 transition-colors text-sm text-slate-700">
-                  <td className="p-4 font-bold text-slate-800 uppercase">{client.nome}</td>
-                  <td className="p-4"><p className="font-bold">{client.telefone}</p><p className="text-xs text-slate-400">{client.email}</p></td>
-                  <td className="p-4 text-center"><button onClick={() => setClientProjectsModal(client)} className="bg-slate-100 hover:bg-slate-200 text-[#1e5aa0] font-bold py-1.5 px-3 rounded-lg text-[10px] uppercase tracking-wide transition-colors border border-slate-200">{projects.filter(p => p.clientId === client.id).length} Projetos</button></td>
-                  <td className="p-4 text-center">
-                    <div className="flex items-center justify-center space-x-3">
-                      {canEdit && <button onClick={() => {setEditingClient(client); setIsModalOpen(true);}} className="text-[#5a82b5] hover:text-[#1e5aa0]"><Edit size={16} /></button>}
-                      {canDelete && <button onClick={() => handleDelete(client)} className="text-red-500 hover:text-red-700"><Trash2 size={16} /></button>}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {clients.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400 font-medium">Nenhum cliente cadastrado.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      {isModalOpen && <ClientModal workspaceId={workspaceId} client={editingClient} onClose={() => setIsModalOpen(false)} />}
-      {confirmDialog && <ConfirmModal title={confirmDialog.title} message={confirmDialog.message} onConfirm={confirmDialog.onConfirm} onCancel={() => setConfirmDialog(null)} />}
-      {alertDialog && <AlertModal title={alertDialog.title} message={alertDialog.message} onClose={() => setAlertDialog(null)} />}
-      {clientProjectsModal && <ClientProjectsModal client={clientProjectsModal} projects={projects.filter(p => p.clientId === clientProjectsModal.id)} onClose={() => setClientProjectsModal(null)} onOpenProject={onOpenProject} />}
-    </div>
-  );
-}
-
-function ClientProjectsModal({ client, projects, onClose, onOpenProject }) {
-  return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[80vh]">
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white rounded-t-2xl"><h2 className="text-lg font-bold uppercase tracking-wide">Projetos: {client.nome}</h2><button onClick={onClose}><X size={24} /></button></div>
-        <div className="p-4 overflow-y-auto flex-1 bg-slate-50">
-          {projects.length > 0 ? (
-            <div className="space-y-3">
-              {projects.map(p => (
-                <div key={p.id} className="border border-slate-200 rounded-xl p-4 shadow-sm bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div><h4 className="font-bold text-slate-800 uppercase">{p.nomeProjeto || 'PROJETO SEM NOME'}</h4><p className="text-xs text-slate-500 font-bold mt-1 flex gap-2 items-center"><span className="bg-blue-50 text-blue-700 border px-2 py-0.5 rounded">{p.status}</span><span>{formatCurrency(p.valorTotal)}</span></p></div>
-                  <button onClick={() => { onClose(); onOpenProject(p); }} className="bg-slate-100 hover:bg-slate-200 text-[#1e5aa0] px-4 py-2 rounded-lg font-bold text-xs uppercase transition-colors border">Ver Detalhes</button>
-                </div>
-              ))}
-            </div>
-          ) : <p className="text-center text-slate-400 py-8 font-medium">Nenhum projeto encontrado.</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ClientModal({ workspaceId, client, onClose }) {
-  const [formData, setFormData] = useState(client || { 
-    nome: '', telefone: '', email: '', cpf: '', rg: '', 
-    cep: '', rua: '', numero: '', bairro: '', cidade: '', estado: '' 
-  });
-  const [alertMsg, setAlertMsg] = useState('');
-
-  const buscarCEP = async (valorCep) => {
-    const raw = valorCep.replace(/\D/g, '');
-    if (raw.length !== 8) return;
-    try {
-      const res = await fetch(`https://viacep.com.br/ws/${raw}/json/`);
-      const data = await res.json();
-      if (!data.erro) {
-        setFormData(prev => ({ ...prev, rua: data.logradouro || '', bairro: data.bairro || '', cidade: data.localidade || '', estado: data.uf || '' }));
+    if (projects.some(p => p.clientId === client.id)) return setAlertMsg('Há projetos vinculados a este cliente. Não é possível excluir.');
+    setConfirmData({
+      message: 'Excluir cliente permanentemente?',
+      onConfirm: async () => {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id));
+        setConfirmData(null);
       }
-    } catch (err) { console.error("Erro viaCep", err); }
+    });
   };
 
-  const handleChange = (e) => {
-    let { name, value } = e.target;
-    if (name === 'telefone') value = maskPhone(value);
-    if (name === 'cpf') value = maskCPF(value);
-    if (name === 'cep') value = maskCEP(value);
-    setFormData({ ...formData, [name]: value });
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex justify-between items-center mb-6">
+        <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Clientes</h3>
+        {canCreate && <button onClick={() => {setEditingClient(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Novo Cliente</span></button>}
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 overflow-auto">
+        <table className="w-full text-left text-sm min-w-[600px]">
+          <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0"><tr><th className="p-4">Nome</th><th className="p-4">Contato</th><th className="p-4 text-center">Projetos</th><th className="p-4 text-center">Ações</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {clients.map(c => (
+              <tr key={c.id} className="hover:bg-slate-50">
+                <td className="p-4 font-bold text-slate-800">{c.nome}</td>
+                <td className="p-4"><p className="font-medium text-slate-700">{c.telefone}</p><p className="text-xs text-slate-400">{c.email}</p></td>
+                <td className="p-4 text-center"><span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full font-bold text-xs border border-slate-200">{projects.filter(p=>p.clientId===c.id).length} Projetos</span></td>
+                <td className="p-4 text-center space-x-3">
+                  {canEdit && <button onClick={() => {setEditingClient(c); setIsModalOpen(true);}} className="text-[#5a82b5] hover:text-[#1e5aa0]"><Edit size={16}/></button>}
+                  {canDelete && <button onClick={() => handleDelete(c)} className="text-red-500 hover:text-red-700"><Trash2 size={16}/></button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {isModalOpen && <ClientModal appUser={appUser} client={editingClient} onClose={()=>setIsModalOpen(false)}/>}
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
+    </div>
+  );
+}
+
+function ClientModal({ appUser, client, onClose }) {
+  const [formData, setFormData] = useState(client || { nome: '', telefone: '', email: '', documento: '', cep: '', logradouro: '', numero: '', complemento: '', bairro: '', cidade: '', uf: '' });
+  
+  const handleCepBlur = async (e) => {
+    const cep = e.target.value.replace(/\D/g, '');
+    if(cep.length === 8) {
+      try {
+        const res = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+        const data = await res.json();
+        if(!data.erro) setFormData(prev => ({...prev, logradouro: data.logradouro, bairro: data.bairro, cidade: data.localidade, uf: data.uf}));
+      } catch(err) { console.error(err); }
+    }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.nome) return;
-    
-    if (formData.email && !isValidEmail(formData.email)) return setAlertMsg("Por favor, informe um e-mail válido.");
-    if (formData.cpf && formData.cpf.replace(/\D/g, '').length !== 11) return setAlertMsg("O CPF deve conter 11 dígitos numéricos.");
-
+    const data = { ...formData, companyId: appUser.companyId };
     try {
-      if (client) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id), formData);
-      else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), { ...formData, workspaceId });
+      if (client) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id), data);
+      else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), data);
       onClose();
-    } catch (error) { console.error(error); }
+    } catch (e) { console.error(e); }
   };
-
+  
   return (
-    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white rounded-t-2xl"><h2 className="text-lg font-bold uppercase tracking-wide">{client ? 'Editar' : 'Cadastrar'} Cliente</h2><button onClick={onClose}><X size={20} /></button></div>
-        
-        <form id="cform" onSubmit={handleSubmit} className="p-6 overflow-y-auto flex-1 space-y-6">
-          <div>
-            <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Dados Pessoais</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="md:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome Completo *</label><input required type="text" name="nome" value={formData.nome} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none font-bold text-slate-800" /></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Telefone (Fixo ou Celular)</label><input type="text" name="telefone" placeholder="(00) 00000-0000" value={formData.telefone} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none font-medium" /></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">E-mail</label><input type="email" name="email" placeholder="nome@dominio.com.br" value={formData.email} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">CPF (11 dígitos)</label><input type="text" name="cpf" placeholder="000.000.000-00" value={formData.cpf} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">RG</label><input type="text" name="rg" value={formData.rg} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-            </div>
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl w-full max-w-2xl flex flex-col shadow-2xl max-h-[90vh]">
+        <div className="p-4 bg-[#1e5aa0] text-white rounded-t-2xl flex justify-between items-center"><h2 className="font-bold text-lg uppercase">{client ? 'Editar' : 'Novo'} Cliente</h2><button onClick={onClose}><X size={20}/></button></div>
+        <form id="cform" onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
+          <div><label className="text-xs font-bold text-slate-500 uppercase">Nome *</label><input required value={formData.nome} onChange={e=>setFormData({...formData, nome:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold text-slate-800" /></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Telefone</label><input value={formData.telefone} onChange={e=>setFormData({...formData, telefone:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">CPF / CNPJ</label><input value={formData.documento} onChange={e=>setFormData({...formData, documento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
           </div>
-
-          <div>
-             <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Endereço</h3>
-             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">CEP</label><input type="text" name="cep" placeholder="00000-000" value={formData.cep} onChange={handleChange} onBlur={(e) => buscarCEP(e.target.value)} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none font-bold" /></div>
-                <div className="md:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Rua / Logradouro</label><input type="text" name="rua" value={formData.rua} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Número</label><input type="text" name="numero" value={formData.numero} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                
-                <div className="md:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Bairro</label><input type="text" name="bairro" value={formData.bairro} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Cidade</label><input type="text" name="cidade" value={formData.cidade} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none" /></div>
-                <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Estado</label>
-                  <select name="estado" value={formData.estado} onChange={handleChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none bg-white">
-                    <option value=""></option>
-                    {ESTADOS_BR.map(uf => <option key={uf} value={uf}>{uf}</option>)}
-                  </select>
-                </div>
-             </div>
+          <div><label className="text-xs font-bold text-slate-500 uppercase">E-mail</label><input type="email" value={formData.email} onChange={e=>setFormData({...formData, email:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+          
+          <div className="border-t pt-4 mt-2"><h4 className="font-bold text-slate-700 uppercase text-sm mb-4">Endereço do Cliente</h4></div>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input value={formData.cep} onChange={e=>setFormData({...formData, cep:e.target.value})} onBlur={handleCepBlur} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" placeholder="00000-000" /></div>
+            <div className="sm:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Logradouro / Rua</label><input value={formData.logradouro} onChange={e=>setFormData({...formData, logradouro:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Número</label><input value={formData.numero} onChange={e=>setFormData({...formData, numero:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Complemento</label><input value={formData.complemento} onChange={e=>setFormData({...formData, complemento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Bairro</label><input value={formData.bairro} onChange={e=>setFormData({...formData, bairro:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Cidade</label><input value={formData.cidade} onChange={e=>setFormData({...formData, cidade:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">UF</label><input value={formData.uf} onChange={e=>setFormData({...formData, uf:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none uppercase" maxLength="2" /></div>
           </div>
         </form>
-
-        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end space-x-3 rounded-b-2xl">
-          <button onClick={onClose} type="button" className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-200 rounded-lg">Cancelar</button>
-          <button form="cform" type="submit" className="px-5 py-2.5 bg-[#1e5aa0] text-white font-bold hover:bg-[#154278] rounded-lg shadow-sm">Salvar Cliente</button>
-        </div>
+        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 rounded-lg font-bold text-slate-600 hover:bg-slate-200">Cancelar</button><button form="cform" type="submit" className="px-5 py-2.5 rounded-lg font-bold text-white bg-[#1e5aa0] hover:bg-[#154278]">Salvar</button></div>
       </div>
-      {alertMsg && <AlertModal title="Atenção" message={alertMsg} onClose={() => setAlertMsg('')} />}
     </div>
   );
 }
 
-// --- VISÃO: PROJETOS E DOCUMENTOS ---
-function ProjetosView({ workspaceId, projects, clients, companyUsers, paymentMethods, targetProject, clearTargetProject, appUser }) {
+// --- PROJETOS E DETALHAMENTOS GERAIS ---
+function ProjetosView({ projects, clients, companyUsers, targetProject, clearTargetProject, canCreate, canEdit, canDelete, appUser, documents, checklists }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isPaymentMethodsModalOpen, setIsPaymentMethodsModalOpen] = useState(false);
-  
   const [editingProject, setEditingProject] = useState(null);
-  const [docsModalProject, setDocsModalProject] = useState(null);
-  const [filterClient, setFilterClient] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
-  const [confirmDialog, setConfirmDialog] = useState(null);
-  const [alertDialog, setAlertDialog] = useState(null);
-
-  const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
-  const canDelete = appUser.role === 'gestor' || appUser.permissions?.delete;
-  const canCreate = appUser.role === 'gestor' || appUser.permissions?.create;
-
+  const [detailingProject, setDetailingProject] = useState(null); 
+  const [alertMsg, setAlertMsg] = useState('');
+  const [confirmData, setConfirmData] = useState(null);
+  
   useEffect(() => { if (targetProject) { setEditingProject(targetProject); setIsModalOpen(true); clearTargetProject(); } }, [targetProject]);
 
-  const filteredProjects = useMemo(() => projects.filter(p => {
-    const searchLower = filterClient.toLowerCase();
-    const matchClient = p.clientName.toLowerCase().includes(searchLower) || (p.nomeProjeto && p.nomeProjeto.toLowerCase().includes(searchLower)) || (p.responsavelNome && p.responsavelNome.toLowerCase().includes(searchLower));
-    return matchClient && (filterStatus ? p.status === filterStatus : true);
-  }), [projects, filterClient, filterStatus]);
-
-  const handleDelete = (project) => {
-    if (project.parcelas?.some(p => p.paga)) return setAlertDialog({ title: 'Ação Bloqueada', message: 'Já existem baixas realizadas para esse projeto. Não é possível excluí-lo.' });
-    setConfirmDialog({ title: 'Excluir Projeto', message: 'Deseja realmente excluir o projeto?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', project.id)); setConfirmDialog(null); } });
+  const handleDelete = (p) => {
+    if (p.parcelas?.some(x => x.paga)) return setAlertMsg("Projeto possui pagamentos baixados. Não é possível excluir.");
+    setConfirmData({
+      message: "Excluir projeto permanentemente?",
+      onConfirm: async () => {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', p.id));
+        setConfirmData(null);
+      }
+    });
   };
 
   return (
-    <div className="h-full flex flex-col space-y-4 pt-2">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight border-b-4 border-[#1e5aa0] pb-1">Gestão de Projetos</h3>
-        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-          {appUser.role === 'gestor' && (
-            <button onClick={() => setIsPaymentMethodsModalOpen(true)} className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-lg font-bold flex items-center justify-center space-x-2 transition-colors shadow-sm w-full sm:w-auto">
-              <CreditCard size={18} /><span>Formas de Pagto</span>
-            </button>
-          )}
-          {canCreate && (
-            <button onClick={() => { setEditingProject(null); setIsModalOpen(true); }} className="bg-[#1e5aa0] hover:bg-[#154278] text-white px-4 py-2.5 rounded-lg font-bold flex items-center justify-center space-x-2 transition-colors shadow-sm w-full sm:w-auto">
-              <Plus size={18} /><span>Lançar Projeto</span>
-            </button>
-          )}
-        </div>
+    <div className="h-full flex flex-col">
+      <div className="flex justify-between items-center mb-6">
+        <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Projetos</h3>
+        {canCreate && <button onClick={() => {setEditingProject(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Lançar Projeto</span></button>}
       </div>
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div><label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-widest">Buscar (Projeto/Cliente/Resp)</label><input type="text" value={filterClient} onChange={(e) => setFilterClient(e.target.value)} className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none text-sm font-medium"/></div>
-        <div><label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-widest">Status</label><select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none text-sm bg-white font-bold text-slate-700"><option value="">TODOS</option><option value="EM ANDAMENTO">EM ANDAMENTO</option><option value="ENTREGUE">ENTREGUE</option><option value="CANCELADO">CANCELADO</option></select></div>
-      </div>
-      <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse min-w-[850px]">
-            <thead><tr className="bg-[#5a82b5] text-white text-[10px] uppercase tracking-widest sticky top-0 z-10"><th className="p-4 font-bold w-1/3">Projeto / Cliente</th><th className="p-4 font-bold text-center w-1/6">Status</th><th className="p-4 font-bold text-center">Data Fech.</th><th className="p-4 font-bold text-center">Docs</th><th className="p-4 font-bold text-right">Valor Total</th><th className="p-4 font-bold text-center">Ações</th></tr></thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredProjects.map(p => (
-                <tr key={p.id} className="hover:bg-slate-50 transition-colors text-sm text-slate-700">
-                  <td className="p-4">
-                    <div className="font-black uppercase text-xs text-slate-800 truncate">{p.nomeProjeto || 'SEM NOME'}</div>
-                    <div className="text-[10px] font-bold text-slate-500 uppercase mt-0.5">{p.clientName}</div>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      <div className="text-[9px] font-bold text-slate-600 uppercase bg-slate-100 border border-slate-200 inline-block px-1.5 py-0.5 rounded">{p.tipoProjeto || 'INTERIORES'}</div>
-                      {p.responsavelNome && <div className="text-[9px] font-bold text-[#1e5aa0] uppercase bg-blue-50 border border-blue-100 inline-block px-1.5 py-0.5 rounded">Resp: {p.responsavelNome.split(' ')[0]}</div>}
-                    </div>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 overflow-auto">
+        <table className="w-full text-left text-sm min-w-[800px]">
+          <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0 z-10"><tr><th className="p-4">Projeto</th><th className="p-4">Responsável</th><th className="p-4 text-center">Status</th><th className="p-4 text-center">Detalhamento da Obra</th><th className="p-4 text-right">Valor do Projeto</th><th className="p-4 text-center">Ações</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {projects.map(p => {
+              const resp = companyUsers.find(u => u.id === p.responsavelId);
+              return (
+                <tr key={p.id} className="hover:bg-slate-50">
+                  <td className="p-4"><p className="font-bold text-slate-800">{p.nomeProjeto}</p><p className="text-xs text-slate-500">{p.clientName}</p></td>
+                  <td className="p-4 font-bold text-xs text-slate-600 uppercase flex items-center gap-2 mt-2"><Briefcase size={14}/> {resp?.nome || 'Não Atribuído'}</td>
+                  <td className="p-4 text-center"><span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full font-bold text-[10px]">{p.status}</span></td>
+                  <td className="p-4 text-center">
+                    <button onClick={() => setDetailingProject(p)} className="bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 px-3 py-1.5 rounded-lg flex items-center justify-center space-x-1 mx-auto transition-colors font-bold text-xs uppercase">
+                      <LayoutList size={16} /> <span>Checklist / Custos</span>
+                    </button>
                   </td>
-                  <td className="p-4 text-center"><span className={`text-[9px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border ${p.status==='EM ANDAMENTO'?'bg-blue-50 text-blue-700 border-blue-200':p.status==='ENTREGUE'?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-red-50 text-red-700 border-red-200'}`}>{p.status}</span></td>
-                  <td className="p-4 text-center font-bold text-xs">{formatDate(p.dataFechamento)}</td>
-                  <td className="p-4 text-center"><button onClick={() => setDocsModalProject(p)} className="bg-slate-100 text-slate-600 border border-slate-200 hover:border-[#1e5aa0] hover:text-[#1e5aa0] p-1.5 rounded-lg flex items-center justify-center space-x-1 mx-auto transition-colors"><FolderOpen size={16} /> <span className="text-[9px] font-black uppercase">Docs</span></button></td>
-                  <td className="p-4 text-right font-black text-slate-800">{formatCurrency(p.valorTotal)}</td>
+                  <td className="p-4 text-right font-black text-slate-700">{formatCurrency(p.valorTotal)}</td>
                   <td className="p-4 text-center space-x-3">
-                    {canEdit && <button onClick={() => {setEditingProject(p); setIsModalOpen(true);}} className="text-[#5a82b5] hover:text-[#1e5aa0]"><Edit size={16} /></button>}
-                    {canDelete && <button onClick={() => handleDelete(p)} className="text-red-500 hover:text-red-700"><Trash2 size={16} /></button>}
+                    {canEdit && <button onClick={() => {setEditingProject(p); setIsModalOpen(true);}} className="text-[#5a82b5] hover:text-[#1e5aa0]"><Edit size={16}/></button>}
+                    {canDelete && <button onClick={() => handleDelete(p)} className="text-red-500 hover:text-red-700"><Trash2 size={16}/></button>}
                   </td>
                 </tr>
-              ))}
-              {filteredProjects.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-400 font-medium">Nenhum projeto lançado ou permitido para você.</td></tr>}
-            </tbody>
-          </table>
-        </div>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
-      {isModalOpen && <ProjectModal workspaceId={workspaceId} clients={clients} companyUsers={companyUsers} paymentMethods={paymentMethods} project={editingProject} onClose={() => setIsModalOpen(false)} />}
-      {isPaymentMethodsModalOpen && <PaymentMethodsModal workspaceId={workspaceId} paymentMethods={paymentMethods} onClose={() => setIsPaymentMethodsModalOpen(false)} />}
-      {docsModalProject && <DocumentsModal workspaceId={workspaceId} project={docsModalProject} onClose={() => setDocsModalProject(null)} />}
-      {confirmDialog && <ConfirmModal title={confirmDialog.title} message={confirmDialog.message} onConfirm={confirmDialog.onConfirm} onCancel={() => setConfirmDialog(null)} />}
-      {alertDialog && <AlertModal title={alertDialog.title} message={alertDialog.message} onClose={() => setAlertDialog(null)} />}
+      
+      {isModalOpen && <ProjectModal appUser={appUser} clients={clients} companyUsers={companyUsers} project={editingProject} onClose={()=>setIsModalOpen(false)} />}
+      {detailingProject && <ProjectDetailingModal appUser={appUser} project={detailingProject} documents={documents} checklists={checklists} onClose={()=>setDetailingProject(null)} />}
+      
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
     </div>
   );
 }
 
-// --- MODAL: FORMAS DE PAGAMENTO ---
-function PaymentMethodsModal({ workspaceId, paymentMethods, onClose }) {
-  const [form, setForm] = useState({ nome: '', parcelas: '', prazoVencimento: '' });
+// MODAL DE DETALHAMENTO DE PROJETO (CHECKLIST E AMBIENTES)
+function ProjectDetailingModal({ appUser, project, documents, checklists, onClose }) {
+  const [activeTab, setActiveTab] = useState('geral');
+  const [formData, setFormData] = useState({ briefing: project.briefing || '', estiloProjeto: project.estiloProjeto || '', ambientes: project.ambientes || [] });
+  const [editingEnvIndex, setEditingEnvIndex] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [alertMsg, setAlertMsg] = useState('');
+  
+  const [envPromptOpen, setEnvPromptOpen] = useState(false);
+  const [tempEnvName, setTempEnvName] = useState('');
 
-  const handleAdd = async (e) => {
-    e.preventDefault();
-    if (!form.nome || !form.parcelas || !form.prazoVencimento) return;
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'payment_methods'), { 
-      workspaceId, 
-      nome: form.nome.toUpperCase(), 
-      parcelas: parseInt(form.parcelas), 
-      prazoVencimento: parseInt(form.prazoVencimento) 
-    });
-    setForm({ nome: '', parcelas: '', prazoVencimento: '' });
-  };
+  const projectDocs = documents.filter(d => d.projectId === project.id);
+  const plantas = projectDocs.filter(d => d.docType === 'planta_humanizada');
+  const refGerais = projectDocs.filter(d => d.docType === 'referencia_geral');
 
-  const handleDelete = async (id) => {
-    if (window.confirm("Deseja excluir esta forma de pagamento?")) {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payment_methods', id));
-    }
-  };
+  const orcamentosVinculados = checklists.filter(c => c.projectId === project.id).flatMap(c => (c.budgets || []).filter(b => b.approved || b.done).map(b => ({ ...b, checklistName: c.descricao })));
+  const totalOrcamentos = orcamentosVinculados.reduce((acc, curr) => acc + (Number(curr.value) || 0), 0);
 
-  return (
-    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white shrink-0">
-          <h2 className="text-lg font-bold uppercase tracking-wide flex items-center gap-2"><CreditCard size={20}/> Formas de Pagamento (Personalizadas)</h2>
-          <button onClick={onClose} className="hover:bg-[#154278] p-1 rounded"><X size={20} /></button>
-        </div>
-        
-        <div className="p-6 bg-slate-50 border-b shrink-0">
-          <form onSubmit={handleAdd} className="flex flex-col gap-4">
-            <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest border-b pb-2">Cadastrar Nova Regra</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome (Ex: Semestral)</label><input type="text" required value={form.nome} onChange={e=>setForm({...form, nome: e.target.value})} className="w-full p-2 border rounded-lg outline-none focus:ring-2 font-bold text-sm uppercase"/></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Qtd de Parcelas</label><input type="number" min="1" required value={form.parcelas} onChange={e=>setForm({...form, parcelas: e.target.value})} className="w-full p-2 border rounded-lg outline-none focus:ring-2 font-bold text-sm text-[#1e5aa0]"/></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Intervalo (Em Dias)</label><input type="number" min="0" required value={form.prazoVencimento} onChange={e=>setForm({...form, prazoVencimento: e.target.value})} placeholder="Ex: 30" className="w-full p-2 border rounded-lg outline-none focus:ring-2 font-bold text-sm text-[#1e5aa0]"/></div>
-            </div>
-            <div className="flex justify-end"><button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase px-4 py-2 rounded-lg shadow-sm flex gap-2 items-center"><Plus size={14}/> Adicionar Forma</button></div>
-          </form>
-        </div>
+  const totalItensAmbientes = formData.ambientes.reduce((accEnv, env) => {
+    return accEnv + env.itens.reduce((accItem, item) => accItem + ((Number(item.valor) || 0) * (Number(item.quantidade) || 1)), 0);
+  }, 0);
 
-        <div className="flex-1 overflow-y-auto p-6 bg-white">
-          <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest border-b pb-2 mb-4">Regras Cadastradas</h3>
-          {paymentMethods.length > 0 ? (
-            <div className="space-y-3">
-              {paymentMethods.map(pm => (
-                <div key={pm.id} className="flex justify-between items-center border border-slate-200 rounded-xl p-3 shadow-sm hover:border-slate-300 transition-colors">
-                  <div>
-                    <h4 className="font-black text-slate-800 uppercase text-sm">{pm.nome}</h4>
-                    <p className="text-xs font-bold text-slate-500 mt-1">Gera <span className="text-[#1e5aa0]">{pm.parcelas} parcelas</span> com intervalo de <span className="text-[#1e5aa0]">{pm.prazoVencimento} dias</span> entre elas.</p>
-                  </div>
-                  <button onClick={() => handleDelete(pm.id)} className="text-red-400 hover:text-red-600 p-2"><Trash2 size={18}/></button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-8"><CreditCard size={32} className="mx-auto text-slate-300 mb-2"/><p className="text-slate-400 font-bold text-sm">Nenhuma regra personalizada cadastrada.</p></div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+  const custoTotalObra = (Number(project.valorTotal) || 0) + totalOrcamentos + totalItensAmbientes;
 
-function DocumentsModal({ workspaceId, project, onClose }) {
-  const [documents, setDocuments] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [viewingDoc, setViewingDoc] = useState(null);
-  const fileInputRef = useRef(null);
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), (snap) => {
-      setDocuments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(d => d.projectId === project.id && d.workspaceId === workspaceId));
-    });
-    return () => unsub();
-  }, [workspaceId, project]);
-
-  const handleFileSelect = async (e) => {
+  const handleUploadSpecial = async (e, type, ambienteId = null, itemId = null) => {
     const files = Array.from(e.target.files);
-    setUploading(true);
     for (const file of files) {
-      if (file.size > 1048000) continue;
+      if (file.size > 1048000) { setAlertMsg(`O arquivo ${file.name} excede 1MB.`); continue; }
       const reader = new FileReader();
       reader.onload = async (ev) => {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), { workspaceId, projectId: project.id, nome: file.name, tipo: file.type || 'application/octet-stream', tamanho: file.size, dataUpload: new Date().toISOString(), conteudoBase64: ev.target.result });
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), {
+          companyId: appUser.companyId, projectId: project.id, uploadedBy: appUser.id,
+          nome: file.name, tipo: file.type, tamanho: file.size, dataUpload: new Date().toISOString(),
+          conteudoBase64: ev.target.result, docType: type, ambienteId, itemId
+        });
       };
       reader.readAsDataURL(file);
     }
-    setUploading(false);
   };
 
-  const deleteDocu = async (id) => { if(window.confirm('Excluir arquivo?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documents', id)); };
+  const handleSaveGeneral = async () => {
+    setSaving(true);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', project.id), { briefing: formData.briefing, estiloProjeto: formData.estiloProjeto, ambientes: formData.ambientes });
+    setSaving(false);
+    setAlertMsg('Salvo com sucesso!');
+  };
+
+  const addEnvironment = () => {
+    setTempEnvName('');
+    setEnvPromptOpen(true);
+  };
+
+  const confirmAddEnvironment = (e) => {
+    e.preventDefault();
+    if(!tempEnvName.trim()) return;
+    const newEnv = { id: generateId(), nome: tempEnvName, detalhes: '', estilo: '', usarEstiloGeral: false, itens: [] };
+    setFormData({...formData, ambientes: [...formData.ambientes, newEnv]});
+    setEditingEnvIndex(formData.ambientes.length);
+    setEnvPromptOpen(false);
+  };
+
+  const deleteEnvironment = (idx) => {
+    if(window.confirm("Excluir ambiente completo?")) {
+      const updated = [...formData.ambientes]; updated.splice(idx, 1);
+      setFormData({...formData, ambientes: updated});
+    }
+  };
+
+  const generateReport = () => {
+    const html = `
+      <h1>Relatório de Custos da Obra - ${project.nomeProjeto}</h1>
+      <p><strong>Cliente:</strong> ${project.clientName}</p>
+      <p><strong>Data do Relatório:</strong> ${formatDate(getToday())}</p>
+      
+      <h2>1. Valor do Projeto / Contrato</h2>
+      <p>Custo do Serviço de Arquitetura: <strong>${formatCurrency(project.valorTotal)}</strong></p>
+
+      <h2>2. Detalhamento por Ambientes (Itens Cadastrados)</h2>
+      ${formData.ambientes.length === 0 ? '<p>Nenhum ambiente detalhado.</p>' : formData.ambientes.map(env => `
+        <h3 style="color:#0369a1; border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-top:20px;">Ambiente: ${env.nome}</h3>
+        ${env.itens.length === 0 ? '<p>Nenhum material/item lançado.</p>' : `
+          <table>
+            <tr><th>Categoria</th><th>Item</th><th>Marca/Modelo</th><th>Qtd</th><th>Valor Unit.</th><th>Total Item</th></tr>
+            ${env.itens.map(it => `
+              <tr>
+                <td>${it.categoria}</td>
+                <td>${it.nome}</td>
+                <td>${it.marca} ${it.modelo ? ' - ' + it.modelo : ''}</td>
+                <td>${it.quantidade || 1}</td>
+                <td>${formatCurrency(it.valor || 0)}</td>
+                <td>${formatCurrency((it.valor || 0) * (it.quantidade || 1))}</td>
+              </tr>
+            `).join('')}
+          </table>
+        `}
+      `).join('')}
+
+      <h2>3. Orçamentos de Tarefas/Serviços (Aprovados na Obra)</h2>
+      ${orcamentosVinculados.length === 0 ? '<p>Nenhum orçamento extra aprovado.</p>' : `
+        <table>
+          <tr><th>Fornecedor/Profissional</th><th>Serviço/Tarefa</th><th>Valor</th></tr>
+          ${orcamentosVinculados.map(o => `
+            <tr>
+              <td>${o.professionalName}</td>
+              <td>${o.checklistName} - ${o.obs}</td>
+              <td>${formatCurrency(o.value)}</td>
+            </tr>
+          `).join('')}
+        </table>
+      `}
+
+      <div style="text-align:right; margin-top: 15px; font-size: 16px; color: #555;">Subtotal Itens dos Ambientes: <strong>${formatCurrency(totalItensAmbientes)}</strong></div>
+      <div class="total-box">
+        Custo Total Estimado da Obra: <span>${formatCurrency(custoTotalObra)}</span>
+      </div>
+    `;
+    printReport(`Relatorio_Obra_${project.nomeProjeto.replace(/\s+/g,'_')}`, html);
+  };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[70]">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl flex flex-col h-[85vh]">
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white rounded-t-2xl shrink-0"><div><h2 className="text-lg font-bold uppercase flex items-center gap-2"><FolderOpen size={20}/> Documentos do Projeto</h2><p className="text-blue-200 text-xs mt-1 font-bold">{project.nomeProjeto || project.clientName}</p></div><button onClick={onClose}><X size={24} /></button></div>
-        <div className="bg-slate-50 p-4 border-b border-slate-200 flex shrink-0">
-          <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="bg-white border border-[#1e5aa0] text-[#1e5aa0] px-4 py-2 rounded-lg font-bold flex items-center space-x-2 text-xs uppercase tracking-wide transition-colors shadow-sm hover:bg-blue-50"><Upload size={16} /> <span>{uploading ? 'Enviando...' : 'Fazer Upload'}</span></button>
-          <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-[70]">
+      <div className="bg-white rounded-2xl w-full max-w-6xl shadow-2xl flex flex-col h-[95vh] sm:h-[90vh]">
+        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white rounded-t-2xl shrink-0">
+          <div><h2 className="text-lg font-bold uppercase tracking-wide flex items-center gap-2"><LayoutList size={20}/> Checklist Detalhado da Obra</h2><p className="text-blue-200 text-xs font-bold mt-1">{project.nomeProjeto}</p></div>
+          <div className="flex gap-2"><button onClick={generateReport} className="bg-white text-[#1e5aa0] hover:bg-slate-100 p-2 rounded-lg font-bold text-xs uppercase flex items-center gap-1 shadow"><Printer size={16}/> Relatório Custos</button><button onClick={onClose} className="p-2 hover:bg-blue-800 rounded-lg"><X size={20}/></button></div>
         </div>
-        <div className="flex-1 overflow-y-auto p-6 bg-slate-100">
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-            {documents.map(d => (
-              <div key={d.id} onDoubleClick={() => setViewingDoc(d)} className="bg-white border border-slate-200 rounded-xl p-3 cursor-pointer hover:border-[#1e5aa0] hover:shadow-md transition-all flex flex-col items-center text-center relative group">
-                <button onClick={(e)=>{e.stopPropagation(); deleteDocu(d.id);}} className="absolute top-2 right-2 text-red-400 opacity-0 group-hover:opacity-100 hover:text-red-600"><Trash2 size={14}/></button>
-                <FileText size={32} className="mb-2 text-slate-300 group-hover:text-[#1e5aa0]" />
-                <p className="text-[10px] font-bold text-slate-700 truncate w-full px-1 uppercase" title={d.nome}>{d.nome}</p>
-                <p className="text-[9px] text-slate-400 mt-1 font-bold">{(d.tamanho / 1024).toFixed(0)} KB</p>
-                {d.uploadedBy && <p className="text-[8px] text-[#1e5aa0] mt-1 font-bold bg-blue-50 px-1 rounded truncate w-full" title={d.uploadedBy}>Por: {d.uploadedBy.split(' ')[0]}</p>}
-                {d.checklistDesc && <p className="text-[8px] text-emerald-600 mt-0.5 font-bold bg-emerald-50 px-1 rounded truncate w-full" title={d.checklistDesc}>Ref: {d.checklistDesc}</p>}
+        
+        <div className="flex bg-slate-50 border-b border-slate-200 shrink-0 px-4 overflow-x-auto">
+          <button onClick={()=>{setActiveTab('geral'); setEditingEnvIndex(null);}} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors whitespace-nowrap ${activeTab === 'geral' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Inf. Gerais do Projeto</button>
+          <button onClick={()=>setActiveTab('ambientes')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors whitespace-nowrap ${activeTab === 'ambientes' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Ambientes ({formData.ambientes.length})</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto bg-slate-100">
+          {activeTab === 'geral' && (
+            <div className="p-6 max-w-4xl mx-auto space-y-6">
+              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h3 className="font-black text-[#1e5aa0] uppercase text-sm mb-4 border-b pb-2">Identidade do Projeto</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Nome do Cliente</label><input type="text" disabled value={project.clientName} className="w-full p-2.5 bg-slate-100 border rounded-lg font-bold text-slate-700" /></div>
+                  <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Estilo do Projeto (Ex: Industrial, Minimalista)</label><input type="text" value={formData.estiloProjeto} onChange={e=>setFormData({...formData, estiloProjeto: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 outline-none font-bold" /></div>
+                  <div className="md:col-span-2"><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Briefing Completo do Cliente/Projeto</label><textarea rows="4" value={formData.briefing} onChange={e=>setFormData({...formData, briefing: e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 outline-none resize-none font-medium text-sm"></textarea></div>
+                </div>
               </div>
-            ))}
-            {documents.length===0 && <div className="col-span-full text-center text-slate-400 font-bold py-12"><FolderOpen size={40} className="mx-auto mb-2 opacity-30"/>Vazio</div>}
-          </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                  <h3 className="font-black text-slate-700 uppercase text-sm mb-4 flex justify-between items-center">Planta Humanizada <label className="bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-indigo-100"><Upload size={14} className="inline mr-1"/> Upload<input type="file" className="hidden" onChange={(e)=>handleUploadSpecial(e, 'planta_humanizada')} /></label></h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    {plantas.map(d => <div key={d.id} className="relative group border rounded p-1"><button onClick={()=>deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documents', d.id))} className="absolute top-1 right-1 bg-red-500 text-white rounded p-1 opacity-0 group-hover:opacity-100"><Trash2 size={12}/></button><img src={d.conteudoBase64} alt={d.nome} className="w-full h-24 object-cover rounded" /></div>)}
+                    {plantas.length===0 && <div className="col-span-2 text-center text-slate-400 py-8 border border-dashed rounded bg-slate-50 text-xs">Nenhuma planta anexada</div>}
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                  <h3 className="font-black text-slate-700 uppercase text-sm mb-4 flex justify-between items-center">Referências (Inspirações) <label className="bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-indigo-100"><Upload size={14} className="inline mr-1"/> Upload<input type="file" multiple className="hidden" onChange={(e)=>handleUploadSpecial(e, 'referencia_geral')} /></label></h3>
+                  <div className="grid grid-cols-3 gap-2">
+                    {refGerais.map(d => <div key={d.id} className="relative group border rounded p-1"><button onClick={()=>deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documents', d.id))} className="absolute top-1 right-1 bg-red-500 text-white rounded p-1 opacity-0 group-hover:opacity-100"><Trash2 size={12}/></button><img src={d.conteudoBase64} alt={d.nome} className="w-full h-16 object-cover rounded" /></div>)}
+                    {refGerais.length===0 && <div className="col-span-3 text-center text-slate-400 py-8 border border-dashed rounded bg-slate-50 text-xs">Nenhuma inspiração anexada</div>}
+                  </div>
+                </div>
+              </div>
+              <div className="text-right"><button onClick={handleSaveGeneral} className="bg-[#1e5aa0] text-white px-6 py-3 rounded-lg font-bold shadow-md hover:bg-[#154278] uppercase">{saving ? 'A Guardar...' : 'Guardar Informações Gerais'}</button></div>
+            </div>
+          )}
+
+          {activeTab === 'ambientes' && editingEnvIndex === null && (
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6"><h3 className="font-black text-slate-700 uppercase">Ambientes Cadastrados</h3><button onClick={addEnvironment} className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-1 shadow-sm"><Plus size={16}/> Adicionar Ambiente</button></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {formData.ambientes.map((env, idx) => {
+                  const envTotal = env.itens.reduce((sum, item) => sum + ((Number(item.valor)||0) * (Number(item.quantidade)||1)), 0);
+                  const categoriasPreenchidas = [...new Set(env.itens.map(i => i.categoria))];
+                  return (
+                    <div key={env.id} className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:border-[#1e5aa0] transition-all cursor-pointer relative group" onClick={()=>{setEditingEnvIndex(idx); handleSaveGeneral();}}>
+                      <button onClick={(e)=>{e.stopPropagation(); deleteEnvironment(idx);}} className="absolute top-3 right-3 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100"><Trash2 size={16}/></button>
+                      <div className="flex items-center gap-3 mb-3"><div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Sofa size={24}/></div><div><h4 className="font-black text-slate-800 uppercase leading-tight">{env.nome}</h4><p className="text-[10px] font-bold text-slate-500">{env.itens.length} itens detalhados</p></div></div>
+                      <div className="flex flex-wrap gap-1 mb-4 h-12 overflow-hidden">{categoriasPreenchidas.map(c => <span key={c} className="text-[9px] bg-slate-100 border border-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black uppercase">{c}</span>)}{categoriasPreenchidas.length===0 && <span className="text-[10px] text-slate-400 italic">Nenhum item adicionado</span>}</div>
+                      <div className="border-t pt-3 flex justify-between items-center"><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Estimativa Total:</span><span className="font-black text-[#1e5aa0]">{formatCurrency(envTotal)}</span></div>
+                    </div>
+                  );
+                })}
+                {formData.ambientes.length === 0 && <div className="col-span-full text-center py-12 text-slate-400 font-medium">Nenhum ambiente adicionado ao projeto ainda.</div>}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'ambientes' && editingEnvIndex !== null && (
+            <EnvironmentEditor env={formData.ambientes[editingEnvIndex]} project={project} appUser={appUser} allDocs={documents}
+              onSave={(updatedEnv) => {
+                const novas = [...formData.ambientes]; novas[editingEnvIndex] = updatedEnv;
+                setFormData({...formData, ambientes: novas});
+                updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', project.id), { ambientes: novas });
+              }} 
+              onBack={() => setEditingEnvIndex(null)}
+              globalStyle={formData.estiloProjeto}
+              onUpload={(e, type, itemId) => handleUploadSpecial(e, type, formData.ambientes[editingEnvIndex].id, itemId)}
+            />
+          )}
         </div>
       </div>
-      {viewingDoc && (
-        <div className="fixed inset-0 bg-black/90 flex flex-col z-[80]">
-          <div className="p-4 flex justify-between items-center text-white bg-black/50 shrink-0"><h3 className="font-bold flex items-center gap-2 text-sm uppercase"><Eye size={18}/> {viewingDoc.nome}</h3><button onClick={() => setViewingDoc(null)} className="hover:text-red-400"><X size={24}/></button></div>
-          <div className="flex-1 overflow-auto flex items-center justify-center p-4">
-            {viewingDoc.tipo.startsWith('image/') ? <img src={viewingDoc.conteudoBase64} alt={viewingDoc.nome} className="max-w-full max-h-full object-contain rounded" /> : viewingDoc.tipo === 'application/pdf' ? <iframe src={viewingDoc.conteudoBase64} className="w-full h-full bg-white rounded"></iframe> : <div className="bg-white p-8 rounded-xl text-center"><FileText size={48} className="mx-auto text-slate-300 mb-2"/><p className="text-slate-800 font-bold text-sm">Preview Indisponível</p></div>}
+      
+      {envPromptOpen && (
+        <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center p-4 z-[90] backdrop-blur-sm">
+          <div className="bg-white rounded-xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
+             <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase text-sm">Nome do Novo Ambiente <button onClick={()=>setEnvPromptOpen(false)}><X size={18}/></button></div>
+             <form onSubmit={confirmAddEnvironment} className="p-6 flex flex-col gap-4">
+                <input autoFocus required type="text" placeholder="Ex: Quarto Casal, Cozinha..." value={tempEnvName} onChange={(e)=>setTempEnvName(e.target.value)} className="w-full border p-3 rounded-lg outline-none focus:ring-2 focus:ring-[#1e5aa0] font-bold text-slate-700" />
+                <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3 rounded-xl hover:bg-emerald-700 shadow-md">Criar Ambiente</button>
+             </form>
           </div>
         </div>
       )}
+
+      {alertMsg && <AlertModal message={alertMsg} onClose={()=>setAlertMsg('')}/>}
     </div>
   );
 }
 
-function ProjectModal({ workspaceId, clients, companyUsers, paymentMethods, project, onClose }) {
-  const isEditing = !!project;
-  const hasPaid = isEditing && project.parcelas?.some(p => p.paga);
+function EnvironmentEditor({ env, project, appUser, allDocs, onSave, onBack, globalStyle, onUpload }) {
+  const [localEnv, setLocalEnv] = useState(env);
+  const [activeCat, setActiveCat] = useState(CATEGORIAS_AMBIENTE[0]);
+  const [itemForm, setItemForm] = useState({ nome: '', marca: '', modelo: '', codigo: '', valor: '', quantidade: 1 });
+
+  const envDocs = allDocs.filter(d => d.ambienteId === localEnv.id);
+  const refAmbiente = envDocs.filter(d => d.docType === 'referencia_ambiente');
+
+  const updateField = (field, val) => {
+    const updated = {...localEnv, [field]: val};
+    setLocalEnv(updated); onSave(updated);
+  };
+
+  const addItem = (e) => {
+    e.preventDefault();
+    if(!itemForm.nome) return;
+    const newItem = { id: generateId(), categoria: activeCat, ...itemForm, valor: parseFloat(itemForm.valor||0), quantidade: parseInt(itemForm.quantidade||1) };
+    const updated = {...localEnv, itens: [...localEnv.itens, newItem]};
+    setLocalEnv(updated); onSave(updated);
+    setItemForm({ nome: '', marca: '', modelo: '', codigo: '', valor: '', quantidade: 1 });
+  };
+
+  const deleteItem = (itemId) => {
+    const updated = {...localEnv, itens: localEnv.itens.filter(i => i.id !== itemId)};
+    setLocalEnv(updated); onSave(updated);
+  };
+
+  const catItems = localEnv.itens.filter(i => i.categoria === activeCat);
+
+  return (
+    <div className="flex flex-col h-full bg-slate-50 animate-in fade-in">
+      <div className="bg-white p-4 border-b flex justify-between items-center shadow-sm z-10 shrink-0">
+        <div className="flex items-center gap-4"><button onClick={onBack} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600"><ChevronLeft size={20}/></button><input type="text" value={localEnv.nome} onChange={e=>updateField('nome', e.target.value)} className="font-black text-xl text-[#1e5aa0] uppercase outline-none bg-transparent border-b border-transparent focus:border-[#1e5aa0]" placeholder="Nome do Ambiente" /></div>
+        <div className="text-right"><p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Total do Ambiente</p><p className="font-black text-lg text-emerald-600">{formatCurrency(localEnv.itens.reduce((s,i)=>s+(i.valor*i.quantidade),0))}</p></div>
+      </div>
+
+      <div className="flex-1 overflow-auto p-6 flex flex-col md:flex-row gap-6">
+        <div className="w-full md:w-1/3 space-y-6">
+          <div className="bg-white p-5 rounded-xl border shadow-sm">
+            <h4 className="font-black text-slate-700 uppercase text-xs mb-3">Detalhes e Briefing do Ambiente</h4>
+            <textarea rows="4" value={localEnv.detalhes} onChange={e=>updateField('detalhes', e.target.value)} placeholder="Ex: Quarto de menino 10 anos, gamer..." className="w-full p-2.5 border rounded-lg outline-none resize-none text-sm font-medium mb-3"></textarea>
+            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer mb-2"><input type="checkbox" checked={localEnv.usarEstiloGeral} onChange={e=>updateField('usarEstiloGeral', e.target.checked)} className="w-4 h-4 accent-[#1e5aa0]"/> Usar mesmo estilo do projeto geral</label>
+            {!localEnv.usarEstiloGeral && <input type="text" placeholder="Estilo específico do ambiente" value={localEnv.estilo} onChange={e=>updateField('estilo', e.target.value)} className="w-full p-2.5 border rounded-lg outline-none text-sm font-bold" />}
+          </div>
+          <div className="bg-white p-5 rounded-xl border shadow-sm">
+            <h4 className="font-black text-slate-700 uppercase text-xs mb-3 flex justify-between items-center">Referências do Ambiente <label className="text-[#1e5aa0] cursor-pointer hover:underline text-[10px]"><Upload size={12} className="inline"/> Upload<input type="file" multiple className="hidden" onChange={(e)=>onUpload(e, 'referencia_ambiente')} /></label></h4>
+            <div className="grid grid-cols-3 gap-2">
+              {refAmbiente.map(d => <div key={d.id} className="relative group border rounded p-1"><button onClick={()=>deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documents', d.id))} className="absolute top-0 right-0 bg-red-500 text-white rounded-bl p-0.5 opacity-0 group-hover:opacity-100"><X size={10}/></button><img src={d.conteudoBase64} alt={d.nome} className="w-full h-12 object-cover rounded" /></div>)}
+            </div>
+          </div>
+        </div>
+
+        <div className="w-full md:w-2/3 bg-white border rounded-xl shadow-sm flex flex-col overflow-hidden">
+          <div className="flex bg-slate-800 text-slate-300 overflow-x-auto shrink-0 custom-scrollbar">
+            {CATEGORIAS_AMBIENTE.map(cat => (
+              <button key={cat} onClick={()=>setActiveCat(cat)} className={`px-4 py-3 text-xs font-black uppercase tracking-widest whitespace-nowrap transition-colors border-b-2 ${activeCat === cat ? 'bg-slate-900 text-white border-[#1e5aa0]' : 'border-transparent hover:bg-slate-700'}`}>
+                {cat} {localEnv.itens.filter(i=>i.categoria===cat).length > 0 && <span className="bg-[#1e5aa0] text-white px-1.5 rounded-full ml-1 text-[9px]">{localEnv.itens.filter(i=>i.categoria===cat).length}</span>}
+              </button>
+            ))}
+          </div>
+          <div className="p-5 flex-1 overflow-y-auto bg-slate-50 flex flex-col">
+            <form onSubmit={addItem} className="bg-white p-4 rounded-xl border border-blue-100 shadow-sm mb-6 shrink-0">
+              <h5 className="text-xs font-black text-[#1e5aa0] uppercase mb-3">Adicionar Item em {activeCat}</h5>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="md:col-span-2"><input required placeholder="Nome/Descrição do Item *" value={itemForm.nome} onChange={e=>setItemForm({...itemForm, nome:e.target.value})} className="w-full p-2 border rounded text-xs font-bold" /></div>
+                <div><input placeholder="Marca" value={itemForm.marca} onChange={e=>setItemForm({...itemForm, marca:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
+                <div><input placeholder="Modelo/Linha" value={itemForm.modelo} onChange={e=>setItemForm({...itemForm, modelo:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
+                <div><input placeholder="Cód. Produto" value={itemForm.codigo} onChange={e=>setItemForm({...itemForm, codigo:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
+                <div><input type="number" min="1" required placeholder="Qtd *" value={itemForm.quantidade} onChange={e=>setItemForm({...itemForm, quantidade:e.target.value})} className="w-full p-2 border rounded text-xs font-bold text-center" /></div>
+                <div><input type="number" step="0.01" required placeholder="Valor Unit (R$) *" value={itemForm.valor} onChange={e=>setItemForm({...itemForm, valor:e.target.value})} className="w-full p-2 border rounded text-xs font-black text-emerald-600" /></div>
+                <div><button type="submit" className="w-full bg-[#1e5aa0] text-white font-bold py-2 rounded text-xs uppercase hover:bg-[#154278]">Inserir</button></div>
+              </div>
+            </form>
+
+            <div className="space-y-3">
+              {catItems.map(item => {
+                const itemDocs = envDocs.filter(d => d.itemId === item.id);
+                return (
+                  <div key={item.id} className="bg-white border p-3 rounded-lg shadow-sm flex flex-col md:flex-row gap-4 relative">
+                    <button onClick={()=>deleteItem(item.id)} className="absolute top-2 right-2 text-slate-300 hover:text-red-500"><X size={16}/></button>
+                    <div className="w-20 h-20 bg-slate-100 rounded border flex items-center justify-center shrink-0 overflow-hidden relative group">
+                      {itemDocs.length > 0 ? <img src={itemDocs[0].conteudoBase64} className="w-full h-full object-cover" /> : <PaintBucket size={24} className="text-slate-300"/>}
+                      <label className="absolute inset-0 bg-black/50 text-white flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity text-[9px] font-bold uppercase text-center"><Upload size={12} className="mb-1"/> <input type="file" className="hidden" onChange={(e)=>onUpload(e, 'item_ambiente', item.id)} /></label>
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-black text-slate-800 text-sm uppercase">{item.nome}</p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-slate-500 font-medium">
+                        {item.marca && <span>Marca: {item.marca}</span>}{item.modelo && <span>Mod: {item.modelo}</span>}{item.codigo && <span>Cód: {item.codigo}</span>}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 min-w-[100px] flex flex-col justify-center">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">{item.quantidade}x {formatCurrency(item.valor)}</p>
+                      <p className="font-black text-emerald-600 text-lg">{formatCurrency(item.valor * item.quantidade)}</p>
+                    </div>
+                  </div>
+                );
+              })}
+              {catItems.length === 0 && <div className="text-center py-10 text-slate-400 text-xs font-bold uppercase border border-dashed rounded-xl">Nenhum item inserido em {activeCat}.</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectModal({ appUser, clients, companyUsers, project, onClose }) {
+  const [formData, setFormData] = useState(project || { clientId: '', nomeProjeto: '', status: 'EM ANDAMENTO', valorTotal: '', formaPagamento: 'A VISTA', dataFechamento: getToday(), responsavelId: '', faseAnalitica: 'LEVANTAMENTO', cep: '', logradouro: '', numero: '', complemento: '', bairro: '', cidade: '', uf: '', usarEnderecoCliente: false });
+  const paymentOptions = ['A VISTA', ...Array.from({length: 12}, (_, i) => `CARTAO ${i+1}X`), ...Array.from({length: 4}, (_, i) => `BOLETO ${i+1}X`)];
   
-  // Combina as formas de pagamento customizadas com as padrões do sistema
-  const customPaymentOptions = (paymentMethods || []).map(m => m.nome);
-  const paymentOptions = ['A VISTA', ...customPaymentOptions, ...Array.from({length: 12}, (_, i) => `CARTAO ${i+1}X`), ...Array.from({length: 4}, (_, i) => `BOLETO ${i+1}X`)];
-  
-  const [formData, setFormData] = useState(project || { 
-    clientId: '', responsavelId: '', nomeProjeto: '', tipoProjeto: 'INTERIORES', dataFechamento: getToday(), formaPagamento: 'A VISTA', valorTotal: '', status: 'EM ANDAMENTO', faseAnalitica: 'LEVANTAMENTO',
-    usarEnderecoCliente: false, cep: '', rua: '', numero: '', bairro: '', cidade: '', estado: ''
-  });
-  
-  // Controle de Parcelas Customizadas
-  const [tempParcelas, setTempParcelas] = useState(isEditing ? project.parcelas || [] : []);
-  const [showParcelas, setShowParcelas] = useState(false);
-  const initialRender = useRef(true);
-
-  // Gera parcelas automaticamente baseado no formulário
-  useEffect(() => {
-    if (initialRender.current) {
-      initialRender.current = false;
-      if (isEditing && project.parcelas?.length) {
-        // Assegura que todas tenham a string para evitar o "pulo" do cursor se for editar
-        setTempParcelas(project.parcelas.map(p => ({ ...p, valorStr: p.valorStr || p.valor.toFixed(2) })));
-        return; 
-      }
-    }
-    if (!hasPaid) {
-      const vNum = parseFloat(String(formData.valorTotal).replace(',', '.')) || 0;
-      
-      let count = 1;
-      let prazoDias = 30;
-      let isCustom = false;
-
-      const customMethod = (paymentMethods || []).find(m => m.nome === formData.formaPagamento);
-      
-      if (customMethod) {
-        count = customMethod.parcelas || 1;
-        prazoDias = customMethod.prazoVencimento || 30;
-        isCustom = true;
-      } else if (formData.formaPagamento.includes('X')) {
-        count = parseInt(formData.formaPagamento.replace(/\D/g, '')) || 1;
-      }
-
-      const novas = Array.from({length: count}).map((_, i) => {
-        const d = new Date(formData.dataFechamento);
-        d.setMinutes(d.getMinutes() + d.getTimezoneOffset());
-        
-        if (isCustom) {
-           d.setDate(d.getDate() + (prazoDias * (i + 1))); // Soma os dias de intervalo
-        } else {
-           d.setMonth(d.getMonth() + i); // Comportamento Padrão Mensal
-        }
-
-        const parcelVal = vNum / count;
-        return { id: generateId(), numero: i + 1, valor: parcelVal, valorStr: parcelVal.toFixed(2), dataVencimento: d.toISOString().split('T')[0], paga: false };
-      });
-      setTempParcelas(novas);
-    }
-  }, [formData.formaPagamento, formData.valorTotal, formData.dataFechamento, paymentMethods]);
-
-  // Função aprimorada para evitar pulo de cursor e limitar valor máximo
-  const handleParcelaStrChange = (index, rawStr) => {
-    let updated = [...tempParcelas];
-    
-    // 1. Guarda a string exata que o usuário digitou (ex: "1.") para não quebrar o cursor
-    updated[index].valorStr = rawStr;
-    
-    // 2. Extrai o número para cálculo
-    let newVal = parseFloat(rawStr) || 0;
-    let valorTotalProjeto = parseFloat(String(formData.valorTotal).replace(',', '.')) || 0;
-    
-    // 3. Calcula o quanto já está pago e travado
-    let paidSum = updated.filter(p => p.paga).reduce((acc, p) => acc + p.valor, 0);
-    
-    // 4. O máximo que esta parcela pode assumir é o (Total do Projeto - O que já foi pago)
-    let maxAllowed = valorTotalProjeto - paidSum;
-
-    if (newVal > maxAllowed) {
-      alert(`O valor digitado excede o total do contrato. O máximo permitido para compor esta parcela é ${formatCurrency(maxAllowed)}`);
-      // Aborta a atualização para bloquear o input
-      return; 
-    }
-
-    // Atualiza o valor numérico da parcela
-    updated[index].valor = newVal;
-
-    // 5. Rebalanceamento Igualitário: Distribui o que sobrou igualmente entre as outras parcelas editáveis
-    let modifiable = updated.map((p, i) => ({...p, originalIndex: i})).filter(p => p.originalIndex !== index && !p.paga);
-
-    if (modifiable.length > 0) {
-      let targetSumRemaining = maxAllowed - newVal; // O montante que as OUTRAS parcelas precisam cobrir
-      let perItem = targetSumRemaining / modifiable.length;
-      
-      modifiable.forEach(m => {
-        updated[m.originalIndex].valor = perItem;
-        updated[m.originalIndex].valorStr = perItem.toFixed(2); // Formata bonitinho para as outras
-      });
-    }
-
-    setTempParcelas(updated);
-  };
-
-  const handleDateChange = (index, newDate) => {
-    let updated = [...tempParcelas];
-    updated[index].dataVencimento = newDate;
-    setTempParcelas(updated);
-  };
-
-  const buscarCEP = async (valorCep) => {
-    const raw = valorCep.replace(/\D/g, '');
-    if (raw.length !== 8) return;
-    try {
-      const res = await fetch(`https://viacep.com.br/ws/${raw}/json/`);
-      const data = await res.json();
-      if (!data.erro) {
-        setFormData(prev => ({ ...prev, rua: data.logradouro || '', bairro: data.bairro || '', cidade: data.localidade || '', estado: data.uf || '' }));
-      }
-    } catch (err) { console.error("Erro viaCep", err); }
-  };
-
-  const handleUseClientAddress = (e) => {
-    const checked = e.target.checked;
-    setFormData(prev => ({ ...prev, usarEnderecoCliente: checked }));
-    if (checked && formData.clientId) {
-      const c = clients.find(x => x.id === formData.clientId);
-      if (c) setFormData(prev => ({...prev, cep: c.cep||'', rua: c.rua||'', numero: c.numero||'', bairro: c.bairro||'', cidade: c.cidade||'', estado: c.estado||''}));
-    }
-  };
-
   const handleClientChange = (e) => {
-    const cId = e.target.value;
-    const updates = { clientId: cId };
-    if (formData.usarEnderecoCliente && cId) {
-      const c = clients.find(x => x.id === cId);
-      if (c) { updates.cep=c.cep||''; updates.rua=c.rua||''; updates.numero=c.numero||''; updates.bairro=c.bairro||''; updates.cidade=c.cidade||''; updates.estado=c.estado||''; }
-    } else if (formData.usarEnderecoCliente && !cId) {
-      updates.cep=''; updates.rua=''; updates.numero=''; updates.bairro=''; updates.cidade=''; updates.estado='';
+    const clientId = e.target.value;
+    setFormData(prev => {
+      let updated = { ...prev, clientId };
+      if(prev.usarEnderecoCliente && clientId) {
+        const c = clients.find(x => x.id === clientId);
+        if(c) updated = { ...updated, cep: c.cep||'', logradouro: c.logradouro||'', numero: c.numero||'', complemento: c.complemento||'', bairro: c.bairro||'', cidade: c.cidade||'', uf: c.uf||'' };
+      }
+      return updated;
+    });
+  };
+
+  const handleUsarEnderecoChange = (e) => {
+    const checked = e.target.checked;
+    setFormData(prev => {
+      let updated = { ...prev, usarEnderecoCliente: checked };
+      if(checked && prev.clientId) {
+        const c = clients.find(x => x.id === prev.clientId);
+        if(c) updated = { ...updated, cep: c.cep||'', logradouro: c.logradouro||'', numero: c.numero||'', complemento: c.complemento||'', bairro: c.bairro||'', cidade: c.cidade||'', uf: c.uf||'' };
+      } else if(!checked) {
+        updated = { ...updated, cep: '', logradouro: '', numero: '', complemento: '', bairro: '', cidade: '', uf: '' };
+      }
+      return updated;
+    });
+  };
+
+  const handleCepBlur = async (e) => {
+    if(formData.usarEnderecoCliente) return; 
+    const cep = e.target.value.replace(/\D/g, '');
+    if(cep.length === 8) {
+      try {
+        const res = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+        const data = await res.json();
+        if(!data.erro) setFormData(prev => ({...prev, logradouro: data.logradouro, bairro: data.bairro, cidade: data.localidade, uf: data.uf}));
+      } catch(err) { console.error(err); }
     }
-    setFormData(prev => ({ ...prev, ...updates }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const client = clients.find(c => c.id === formData.clientId);
-    const responsavel = (companyUsers || []).find(u => u.id === formData.responsavelId);
+    const v = parseFloat(String(formData.valorTotal).replace(',', '.'));
     
-    // Calcula diferença se tiver falha de arredondamento antes de salvar
-    let somaParcelas = tempParcelas.reduce((acc, p) => acc + p.valor, 0);
-    let valorTotalProjeto = parseFloat(String(formData.valorTotal).replace(',', '.'));
-    
-    // Validação de segurança pro valor total bater
-    if (Math.abs(somaParcelas - valorTotalProjeto) > 0.05) {
-       alert("A soma das parcelas não bate com o valor do contrato. Ajuste os valores.");
-       setShowParcelas(true);
-       return;
+    let novasParcelas = project?.parcelas || [];
+    if (!project || formData.valorTotal !== project.valorTotal || formData.formaPagamento !== project.formaPagamento || formData.dataFechamento !== project.dataFechamento) {
+      const count = formData.formaPagamento.includes('X') ? parseInt(formData.formaPagamento.replace(/\D/g, '')) : 1;
+      novasParcelas = Array.from({length: count}).map((_, i) => {
+        const d = new Date(formData.dataFechamento); d.setMonth(d.getMonth() + i);
+        return { id: generateId(), numero: i+1, valor: v/count, dataVencimento: d.toISOString().split('T')[0], paga: false };
+      });
     }
 
-    // Antes de salvar, limpamos a sujeira das strings
-    const finalParcelas = tempParcelas.map(p => {
-       const clean = {...p};
-       delete clean.valorStr;
-       return clean;
-    });
-
-    const pData = { ...formData, workspaceId, clientName: client?.nome || '', responsavelNome: responsavel?.nome || '', valorTotal: valorTotalProjeto, parcelas: finalParcelas };
-    if (isEditing) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', project.id), pData);
-    else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), pData);
-    onClose();
+    const data = { ...formData, companyId: appUser.companyId, clientName: client.nome, valorTotal: v, parcelas: novasParcelas };
+    if(!project) { data.briefing = ''; data.estiloProjeto = ''; data.ambientes = []; } 
+    try {
+      if (project) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', project.id), data);
+      else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), data);
+      onClose();
+    } catch(err) { console.error(err); }
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-[#1e5aa0] text-white rounded-t-2xl"><h2 className="text-lg font-bold uppercase tracking-wide">{isEditing ? 'Editar Projeto' : 'Lançar Projeto'}</h2><button onClick={onClose}><X size={20} /></button></div>
-        <form id="pform" onSubmit={handleSubmit} className="p-6 space-y-6 overflow-y-auto">
-          {hasPaid && <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-start space-x-2 text-amber-800 text-xs font-bold"><Info size={16} className="shrink-0" /><p>Projeto possui parcelas pagas. Valor e Forma de Pagamento bloqueados.</p></div>}
-          
-          {/* Dados Gerais */}
-          <div>
-            <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Dados Gerais</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="sm:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Nome do Projeto *</label><input required name="nomeProjeto" value={formData.nomeProjeto} onChange={e=>setFormData({...formData, nomeProjeto: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none focus:ring-2 focus:ring-[#1e5aa0] font-bold text-slate-800" /></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Tipo de Projeto</label><select value={formData.tipoProjeto} onChange={e=>setFormData({...formData, tipoProjeto: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0] font-bold text-slate-700 text-sm">{TIPOS_PROJETO.map(t=><option key={t}>{t}</option>)}</select></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Cliente *</label><select required value={formData.clientId} onChange={handleClientChange} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0] font-medium text-sm"><option value=""></option>{clients.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select></div>
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Responsável</label><select value={formData.responsavelId || ''} onChange={e=>setFormData({...formData, responsavelId: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0] font-medium text-sm"><option value="">Sem responsável</option>{(companyUsers||[]).map(u => <option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
-            </div>
-          </div>
-
-          {/* Endereço do Projeto */}
-          <div>
-            <div className="flex justify-between items-center border-b pb-1 mb-3">
-              <h3 className="text-xs font-black text-[#1e5aa0] uppercase">Endereço da Obra</h3>
-              <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-600"><input type="checkbox" checked={formData.usarEnderecoCliente} onChange={handleUseClientAddress} className="w-3.5 h-3.5 accent-[#1e5aa0]"/> Usar endereço do cliente</label>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 opacity-100 transition-opacity" style={{opacity: formData.usarEnderecoCliente ? 0.6 : 1, pointerEvents: formData.usarEnderecoCliente ? 'none' : 'auto'}}>
-              <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">CEP</label><input type="text" value={formData.cep} onChange={e=>setFormData({...formData, cep: maskCEP(e.target.value)})} onBlur={e=>buscarCEP(e.target.value)} placeholder="00000-000" className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none font-bold" /></div>
-              <div className="md:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Rua / Logradouro</label><input type="text" value={formData.rua} onChange={e=>setFormData({...formData, rua: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none" /></div>
-              <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Número</label><input type="text" value={formData.numero} onChange={e=>setFormData({...formData, numero: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none" /></div>
-              <div className="md:col-span-2"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Bairro</label><input type="text" value={formData.bairro} onChange={e=>setFormData({...formData, bairro: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none" /></div>
-              <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Cidade</label><input type="text" value={formData.cidade} onChange={e=>setFormData({...formData, cidade: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none" /></div>
-              <div className="md:col-span-1"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Estado</label>
-                <select value={formData.estado} onChange={e=>setFormData({...formData, estado: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none bg-white"><option value=""></option>{ESTADOS_BR.map(uf => <option key={uf} value={uf}>{uf}</option>)}</select>
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl w-full max-w-3xl flex flex-col shadow-2xl max-h-[95vh]">
+        <div className="p-4 bg-[#1e5aa0] text-white rounded-t-2xl flex justify-between items-center"><h2 className="font-bold text-lg uppercase">{project ? 'Editar' : 'Lançar'} Projeto Inicial</h2><button onClick={onClose}><X size={20}/></button></div>
+        <form id="pform" onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4 custom-scrollbar">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Nome do Projeto *</label><input required value={formData.nomeProjeto} onChange={e=>setFormData({...formData, nomeProjeto:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold text-slate-800" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Cliente *</label><select required value={formData.clientId} onChange={handleClientChange} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none"><option></option>{clients.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}</select></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Arquiteto Responsável</label><select value={formData.responsavelId} onChange={e=>setFormData({...formData, responsavelId:e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none"><option value="">Nenhum</option>{companyUsers.map(u=><option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Data Fechamento</label><input required type="date" value={formData.dataFechamento} onChange={e=>setFormData({...formData, dataFechamento:e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none font-medium" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Status Geral</label><select value={formData.status} onChange={e=>setFormData({...formData, status:e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none font-bold"><option>EM ANDAMENTO</option><option>ENTREGUE</option><option>CANCELADO</option></select></div>
+            
+            <div className="md:col-span-2 border-t pt-4 mt-2">
+              <div className="flex justify-between items-center mb-4">
+                <h4 className="font-bold text-slate-700 uppercase text-sm">Endereço da Obra / Projeto</h4>
+                <label className="flex items-center gap-2 text-xs font-bold text-[#1e5aa0] cursor-pointer bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 transition-colors hover:bg-blue-100">
+                  <input type="checkbox" checked={formData.usarEnderecoCliente} onChange={handleUsarEnderecoChange} className="w-4 h-4 accent-[#1e5aa0]" />
+                  Usar endereço do cliente
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input value={formData.cep} onChange={e=>setFormData({...formData, cep:e.target.value})} onBlur={handleCepBlur} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" placeholder="00000-000" /></div>
+                <div className="sm:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Logradouro / Rua</label><input value={formData.logradouro} onChange={e=>setFormData({...formData, logradouro:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Número</label><input value={formData.numero} onChange={e=>setFormData({...formData, numero:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Complemento</label><input value={formData.complemento} onChange={e=>setFormData({...formData, complemento:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Bairro</label><input value={formData.bairro} onChange={e=>setFormData({...formData, bairro:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Cidade</label><input value={formData.cidade} onChange={e=>setFormData({...formData, cidade:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">UF</label><input value={formData.uf} onChange={e=>setFormData({...formData, uf:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400 uppercase" maxLength="2" /></div>
               </div>
             </div>
-          </div>
 
-          {/* Financeiro */}
-          <div>
-            <h3 className="text-xs font-black text-[#1e5aa0] uppercase border-b pb-1 mb-3">Financeiro e Status</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Fechamento *</label><input required type="date" value={formData.dataFechamento} onChange={e=>setFormData({...formData, dataFechamento: e.target.value})} className="w-full p-2.5 border rounded-lg outline-none text-sm font-medium" /></div>
-              {isEditing && <div><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Status</label><select value={formData.status} onChange={e=>setFormData({...formData, status: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white outline-none text-sm font-black"><option>EM ANDAMENTO</option><option>ENTREGUE</option><option>CANCELADO</option></select></div>}
-              <div className={!isEditing ? "col-span-2" : "col-span-2"}><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Valor Contrato (R$) *</label><input required type="number" step="0.01" value={formData.valorTotal} onChange={e=>setFormData({...formData, valorTotal: e.target.value})} disabled={hasPaid} className="w-full p-2.5 border rounded-lg outline-none font-black text-slate-800 focus:ring-2 disabled:bg-slate-100" /></div>
-            </div>
-            
-            <div className="mt-4"><label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Forma de Pagamento *</label><select required value={formData.formaPagamento} onChange={e=>setFormData({...formData, formaPagamento: e.target.value})} disabled={hasPaid} className="w-full p-2.5 border rounded-lg bg-white outline-none font-bold text-sm disabled:bg-slate-100">{paymentOptions.map(o => <option key={o}>{o}</option>)}</select></div>
-            
-            {/* Controle Avançado das Parcelas */}
-            {tempParcelas.length > 0 && (
-              <div className="mt-4 animate-in fade-in">
-                <button type="button" onClick={()=>setShowParcelas(!showParcelas)} className="text-[#1e5aa0] font-bold text-xs flex items-center gap-1 hover:text-[#154278] transition-colors bg-blue-50 px-3 py-2 rounded-lg border border-blue-100"><Settings2 size={14}/> {showParcelas ? 'Ocultar Parcelas' : 'Ajustar Datas e Valores das Parcelas (Avançado)'}</button>
-                {showParcelas && (
-                  <div className="mt-3 space-y-2 border border-slate-200 rounded-lg p-3 bg-slate-50 shadow-inner">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Ao alterar o valor de uma parcela, o restante da diferença é dividido entre as outras.</p>
-                    {tempParcelas.map((p, idx) => (
-                        <div key={idx} className="flex gap-2 items-center">
-                            <span className="text-xs font-black text-slate-400 w-6">{idx+1}º</span>
-                            <input type="date" value={p.dataVencimento} onChange={e=>handleDateChange(idx, e.target.value)} disabled={p.paga} className="p-2 border rounded-lg text-sm outline-none focus:ring-2 flex-1 font-bold text-slate-700 disabled:bg-slate-100" />
-                            <input type="number" step="0.01" value={p.valorStr !== undefined ? p.valorStr : (p.valor || 0).toFixed(2)} onChange={e=>handleParcelaStrChange(idx, e.target.value)} disabled={p.paga} className="p-2 border rounded-lg text-sm outline-none focus:ring-2 w-32 text-right font-black text-[#1e5aa0] disabled:bg-slate-100 disabled:text-slate-400" />
-                        </div>
-                    ))}
-                    <div className="flex justify-between items-center pt-3 border-t border-slate-200 mt-3">
-                        <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Soma das parcelas:</span>
-                        <span className={`text-sm font-black ${Math.abs(tempParcelas.reduce((a,b)=>a+b.valor,0) - (parseFloat(formData.valorTotal)||0)) > 0.05 ? 'text-red-500' : 'text-emerald-600'}`}>{formatCurrency(tempParcelas.reduce((a,b)=>a+b.valor,0))}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="md:col-span-2 border-t pt-4 mt-2"><h4 className="font-bold text-slate-700 uppercase text-sm mb-4"><DollarSign size={16} className="inline mr-1 text-emerald-600"/> Financeiro do Contrato (Seus Honorários)</h4></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Valor do Contrato (R$) *</label><input required type="number" step="0.01" disabled={project?.parcelas?.some(x=>x.paga)} value={formData.valorTotal} onChange={e=>setFormData({...formData, valorTotal:e.target.value})} className="w-full p-2.5 border rounded-lg font-black text-[#1e5aa0] focus:ring-2 mt-1 outline-none disabled:bg-slate-100" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Parcelamento *</label><select required disabled={project?.parcelas?.some(x=>x.paga)} value={formData.formaPagamento} onChange={e=>setFormData({...formData, formaPagamento:e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none font-bold disabled:bg-slate-100">{paymentOptions.map(o=><option key={o}>{o}</option>)}</select></div>
           </div>
         </form>
-        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-200 rounded-lg">Cancelar</button><button form="pform" type="submit" disabled={!clients.length} className="px-5 py-2.5 bg-[#1e5aa0] text-white font-bold hover:bg-[#154278] rounded-lg shadow-sm">Confirmar Lançamento</button></div>
+        <div className="p-4 border-t bg-slate-50 flex justify-end space-x-2 rounded-b-2xl"><button onClick={onClose} type="button" className="px-5 py-2.5 rounded-lg font-bold text-slate-600 hover:bg-slate-200">Cancelar</button><button form="pform" type="submit" className="px-5 py-2.5 rounded-lg font-bold text-white bg-[#1e5aa0] hover:bg-[#154278]">Salvar Lançamento Inicial</button></div>
       </div>
     </div>
   );
 }
 
-// --- VISÃO: RECEBIMENTOS ---
-function RecebimentosView({ workspaceId, projects, appUser }) {
+// --- RECEBIMENTOS COM RELATÓRIO E CALENDÁRIO DUPLO ---
+function RecebimentosView({ projects, canEdit, appUser }) {
   const [baseDate, setBaseDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
+  const [payModalData, setPayModalData] = useState(null);
+  const [selectedPayIndex, setSelectedPayIndex] = useState(0);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [confirmData, setConfirmData] = useState(null);
+
+  const prevMonth = () => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 1));
+  const nextMonth = () => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1));
+  const monthsToRender = [baseDate, new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1)];
+
+  const handlePay = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const date = form.date.value;
+    const formaRecebimento = form.formaRecebimento.value;
+    const targetItem = payModalData[selectedPayIndex];
+
+    const novas = targetItem.p.parcelas.map((x, i) => i === targetItem.index ? {...x, paga: true, dataRecebimento: date, formaRecebimento} : x);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', targetItem.pId), { parcelas: novas });
+    setPayModalData(null);
+    setSelectedPayIndex(0);
+  };
+  
+  const handleUndo = async (item) => {
+    const novas = item.p.parcelas.map((x, i) => i === item.index ? {...x, paga: false, dataRecebimento: null, formaRecebimento: null} : x);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', item.pId), { parcelas: novas });
+  };
 
   return (
-    <div className="h-full flex flex-col space-y-2 overflow-hidden pt-2">
-      <div className="flex justify-between items-center w-full shrink-0 border-b-4 border-[#1e5aa0] pb-2">
-        <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Grade de Recebimentos</h3>
-        <div className="flex space-x-2"><button onClick={() => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 1))} className="bg-white border p-1.5 rounded-lg hover:bg-slate-50"><ChevronLeft size={20} /></button><button onClick={() => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1))} className="bg-white border p-1.5 rounded-lg hover:bg-slate-50"><ChevronRight size={20} /></button></div>
-      </div>
-      <div className="flex-1 min-h-0 pb-2">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch h-full">
-          {[baseDate, new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1)].map(d => <CompactCalendar key={d.toISOString()} currentDate={d} projects={projects} workspaceId={workspaceId} canEdit={canEdit} />)}
+    <div className="h-full flex flex-col space-y-2 overflow-hidden">
+      <div className="flex justify-between items-center w-full shrink-0 mb-4">
+        <h3 className="text-xl font-bold text-slate-800 uppercase tracking-wide border-b-4 border-[#1e5aa0] pb-0.5">Financeiro (Recebimentos)</h3>
+        <div className="flex space-x-2">
+          <button onClick={()=>setShowReportModal(true)} className="bg-white border text-[#1e5aa0] px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-1 shadow-sm hover:bg-blue-50"><FileDown size={16}/> Relatório Mensal</button>
+          <button onClick={prevMonth} className="bg-white border border-slate-300 text-slate-700 p-2 rounded-lg hover:bg-slate-100 transition-colors shadow-sm"><ChevronLeft size={18} /></button>
+          <button onClick={nextMonth} className="bg-white border border-slate-300 text-slate-700 p-2 rounded-lg hover:bg-slate-100 transition-colors shadow-sm"><ChevronRight size={18} /></button>
         </div>
       </div>
+      
+      <div className="flex-1 min-h-0 pb-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch h-full">
+          {monthsToRender.map((monthDate) => (
+            <CompactCalendar 
+              key={monthDate.toISOString()} 
+              currentDate={monthDate} 
+              projects={projects} 
+              canEdit={canEdit}
+              onOpenPayModal={(items) => { setPayModalData(items); setSelectedPayIndex(0); }}
+              onUndoPayment={(item) => {
+                setConfirmData({
+                  message: 'Desfazer o recebimento desta parcela?',
+                  onConfirm: async () => { await handleUndo(item); setConfirmData(null); }
+                });
+              }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {payModalData && payModalData.length > 0 && (() => {
+        const targetItem = payModalData[selectedPayIndex];
+        return (
+          <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+            <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
+              <div className="p-4 bg-emerald-600 text-white font-bold flex justify-between items-center uppercase">Confirmar Recebimento <button onClick={()=>setPayModalData(null)}><X size={20}/></button></div>
+              <form onSubmit={handlePay} className="p-6 flex flex-col gap-4">
+                
+                {payModalData.length > 1 ? (
+                  <div>
+                    <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Selecione a Parcela</label>
+                    <select value={selectedPayIndex} onChange={(e) => setSelectedPayIndex(Number(e.target.value))} className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm bg-white text-slate-800">
+                      {payModalData.map((item, idx) => (
+                        <option key={idx} value={idx}>{item.p.nomeProjeto} - {formatCurrency(item.valor)}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <>
+                    <div><p className="text-xs text-slate-500 uppercase font-bold">Projeto</p><p className="font-black text-slate-800">{targetItem.p.nomeProjeto}</p></div>
+                    <div><p className="text-xs text-slate-500 uppercase font-bold">Valor da Parcela</p><p className="font-black text-2xl text-emerald-600">{formatCurrency(targetItem.valor)}</p></div>
+                  </>
+                )}
+                
+                <div>
+                  <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Forma de Recebimento *</label>
+                  <select name="formaRecebimento" required className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm bg-white text-slate-800">
+                    <option value="">Selecione...</option>
+                    <option value="PIX">PIX</option>
+                    <option value="DINHEIRO">DINHEIRO</option>
+                    <option value="CREDITO EM CONTA">CRÉDITO EM CONTA</option>
+                    <option value="CHEQUE">CHEQUE</option>
+                    <option value="PERMUTA">PERMUTA</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Data em que o cliente pagou *</label>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={()=>{document.getElementById('pDate').value=getToday();}} className="bg-slate-100 font-bold text-slate-600 px-3 py-2 rounded-lg text-xs hover:bg-slate-200">Hoje</button>
+                    <input id="pDate" required name="date" type="date" defaultValue={getToday()} className="flex-1 border p-2 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm" />
+                  </div>
+                </div>
+                
+                <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3 rounded-xl mt-2 hover:bg-emerald-700 shadow-md">Confirmar Baixa</button>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {showReportModal && <FinancialReportModal projects={projects} onClose={()=>setShowReportModal(false)} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
     </div>
   );
 }
 
-function CompactCalendar({ currentDate, projects, workspaceId, canEdit }) {
-  const [selectedDayObj, setSelectedDayObj] = useState(null); 
-  const year = currentDate.getFullYear(), month = currentDate.getMonth(), daysInMonth = new Date(year, month + 1, 0).getDate(), startOffset = new Date(year, month, 1).getDay() || 7;
-  const days = Array(startOffset - 1).fill(null).concat(Array.from({length: daysInMonth}, (_, i) => i + 1));
+function CompactCalendar({ currentDate, projects, canEdit, onOpenPayModal, onUndoPayment }) {
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfWeek = new Date(year, month, 1).getDay();
+  const startOffset = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1;
+
+  const days = [];
+  for (let i = 0; i < startOffset; i++) days.push(null);
+  for (let i = 1; i <= daysInMonth; i++) days.push(i);
+
+  const weekDays = ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
+  const installmentsThisMonth = {};
+  let monthTotalPaid = 0, monthTotalPending = 0;
   
-  const insts = {}; let mPaid = 0, mPend = 0;
-  projects.forEach(p => (p.parcelas||[]).forEach((parc, i) => {
-    if (!parc.dataVencimento) return; const [y, m, d] = parc.dataVencimento.split('-');
-    if (parseInt(y) === year && parseInt(m) - 1 === month) {
-      const dNum = parseInt(d); if(!insts[dNum]) insts[dNum]=[];
-      insts[dNum].push({ ...parc, pIndex: i, pId: p.id, proj: p });
-      if (parc.paga) mPaid += Number(parc.valor); else mPend += Number(parc.valor);
-    }
-  }));
+  projects.forEach(project => {
+    (project.parcelas || []).forEach((parc, index) => {
+      if (!parc.dataVencimento) return;
+      const [pYear, pMonth, pDay] = parc.dataVencimento.split('-');
+      if (parseInt(pYear) === year && parseInt(pMonth) - 1 === month) {
+        const dayNum = parseInt(pDay);
+        if (!installmentsThisMonth[dayNum]) installmentsThisMonth[dayNum] = [];
+        installmentsThisMonth[dayNum].push({ ...parc, pId: project.id, index: index, p: project });
+        if (parc.paga) monthTotalPaid += Number(parc.valor); else monthTotalPending += Number(parc.valor);
+      }
+    });
+  });
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden relative">
-      <div className="bg-[#5a82b5] text-white p-2 text-center font-black uppercase tracking-widest text-xs shrink-0">{currentDate.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</div>
-      <div className="grid grid-cols-7 border-b bg-slate-50 shrink-0">{(['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM']).map(d => <div key={d} className="text-center py-1.5 text-[9px] font-black text-slate-500 border-r uppercase">{d}</div>)}</div>
+    <div className="bg-white rounded-xl shadow-md border border-slate-200 flex flex-col h-full overflow-hidden">
+      <div className="bg-[#5a82b5] text-white p-1.5 sm:p-2 text-center font-bold uppercase text-xs sm:text-sm tracking-widest shrink-0">{currentDate.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</div>
+      <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 shrink-0">{weekDays.map((d, i) => <div key={i} className="text-center py-1 sm:py-1.5 text-[9px] sm:text-[10px] font-bold text-slate-500 border-r border-slate-200 last:border-r-0 uppercase">{d}</div>)}</div>
       <div className="grid grid-cols-7 auto-rows-fr bg-white flex-1 min-h-0">
         {days.map((day, idx) => {
-          if (!day) return <div key={`e-${idx}`} className="border-r border-b bg-slate-50"></div>;
-          const di = insts[day] || []; const has = di.length > 0; const allPaid = has && di.every(x => x.paga);
+          if (!day) return <div key={`empty-${idx}`} className="border-r border-b border-slate-100 bg-slate-50"></div>;
+          const dayInstallments = installmentsThisMonth[day] || [];
+          const totalValue = dayInstallments.reduce((sum, item) => sum + Number(item.valor), 0);
+          const hasInstallments = dayInstallments.length > 0;
+          const allPaid = hasInstallments && dayInstallments.every(item => item.paga);
+          let bgClass = "bg-white";
+          if (hasInstallments && allPaid) bgClass = "bg-[#d4edd9]"; else if (hasInstallments && !allPaid) bgClass = "bg-[#fff3cd]";
           
+          const handleDayClick = () => {
+            if (!hasInstallments || !canEdit) return;
+            const unpaid = dayInstallments.filter(item => !item.paga);
+            if (unpaid.length > 0) {
+                onOpenPayModal(unpaid);
+            } else {
+                onUndoPayment(dayInstallments[0]);
+            }
+          };
+
           return (
-            <div key={day} onClick={() => has && setSelectedDayObj({ date: new Date(year, month, day), day, items: di })} className={`border-r border-b p-1.5 flex flex-col justify-between overflow-hidden ${!has ? 'bg-white' : allPaid ? 'bg-[#d4edd9] cursor-pointer hover:brightness-95' : 'bg-[#fff3cd] cursor-pointer hover:brightness-95'}`}>
-              <div className="flex justify-between items-start shrink-0"><span className="font-bold text-[10px] text-slate-800">{day}</span>{has && <div className={`w-3.5 h-3.5 border rounded flex items-center justify-center ${allPaid ? 'bg-[#73c87f] border-[#73c87f]' : 'bg-white border-[#73c87f]'}`}>{allPaid && <Check size={10} className="text-white font-bold" />}</div>}</div>
-              <div className="flex-1 flex flex-col justify-end min-h-0">
-                <div className="flex flex-col gap-px overflow-hidden">{di.slice(0,2).map((x, i) => <div key={i} className={`text-[8px] font-bold truncate uppercase ${x.paga?'text-green-800 opacity-60 line-through':'text-slate-800'}`}>{x.proj.clientName.split(' ')[0]}</div>)}</div>
-                {has && <div className={`text-right text-[10px] font-black mt-0.5 truncate ${allPaid?'text-green-900':'text-amber-900'}`}>{formatCurrency(di.reduce((s,p)=>s+Number(p.valor),0))}</div>}
+            <div key={day} className={`border-r border-b border-slate-200 p-1 sm:p-1.5 flex flex-col justify-between overflow-hidden ${bgClass} ${hasInstallments ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`} onClick={handleDayClick}>
+              <div className="flex justify-between items-start mb-0.5 shrink-0">
+                <span className="font-bold text-[10px] sm:text-xs text-slate-800 leading-none">{day}</span>
+                {hasInstallments && <div className={`w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors ${allPaid ? 'bg-[#73c87f] border-[#73c87f]' : 'bg-white border-[#73c87f]'}`}>{allPaid && <Check size={10} className="text-white font-bold" />}</div>}
+              </div>
+              <div className="flex-1 flex flex-col justify-end overflow-hidden min-h-0">
+                <div className="flex flex-col gap-px overflow-hidden">
+                  {dayInstallments.slice(0, 2).map((inst, i) => <div key={i} className={`text-[8px] sm:text-[9px] truncate font-semibold leading-tight ${inst.paga ? 'text-green-800 opacity-60 line-through' : 'text-slate-700'}`}>{inst.p.clientName.split(' ')[0]}</div>)}
+                </div>
+                {dayInstallments.length > 2 && <div className="text-[8px] sm:text-[9px] font-bold text-slate-500 shrink-0">+{dayInstallments.length - 2}</div>}
+                {hasInstallments && <div className={`text-right text-[9px] sm:text-[10px] md:text-[11px] font-black mt-0.5 truncate shrink-0 ${allPaid ? 'text-green-900' : 'text-amber-900'}`}>{formatCurrency(totalValue)}</div>}
               </div>
             </div>
           );
         })}
       </div>
-      <div className="bg-slate-50 border-t p-2.5 grid grid-cols-2 gap-2 shrink-0">
-        <div className="flex flex-col"><span className="text-[9px] font-bold text-slate-500 uppercase flex items-center gap-1"><Check size={10} className="text-green-600"/> Recebido</span><span className="text-green-700 font-black text-xs truncate">{formatCurrency(mPaid)}</span></div>
-        <div className="flex flex-col text-right border-l pl-2"><span className="text-[9px] font-bold text-slate-500 uppercase flex justify-end items-center gap-1">A Receber <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span></span><span className="text-amber-600 font-black text-xs truncate">{formatCurrency(mPend)}</span></div>
+      <div className="bg-slate-50 border-t border-slate-200 p-2 sm:p-2.5 grid grid-cols-2 gap-2 shrink-0">
+        <div className="flex flex-col"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex items-center gap-1 truncate"><Check size={10} className="text-green-600 shrink-0" /> Recebidos</span><span className="text-green-700 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPaid)}>{formatCurrency(monthTotalPaid)}</span></div>
+        <div className="flex flex-col text-right border-l border-slate-200 pl-2"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex justify-end items-center gap-1 truncate">A Receber <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block shrink-0"></span></span><span className="text-amber-600 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPending)}>{formatCurrency(monthTotalPending)}</span></div>
       </div>
-
-      {selectedDayObj && (
-        <DayReceiptsModal 
-          workspaceId={workspaceId} 
-          canEdit={canEdit} 
-          dateObj={selectedDayObj.date} 
-          items={selectedDayObj.items} 
-          onClose={() => setSelectedDayObj(null)} 
-        />
-      )}
     </div>
   );
 }
 
-function DayReceiptsModal({ workspaceId, canEdit, dateObj, items, onClose }) {
-  const [payingId, setPayingId] = useState(null);
-  const [payForm, setPayForm] = useState({ data: getToday(), forma: 'PIX' });
+function FinancialReportModal({ projects, onClose }) {
+  const [dataIni, setDataIni] = useState(getToday().slice(0,8)+'01');
+  const [dataFim, setDataFim] = useState(getToday());
 
-  const processPayment = async (item, isPaying) => {
-    if (!canEdit) return;
-    try {
-      const novasParcelas = item.proj.parcelas.map((x, idx) => {
-        if (idx === item.pIndex) {
-          return isPaying 
-            ? { ...x, paga: true, dataPagamento: payForm.data, formaRecebimento: payForm.forma }
-            : { ...x, paga: false, dataPagamento: null, formaRecebimento: null };
+  const generateReport = (e) => {
+    e.preventDefault();
+    let recebidos = 0, previstosPendentes = 0;
+    const listaHtml = [];
+
+    projects.forEach(p => {
+      (p.parcelas||[]).forEach(parc => {
+        const dTarget = parc.paga ? parc.dataRecebimento : parc.dataVencimento;
+        if (dTarget >= dataIni && dTarget <= dataFim) {
+          if(parc.paga) recebidos += parc.valor; else previstosPendentes += parc.valor;
+          listaHtml.push(`
+            <tr>
+              <td>${formatDate(dTarget)}</td>
+              <td>${p.nomeProjeto} - ${p.clientName}</td>
+              <td style="color:${parc.paga?'#059669':'#d97706'}">${parc.paga ? `PAGO (${parc.formaRecebimento || '-'})` : 'PENDENTE'}</td>
+              <td style="text-align:right;">${formatCurrency(parc.valor)}</td>
+            </tr>
+          `);
         }
-        return x;
       });
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', item.pId), { parcelas: novasParcelas });
-      setPayingId(null);
-    } catch (e) { console.error("Erro ao processar pagamento", e); }
+    });
+
+    const html = `
+      <h1>Relatório Financeiro de Recebimentos</h1>
+      <p><strong>Período:</strong> ${formatDate(dataIni)} a ${formatDate(dataFim)}</p>
+      
+      <table>
+        <tr><th>Data (Venc/Receb)</th><th>Projeto/Cliente</th><th>Status</th><th style="text-align:right;">Valor</th></tr>
+        ${listaHtml.length > 0 ? listaHtml.join('') : '<tr><td colspan="4" style="text-align:center;">Nenhum lançamento no período.</td></tr>'}
+      </table>
+
+      <div class="total-box">
+        <div style="font-size:14px; color:#444; font-weight:normal; margin-bottom:5px;">Previsto Não Pago no Período: ${formatCurrency(previstosPendentes)}</div>
+        Total Efetivamente Recebido: <span style="color:#059669">${formatCurrency(recebidos)}</span>
+      </div>
+    `;
+    printReport(`Financeiro_${dataIni}_${dataFim}`, html);
+    onClose();
   };
 
   return (
-    <div className="absolute inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex flex-col justify-end sm:justify-center items-center sm:p-4 animate-in fade-in duration-200">
-      <div className="bg-white w-full sm:w-[90%] sm:max-w-md h-[80%] sm:h-auto sm:max-h-[90%] rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-        <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-[#1e5aa0] text-white shrink-0">
-          <div>
-            <h3 className="font-black uppercase tracking-tight text-lg">Recebimentos</h3>
-            <p className="text-blue-200 text-xs font-medium">{dateObj.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })}</p>
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
+        <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase">Gerar Extrato <button onClick={onClose}><X size={20}/></button></div>
+        <form onSubmit={generateReport} className="p-6 space-y-4">
+          <div><label className="text-xs text-slate-500 uppercase font-bold block mb-1">Data Inicial</label><input type="date" required value={dataIni} onChange={e=>setDataIni(e.target.value)} className="w-full border p-2.5 rounded-lg font-medium outline-none" /></div>
+          <div><label className="text-xs text-slate-500 uppercase font-bold block mb-1">Data Final</label><input type="date" required value={dataFim} onChange={e=>setDataFim(e.target.value)} className="w-full border p-2.5 rounded-lg font-medium outline-none" /></div>
+          <button type="submit" className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-xl hover:bg-[#154278] shadow-md flex justify-center items-center gap-2"><Printer size={16}/> Imprimir / Salvar PDF</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// --- CHECKLISTS E ORÇAMENTOS VINCULADOS A AMBIENTES ---
+function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser, documents }) {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingChk, setEditingChk] = useState(null);
+  
+  const myChecklists = useMemo(() => {
+    return checklists.filter(c => c.assignedTo === appUser.id || c.assignedTo === 'ALL' || appUser.role === 'gestor')
+      .sort((a,b) => {
+        if (a.requiresBudget !== b.requiresBudget) return b.requiresBudget ? 1 : -1;
+        return new Date(a.dataPrevista) - new Date(b.dataPrevista);
+      });
+  }, [checklists, appUser]);
+
+  const handleToggleConcluido = async (chk) => {
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', chk.id), { concluido: !chk.concluido, dataConclusao: !chk.concluido ? getToday() : null });
+  };
+  
+  const [confirmData, setConfirmData] = useState(null);
+  const handleDelete = (id) => {
+    setConfirmData({
+      message: 'Excluir esta tarefa permanentemente?',
+      onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', id)); setConfirmData(null); }
+    });
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex justify-between items-center mb-6">
+        <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tarefas & Orçamentos</h3>
+        {canCreate && <button onClick={() => {setEditingChk(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Nova Tarefa</span></button>}
+      </div>
+      <div className="flex-1 overflow-auto space-y-4 pb-12">
+        {myChecklists.map(chk => (
+          <ChecklistCard key={chk.id} chk={chk} projects={projects} users={companyUsers} appUser={appUser} onToggle={()=>handleToggleConcluido(chk)} onEdit={()=>{setEditingChk(chk); setIsModalOpen(true);}} onDelete={()=>handleDelete(chk.id)} allDocs={documents} />
+        ))}
+        {myChecklists.length === 0 && <div className="text-center text-slate-400 py-12 font-medium border border-dashed rounded-xl bg-white">Nenhuma tarefa atribuída a você no momento.</div>}
+      </div>
+      {isModalOpen && <ChecklistModal appUser={appUser} projects={projects} users={companyUsers} editingChk={editingChk} onClose={()=>setIsModalOpen(false)} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
+    </div>
+  );
+}
+
+function ChecklistCard({ chk, projects, users, appUser, onToggle, onEdit, onDelete, allDocs }) {
+  const p = projects.find(x => x.id === chk.projectId);
+  const resp = users.find(x => x.id === chk.assignedTo);
+  const [showBudgets, setShowBudgets] = useState(false);
+  const chkDocs = allDocs.filter(d => d.checklistId === chk.id);
+
+  const handleApprove = async (budgetIndex) => {
+    const b = [...(chk.budgets||[])]; b[budgetIndex].approved = true; b[budgetIndex].approvedAt = getToday();
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', chk.id), { budgets: b });
+  };
+  const handleDone = async (budgetIndex) => {
+    const b = [...(chk.budgets||[])]; b[budgetIndex].done = true; b[budgetIndex].doneAt = getToday();
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', chk.id), { budgets: b });
+  };
+
+  return (
+    <div className={`bg-white rounded-2xl border p-5 shadow-sm transition-all relative ${chk.concluido ? 'border-slate-200 opacity-70' : chk.requiresBudget ? 'border-amber-400 shadow-amber-100' : 'border-slate-200 hover:shadow-md'}`}>
+      <div className="flex gap-4 items-start">
+        <button onClick={onToggle} className="mt-1 transition-transform hover:scale-110">{chk.concluido ? <CheckCircle2 className="text-emerald-500" size={28}/> : <Circle className="text-slate-300 hover:text-[#1e5aa0]" size={28}/>}</button>
+        <div className="flex-1">
+          <div className="flex justify-between items-start">
+            <h4 className={`font-black text-lg ${chk.concluido?'line-through text-slate-400':'text-slate-800'}`}>{chk.descricao}</h4>
+            <div className="flex gap-2">
+              {chk.requiresBudget && <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase">Orçamento Req.</span>}
+              <button onClick={onEdit} className="text-slate-400 hover:text-[#1e5aa0]"><Edit size={16}/></button>
+              <button onClick={onDelete} className="text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>
+            </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-blue-800 rounded-full transition-colors"><X size={20}/></button>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto p-4 bg-slate-50 space-y-4">
-          {items.map((item, index) => {
-            const isPayingThis = payingId === `${item.pId}-${item.pIndex}`;
-            
-            return (
-              <div key={`${item.pId}-${item.pIndex}`} className={`border rounded-xl shadow-sm overflow-hidden transition-all ${item.paga ? 'border-emerald-200 bg-emerald-50/50' : isPayingThis ? 'border-[#1e5aa0] bg-blue-50/30 ring-2 ring-blue-100' : 'border-slate-200 bg-white'}`}>
-                
-                <div className="p-4 flex justify-between items-start gap-4">
-                  <div className="min-w-0 flex-1">
-                    <p className="font-black text-slate-800 uppercase truncate text-sm">{item.proj.clientName}</p>
-                    <p className="text-xs font-bold text-slate-500 truncate mt-0.5">{item.proj.nomeProjeto || 'Projeto Sem Nome'}</p>
-                    {item.paga && (
-                      <div className="mt-2 text-[10px] font-bold text-emerald-700 bg-emerald-100 inline-block px-2 py-1 rounded">
-                        PAGO EM {formatDate(item.dataPagamento)} VIA {item.formaRecebimento}
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className={`font-black text-lg ${item.paga ? 'text-emerald-600' : 'text-slate-800'}`}>{formatCurrency(item.valor)}</p>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">Venc: {formatDate(item.dataVencimento)}</p>
-                  </div>
-                </div>
+          <div className="flex flex-wrap gap-3 mt-2 text-xs font-bold">
+            <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded border uppercase">{p?.nomeProjeto || 'Projeto Indefinido'}</span>
+            <span className="text-slate-500 flex items-center gap-1"><Users size={14}/> Resp: {resp?.nome || 'Todos'}</span>
+            <span className={`flex items-center gap-1 ${new Date(chk.dataPrevista) < new Date(getToday()) && !chk.concluido ? 'text-red-600' : 'text-slate-500'}`}><Clock size={14}/> Prev: {formatDate(chk.dataPrevista)}</span>
+            {!chk.requiresBudget && chk.valor > 0 && <span className="text-emerald-600 flex items-center gap-1"><DollarSign size={14}/> {formatCurrency(chk.valor)}</span>}
+          </div>
 
-                <div className={`px-4 py-3 border-t bg-slate-50/50 flex justify-end ${item.paga ? 'border-emerald-100' : 'border-slate-100'}`}>
-                  {item.paga ? (
-                    canEdit && <button onClick={() => processPayment(item, false)} className="text-[10px] font-black text-slate-400 hover:text-red-500 uppercase tracking-widest transition-colors flex items-center gap-1"><X size={12}/> Desfazer Baixa</button>
-                  ) : (
-                    !isPayingThis && canEdit && (
-                      <button onClick={() => { setPayingId(`${item.pId}-${item.pIndex}`); setPayForm({ data: getToday(), forma: 'PIX' }); }} className="bg-[#1e5aa0] hover:bg-[#154278] text-white text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition-colors flex items-center gap-2">
-                        <CheckCircle2 size={14} /> Registrar Recebimento
-                      </button>
-                    )
-                  )}
-                </div>
-
-                {isPayingThis && (
-                  <div className="p-4 border-t border-slate-200 bg-white animate-in slide-in-from-top-2">
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Data Real do Pagamento</label>
-                        <input type="date" value={payForm.data} onChange={e => setPayForm({...payForm, data: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm font-bold text-[#1e5aa0] outline-none focus:ring-2 focus:ring-[#1e5aa0]" />
+          {chk.requiresBudget && (
+            <div className="mt-4 border-t pt-4">
+              <button onClick={()=>setShowBudgets(!showBudgets)} className="w-full bg-amber-50 text-amber-800 font-bold text-xs py-2 rounded-lg border border-amber-200 uppercase tracking-wide">
+                {showBudgets ? 'Ocultar Orçamentos' : `Gerir Orçamentos (${(chk.budgets||[]).length})`}
+              </button>
+              {showBudgets && (
+                <div className="mt-3 space-y-3">
+                  {(chk.budgets||[]).map((b, i) => (
+                    <div key={i} className="border border-slate-200 p-4 rounded-xl bg-white shadow-sm flex flex-col md:flex-row justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                           <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded uppercase font-bold border">{b.category}</span>
+                           {b.ambienteNome && <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded uppercase font-bold flex items-center gap-1"><LayoutList size={10}/> {b.ambienteNome}</span>}
+                        </div>
+                        <p className="font-black text-slate-800 text-base">{b.professionalName}</p>
+                        <p className="text-xs text-slate-500 mt-1 font-medium">{b.obs}</p>
+                        <p className="text-lg font-black text-emerald-600 mt-2">{formatCurrency(b.value)}</p>
                       </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Forma</label>
-                        <select value={payForm.forma} onChange={e => setPayForm({...payForm, forma: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2 text-sm font-bold text-slate-700 bg-white outline-none focus:ring-2 focus:ring-[#1e5aa0]">
-                          {FORMAS_RECEBIMENTO.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
+                      <div className="flex flex-col gap-2 shrink-0 justify-center border-l pl-4 border-slate-100">
+                        {b.approved ? (
+                           <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded border border-emerald-100 flex items-center gap-1"><CheckSquare size={14}/> Aprovado {formatDate(b.approvedAt)}</div>
+                        ) : (
+                          (appUser.role === 'gestor' || appUser.role === 'operador') && <button onClick={()=>handleApprove(i)} className="bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded shadow hover:bg-emerald-600 transition-colors uppercase">Aprovar Orçamento</button>
+                        )}
+                        {b.approved && !b.done && (
+                          (appUser.role === 'gestor' || appUser.role === 'operador') && <button onClick={()=>handleDone(i)} className="bg-[#1e5aa0] text-white text-xs font-bold px-4 py-2 rounded shadow hover:bg-[#154278] transition-colors uppercase">Marcar Realizado</button>
+                        )}
+                        {b.done && <div className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded border border-blue-100 flex items-center gap-1"><CheckSquare size={14}/> Realizado {formatDate(b.doneAt)}</div>}
                       </div>
                     </div>
-                    <div className="flex gap-2 justify-end">
-                      <button onClick={() => setPayingId(null)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg transition-colors">Cancelar</button>
-                      <button onClick={() => processPayment(item, true)} className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition-colors flex items-center gap-2"><CreditCard size={14}/> Confirmar Baixa</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          
-          {items.length === 0 && (
-            <div className="text-center py-8 text-slate-400">
-              <CalendarDays size={32} className="mx-auto mb-2 opacity-50"/>
-              <p className="font-bold text-sm">Nenhum recebimento neste dia.</p>
+                  ))}
+                  <div className="text-right"><button onClick={onEdit} className="text-[10px] font-black uppercase text-[#1e5aa0] hover:underline bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100"><Plus size={12} className="inline"/> Lançar/Editar Orçamentos</button></div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1401,378 +1492,147 @@ function DayReceiptsModal({ workspaceId, canEdit, dateObj, items, onClose }) {
   );
 }
 
-// --- VISÃO: TAREFAS E EVOLUÇÃO ---
-function ChecklistView({ workspaceId, projects, checklists, companyUsers, appUser }) {
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [manageModalData, setManageModalData] = useState(null); 
-  const [searchTerm, setSearchTerm] = useState('');
-  const [viewFinished, setViewFinished] = useState(false); // Nova aba de Projetos Concluídos
+function ChecklistModal({ appUser, projects, users, editingChk, onClose }) {
+  const [formData, setFormData] = useState(editingChk || { projectId: '', descricao: '', dataPrevista: getToday(), assignedTo: 'ALL', requiresBudget: false, valor: '', budgets: [] });
+  const [docsToUpload, setDocsToUpload] = useState([]);
+  const [alertMsg, setAlertMsg] = useState('');
   
-  const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
-  const canDelete = appUser.role === 'gestor' || appUser.permissions?.delete;
-  const canCreate = appUser.role === 'gestor' || appUser.permissions?.create;
+  const pSelecionado = projects.find(p => p.id === formData.projectId);
+  const ambientesProjeto = pSelecionado?.ambientes || [];
 
-  const toggleChk = async (c) => { 
-    if(canEdit) {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', c.id), { 
-        concluido: !c.concluido, 
-        dataConclusao: !c.concluido ? getToday() : null 
-      }); 
-    }
-  };
+  const [newBudget, setNewBudget] = useState({ category: 'SERVICO', professionalName: '', obs: '', value: '', ambienteId: '', ambienteNome: '' });
   
-  const delChk = async (id) => { if(canDelete && window.confirm('Excluir tarefa?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', id)); };
+  const addBudget = () => {
+    if(!newBudget.professionalName || !newBudget.value) return setAlertMsg("Preencha o Nome do Fornecedor e o Valor.");
+    
+    let aNome = '';
+    if(newBudget.ambienteId) { aNome = ambientesProjeto.find(a => a.id === newBudget.ambienteId)?.nome || ''; }
 
-  const visibleChecklists = checklists.filter(c => appUser.role === 'gestor' || !c.responsavelId || c.responsavelId === appUser.id);
-  
-  // Filtro que separa Projetos em Andamento dos Finalizados
-  const fProjs = projects.filter(p => {
-    const matchSearch = p.clientName.toLowerCase().includes(searchTerm.toLowerCase());
-    const isFinished = p.faseAnalitica === 'PROJETO FINALIZADO';
-    return matchSearch && (viewFinished ? isFinished : !isFinished);
-  });
-
-  return (
-    <div className="h-full flex flex-col space-y-4 pt-2">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b-4 border-[#1e5aa0] pb-2">
-        <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Tarefas & Evolução</h3>
-        {canCreate && <button onClick={() => setIsModalOpen(true)} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 hover:bg-[#154278] shadow-sm w-full md:w-auto justify-center"><ListTodo size={18} /><span>Nova Tarefa</span></button>}
-      </div>
-
-      {/* Controles: Busca e Abas */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="flex-1"><input type="text" placeholder="Buscar por cliente..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-[#1e5aa0] outline-none text-sm font-medium" /></div>
-        <div className="flex bg-slate-200 p-1 rounded-lg shrink-0">
-          <button onClick={() => setViewFinished(false)} className={`flex-1 sm:flex-none px-4 py-2 text-xs uppercase tracking-wider font-black rounded-md transition-colors ${!viewFinished ? 'bg-white text-[#1e5aa0] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Em Andamento</button>
-          <button onClick={() => setViewFinished(true)} className={`flex-1 sm:flex-none px-4 py-2 text-xs uppercase tracking-wider font-black rounded-md transition-colors ${viewFinished ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><CheckSquare size={14} className="inline mr-1 -mt-0.5"/> Concluídos</button>
-        </div>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto space-y-6 pb-6">
-        {fProjs.map(p => {
-          const chks = visibleChecklists.filter(c => c.projectId === p.id).sort((a, b) => {
-            if (a.solicitaOrcamento && !b.solicitaOrcamento) return -1;
-            if (!a.solicitaOrcamento && b.solicitaOrcamento) return 1;
-            return new Date(a.dataPrevista) - new Date(b.dataPrevista);
-          });
-
-          if (chks.length === 0 && appUser.role !== 'gestor') return null; 
-          const idx = FASES_ANALITICAS.indexOf(p.faseAnalitica || 'LEVANTAMENTO');
-
-          return (
-            <div key={p.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="bg-slate-50 p-4 border-b flex justify-between items-center"><div><h4 className="font-black text-slate-800 uppercase text-lg">{p.nomeProjeto || 'PROJETO'}</h4><p className="text-xs font-bold text-slate-500 uppercase">{p.clientName}</p></div></div>
-              <div className="p-4 border-b overflow-x-auto"><div className="flex justify-between min-w-[600px] relative"><div className="absolute top-3 left-6 right-6 h-1 bg-slate-200"></div>{FASES_ANALITICAS.map((f, i) => <div key={f} onClick={() => canEdit && updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', p.id), { faseAnalitica: f })} className="flex flex-col items-center z-10 w-24 cursor-pointer group"><div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-black transition-all mb-2 border-2 ${i<=idx?'bg-[#1e5aa0] border-[#1e5aa0] text-white':'bg-white border-slate-300 text-slate-400'} ${i===idx?'ring-4 ring-blue-100':''}`}>{i<=idx?<Check size={14}/>:i+1}</div><span className={`text-[9px] font-black text-center uppercase ${i<=idx?'text-[#1e5aa0]':'text-slate-400'}`}>{f}</span></div>)}</div></div>
-              <div>
-                {chks.map(c => {
-                  const respNome = c.responsavelId ? (companyUsers.find(u => u.id === c.responsavelId)?.nome || 'Desconhecido') : 'Todos (Sem Atribuição)';
-                  const orcsAprovados = (c.orcamentos || []).filter(o => o.status === 'APROVADO' || o.status === 'REALIZADO').length;
-                  
-                  return (
-                    <div key={c.id} className="flex justify-between items-start p-4 border-b last:border-0 hover:bg-slate-50 transition-colors">
-                      <div className="flex gap-3">
-                        <button onClick={()=>toggleChk(c)} className="mt-0.5">{c.concluido?<CheckCircle2 className="text-green-500" size={22}/>:<Circle className="text-slate-300" size={22}/>}</button>
-                        <div>
-                          <p className={`text-sm font-bold ${c.concluido?'line-through text-slate-400':'text-slate-800'}`}>{c.descricao}</p>
-                          <div className="flex flex-wrap gap-2 mt-1.5 items-center">
-                            <span className="text-[9px] font-black uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded">Resp: {respNome.split(' ')[0]}</span>
-                            {c.solicitaOrcamento ? (
-                              <span className="text-[9px] font-black uppercase bg-amber-100 text-amber-700 px-2 py-0.5 rounded flex items-center gap-1"><DollarSign size={10}/> {c.orcamentos?.length || 0} Orçamento(s)</span>
-                            ) : c.valor ? (
-                              <span className="text-[9px] font-black uppercase bg-blue-50 text-blue-700 px-2 py-0.5 rounded flex items-center gap-1"><DollarSign size={10}/> {formatCurrency(c.valor)}</span>
-                            ) : null}
-                            {orcsAprovados > 0 && <span className="text-[9px] font-black uppercase bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded">Aprovado</span>}
-                          </div>
-                          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
-                             <p className="text-[10px] font-bold text-slate-400 uppercase">Criação: {formatDate(c.data)}</p>
-                             <p className={`text-[10px] font-bold uppercase ${!c.concluido && new Date(c.dataPrevista) < new Date(getToday()) ? 'text-red-500' : 'text-slate-400'}`}>Prev: {formatDate(c.dataPrevista)}</p>
-                             {c.concluido && c.dataConclusao && <p className="text-[10px] font-black text-emerald-600 uppercase flex items-center gap-1"><Check size={10}/> Feito: {formatDate(c.dataConclusao)}</p>}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setManageModalData({ checklistId: c.id, project: p })} className="bg-white border hover:bg-slate-50 text-[#1e5aa0] px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-colors shadow-sm flex gap-1 items-center"><Settings2 size={14} className="hidden sm:block"/> Detalhes</button>
-                        <button onClick={()=>delChk(c.id)} className="text-slate-300 hover:text-red-500 p-1.5"><Trash2 size={16}/></button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {!chks.length && <div className="p-4 text-center text-slate-400 text-xs font-bold uppercase">Nenhuma Tarefa Disponível</div>}
-              </div>
-            </div>
-          );
-        })}
-        {fProjs.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-12 text-slate-400 border border-dashed rounded-xl bg-white"><FolderKanban size={48} className="mb-3 opacity-30"/><p className="font-bold">Nenhum projeto encontrado nesta visualização.</p></div>
-        )}
-      </div>
-      {isModalOpen && <ChecklistModal workspaceId={workspaceId} projects={projects} companyUsers={companyUsers} onClose={() => setIsModalOpen(false)} />}
-      {manageModalData && <ChecklistManageModal workspaceId={workspaceId} appUser={appUser} project={manageModalData.project} checklistId={manageModalData.checklistId} checklists={checklists} onClose={() => setManageModalData(null)} />}
-    </div>
-  );
-}
-
-function ChecklistModal({ workspaceId, projects, companyUsers, onClose }) {
-  const [f, setF] = useState({ projectId: '', responsavelId: '', data: getToday(), dataPrevista: getToday(), descricao: '', solicitaOrcamento: false, valor: '' });
-  
-  const save = async (e) => { 
-    e.preventDefault(); 
-    const payload = { ...f, workspaceId, concluido: false, orcamentos: [], dataConclusao: null };
-    if (!f.solicitaOrcamento) payload.valor = f.valor ? parseFloat(String(f.valor).replace(',', '.')) : 0;
-    else payload.valor = 0;
-
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'checklists'), payload); 
-    onClose(); 
+    setFormData({...formData, budgets: [...formData.budgets, {...newBudget, ambienteNome: aNome, value: parseFloat(newBudget.value), approved: false, done: false}]});
+    setNewBudget({ category: 'SERVICO', professionalName: '', obs: '', value: '', ambienteId: '', ambienteNome: '' });
   };
 
-  return (
-    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[60] backdrop-blur-sm">
-      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="p-4 bg-[#1e5aa0] text-white flex justify-between items-center rounded-t-2xl shrink-0"><h2 className="font-bold uppercase tracking-wide">Nova Tarefa</h2><button onClick={onClose}><X size={20}/></button></div>
-        <form onSubmit={save} className="p-6 space-y-4 overflow-y-auto">
-          <div><label className="text-xs font-bold text-slate-500 uppercase block mb-1">Projeto *</label><select required value={f.projectId} onChange={e=>setF({...f, projectId:e.target.value})} className="w-full p-2.5 border rounded-lg outline-none font-bold text-sm bg-white"><option></option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto} - {p.clientName}</option>)}</select></div>
-          <div><label className="text-xs font-bold text-slate-500 uppercase block mb-1">Responsável</label><select value={f.responsavelId} onChange={e=>setF({...f, responsavelId:e.target.value})} className="w-full p-2.5 border rounded-lg outline-none font-bold text-sm bg-white"><option value="">Qualquer Pessoa / Sem Atribuição</option>{companyUsers.map(u=><option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className="text-xs font-bold text-slate-500 uppercase block mb-1">Criação</label><input type="date" required value={f.data} onChange={e=>setF({...f, data:e.target.value})} className="w-full p-2.5 border rounded-lg outline-none font-medium text-sm" /></div>
-            <div><label className="text-xs font-bold text-slate-500 uppercase block mb-1">Previsão Entrega *</label><input type="date" required value={f.dataPrevista} onChange={e=>setF({...f, dataPrevista:e.target.value})} className="w-full p-2.5 border rounded-lg outline-none font-bold text-[#1e5aa0] text-sm" /></div>
-          </div>
-          <div><label className="text-xs font-bold text-slate-500 uppercase block mb-1">Descrição da Tarefa *</label><textarea required value={f.descricao} onChange={e=>setF({...f, descricao:e.target.value})} rows="3" className="w-full p-2.5 border rounded-lg outline-none resize-none font-medium text-sm"></textarea></div>
-          
-          <div className="bg-slate-50 p-4 border rounded-xl space-y-3">
-            <label className="flex items-center gap-2 cursor-pointer font-bold text-sm text-slate-800"><input type="checkbox" checked={f.solicitaOrcamento} onChange={e=>setF({...f, solicitaOrcamento: e.target.checked})} className="w-4 h-4 accent-[#1e5aa0]" /> Exigir Lançamento de Orçamentos</label>
-            {!f.solicitaOrcamento && (
-              <div className="animate-in fade-in slide-in-from-top-1"><label className="text-xs font-bold text-slate-500 uppercase block mb-1">Valor da Tarefa (Opcional - R$)</label><input type="number" step="0.01" value={f.valor} onChange={e=>setF({...f, valor:e.target.value})} className="w-full p-2.5 border rounded-lg outline-none font-bold text-sm" /></div>
-            )}
-          </div>
-          
-          <button className="w-full bg-[#1e5aa0] hover:bg-[#154278] transition-colors text-white font-bold py-3 rounded-lg shadow mt-2">Salvar Tarefa</button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function ChecklistManageModal({ workspaceId, appUser, project, checklistId, checklists, onClose }) {
-  // Pega a versão mais atualizada da tarefa direto do banco escutado
-  const liveChecklist = checklists.find(c => c.id === checklistId);
-  
-  const [activeTab, setActiveTab] = useState(liveChecklist?.solicitaOrcamento ? 'ORCAMENTOS' : 'DOCUMENTOS');
-  const [documents, setDocuments] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef(null);
-  
-  const canEdit = appUser.role === 'gestor' || appUser.permissions?.edit;
-  const [showOrcForm, setShowOrcForm] = useState(false);
-  const [orcForm, setOrcForm] = useState({ categoria: 'Serviço', observacao: '', nomeProfissional: '', dadosProfissional: '', valor: '' });
-  
-  // Controle para edição em tempo real do valor do orçamento já lançado
-  const [editingOrcId, setEditingOrcId] = useState(null);
-  const [editingOrcValor, setEditingOrcValor] = useState('');
-
-  useEffect(() => {
-    if (!liveChecklist) return;
-    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), (snap) => {
-      setDocuments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(d => d.checklistId === liveChecklist.id && d.workspaceId === workspaceId));
-    });
-    return () => unsub();
-  }, [workspaceId, liveChecklist?.id]);
-
-  if (!liveChecklist) return null; // Previne crash caso a tarefa seja deletada com o modal aberto
-
-  const handleUpload = async (e) => {
+  const handleFile = (e) => {
     const files = Array.from(e.target.files);
-    setUploading(true);
-    for (const file of files) {
-      if (file.size > 1048000) continue;
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), { 
-          workspaceId, 
-          projectId: project.id, 
-          checklistId: liveChecklist.id,
-          checklistDesc: liveChecklist.descricao,
-          uploadedBy: appUser.nome,
-          nome: file.name, 
-          tipo: file.type || 'application/octet-stream', 
-          tamanho: file.size, 
-          dataUpload: new Date().toISOString(), 
-          conteudoBase64: ev.target.result 
-        });
-      };
-      reader.readAsDataURL(file);
-    }
-    setUploading(false);
+    files.forEach(file => {
+      if (file.size > 1048000) return setAlertMsg(`O arquivo ${file.name} é maior que 1MB.`);
+      const r = new FileReader();
+      r.onload = (ev) => setDocsToUpload(prev => [...prev, { nome: file.name, tipo: file.type, size: file.size, b64: ev.target.result }]);
+      r.readAsDataURL(file);
+    });
   };
 
-  const deleteDocu = async (id) => { if(window.confirm('Remover este anexo?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documents', id)); };
-
-  const addOrcamento = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    const newOrc = { 
-      id: generateId(), ...orcForm, valor: parseFloat(String(orcForm.valor).replace(',', '.')), 
-      status: 'PENDENTE', dataCriacao: getToday(), criadoPor: appUser.nome 
-    };
-    const updated = [...(liveChecklist.orcamentos || []), newOrc];
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
-    setShowOrcForm(false);
-    setOrcForm({ categoria: 'Serviço', observacao: '', nomeProfissional: '', dadosProfissional: '', valor: '' });
-  };
-
-  const changeOrcStatus = async (orcId, newStatus) => {
-    if (!canEdit) return;
-    const updated = (liveChecklist.orcamentos || []).map(o => {
-      if (o.id === orcId) {
-        if (newStatus === 'APROVADO') return { ...o, status: newStatus, dataAprovacao: getToday(), aprovadoPor: appUser.nome };
-        if (newStatus === 'REALIZADO') return { ...o, status: newStatus, dataRealizacao: getToday(), realizadoPor: appUser.nome };
-        if (newStatus === 'PENDENTE') return { ...o, status: newStatus, dataAprovacao: null, aprovadoPor: null, dataRealizacao: null, realizadoPor: null };
+    if (!formData.projectId || !formData.descricao) return;
+    const data = { ...formData, companyId: appUser.companyId, valor: parseFloat(formData.valor||0) };
+    if(!editingChk) data.concluido = false;
+    
+    try {
+      let chkId = editingChk?.id;
+      if (editingChk) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', chkId), data);
+      else {
+        const ref = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'checklists'), data);
+        chkId = ref.id;
       }
-      return o;
-    });
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
-  };
-
-  const saveOrcValue = async (orcId) => {
-    const updated = (liveChecklist.orcamentos || []).map(o => {
-      if (o.id === orcId) return { ...o, valor: parseFloat(String(editingOrcValor).replace(',', '.')) || 0 };
-      return o;
-    });
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
-    setEditingOrcId(null);
-  };
-
-  const deleteOrc = async (orcId) => {
-    if(window.confirm('Excluir este orçamento?')) {
-      const updated = (liveChecklist.orcamentos || []).filter(o => o.id !== orcId);
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', liveChecklist.id), { orcamentos: updated });
-    }
+      
+      for(const docu of docsToUpload) {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), {
+          companyId: appUser.companyId, projectId: formData.projectId, checklistId: chkId, uploadedBy: appUser.id,
+          nome: docu.nome, tipo: docu.tipo, tamanho: docu.size, conteudoBase64: docu.b64, dataUpload: new Date().toISOString()
+        });
+      }
+      onClose();
+    } catch(err) { console.error(err); }
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[70] animate-in fade-in">
-      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col h-[90vh]">
-        <div className="p-5 border-b border-slate-200 flex justify-between items-start bg-[#1e5aa0] text-white rounded-t-2xl shrink-0">
-          <div className="pr-4">
-            <p className="text-blue-200 text-[10px] font-black uppercase tracking-widest">{project.nomeProjeto || project.clientName}</p>
-            <h2 className="text-lg font-bold leading-tight mt-1">{liveChecklist.descricao}</h2>
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl w-full max-w-3xl flex flex-col shadow-2xl max-h-[95vh]">
+        <div className="p-4 bg-[#1e5aa0] text-white rounded-t-2xl flex justify-between items-center"><h2 className="font-bold text-lg uppercase">{editingChk ? 'Editar' : 'Nova'} Tarefa</h2><button onClick={onClose}><X size={20}/></button></div>
+        <form id="chkform" onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Descrição da Tarefa *</label><input required value={formData.descricao} onChange={e=>setFormData({...formData, descricao: e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none font-bold text-slate-800 focus:border-[#1e5aa0]" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Projeto Vinculado *</label><select required value={formData.projectId} onChange={e=>setFormData({...formData, projectId: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none font-bold text-slate-700"><option></option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}</select></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Atribuir a</label><select value={formData.assignedTo} onChange={e=>setFormData({...formData, assignedTo: e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none"><option value="ALL">Toda a Equipe</option>{users.map(u=><option key={u.id} value={u.id}>{u.nome}</option>)}</select></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Data Limite *</label><input required type="date" value={formData.dataPrevista} onChange={e=>setFormData({...formData, dataPrevista: e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none" /></div>
+            {!formData.requiresBudget && <div><label className="text-xs font-bold text-slate-500 uppercase">Custo da Tarefa (Opcional - R$)</label><input type="number" step="0.01" value={formData.valor} onChange={e=>setFormData({...formData, valor: e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none" /></div>}
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-blue-800 rounded-full transition-colors shrink-0"><X size={20}/></button>
-        </div>
+          
+          <label className="flex items-center gap-3 p-4 bg-amber-50 rounded-xl border border-amber-200 cursor-pointer hover:bg-amber-100 transition-colors">
+            <input type="checkbox" checked={formData.requiresBudget} onChange={e=>setFormData({...formData, requiresBudget: e.target.checked})} className="w-5 h-5 accent-amber-600" />
+            <span className="font-black text-amber-800 text-sm uppercase">Ativar Controlo de Orçamentos (Cotações para a Obra)</span>
+          </label>
 
-        <div className="flex bg-slate-50 border-b border-slate-200 shrink-0 px-4 overflow-x-auto">
-          {liveChecklist.solicitaOrcamento && <button onClick={()=>setActiveTab('ORCAMENTOS')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors whitespace-nowrap ${activeTab === 'ORCAMENTOS' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Orçamentos ({(liveChecklist.orcamentos||[]).length})</button>}
-          <button onClick={()=>setActiveTab('DOCUMENTOS')} className={`px-4 py-3 text-xs font-black uppercase tracking-wide border-b-2 transition-colors whitespace-nowrap ${activeTab === 'DOCUMENTOS' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Documentos Anexos ({documents.length})</button>
-        </div>
-
-        {activeTab === 'ORCAMENTOS' && liveChecklist.solicitaOrcamento && (
-          <div className="flex-1 overflow-y-auto p-6 bg-slate-100 flex flex-col">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-black text-slate-700 uppercase tracking-tight"><DollarSign size={18} className="inline mr-1"/> Avaliação de Orçamentos</h3>
-              {!showOrcForm && canEdit && <button onClick={()=>setShowOrcForm(true)} className="bg-white border hover:bg-slate-50 text-[#1e5aa0] px-3 py-2 rounded-lg text-xs font-bold uppercase transition-colors shadow-sm flex gap-1 items-center"><Plus size={14}/> Cadastrar</button>}
-            </div>
-
-            {showOrcForm && (
-              <form onSubmit={addOrcamento} className="bg-white p-5 rounded-xl border border-blue-200 shadow-sm mb-6 animate-in slide-in-from-top-2">
-                <h4 className="text-xs font-black text-[#1e5aa0] uppercase mb-4 border-b pb-2">Novo Orçamento</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Categoria *</label><select required value={orcForm.categoria} onChange={e=>setOrcForm({...orcForm, categoria: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-bold text-sm bg-white"><option>Serviço</option><option>Produto</option></select></div>
-                  <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Valor Inicial (R$) *</label><input type="number" step="0.01" required value={orcForm.valor} onChange={e=>setOrcForm({...orcForm, valor: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-black text-sm text-[#1e5aa0]" /></div>
-                  <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Nome Fornecedor/Profissional *</label><input required type="text" value={orcForm.nomeProfissional} onChange={e=>setOrcForm({...orcForm, nomeProfissional: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-bold text-sm" /></div>
-                  <div><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Contato/Dados Básicos</label><input type="text" value={orcForm.dadosProfissional} onChange={e=>setOrcForm({...orcForm, dadosProfissional: e.target.value})} className="w-full p-2 border rounded-lg outline-none font-medium text-sm" /></div>
-                  <div className="sm:col-span-2"><label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Observações do Orçamento</label><textarea required value={orcForm.observacao} onChange={e=>setOrcForm({...orcForm, observacao: e.target.value})} rows="2" className="w-full p-2 border rounded-lg outline-none resize-none font-medium text-sm"></textarea></div>
-                </div>
-                <div className="mt-4 flex justify-end gap-2"><button type="button" onClick={()=>setShowOrcForm(false)} className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-lg">Cancelar</button><button type="submit" className="px-4 py-2 text-xs font-bold text-white bg-[#1e5aa0] hover:bg-[#154278] rounded-lg shadow-sm">Salvar Orçamento</button></div>
-              </form>
-            )}
-
-            <div className="space-y-4">
-              {(liveChecklist.orcamentos || []).map(o => (
-                <div key={o.id} className={`bg-white border rounded-xl p-4 shadow-sm relative overflow-hidden transition-colors ${o.status === 'APROVADO' ? 'border-emerald-300 ring-1 ring-emerald-100' : o.status === 'REALIZADO' ? 'border-[#1e5aa0] bg-blue-50/30' : 'border-slate-200'}`}>
-                  {canEdit && <button onClick={()=>deleteOrc(o.id)} className="absolute top-3 right-3 text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>}
-                  
-                  <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-4 pr-6">
-                    <div>
-                      <div className="flex items-center gap-2 mb-1"><span className="text-[9px] font-black uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{o.categoria}</span><span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${o.status === 'PENDENTE' ? 'bg-amber-100 text-amber-700' : o.status === 'APROVADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-[#1e5aa0] text-white'}`}>{o.status}</span></div>
-                      <h4 className="font-black text-slate-800 text-lg uppercase">{o.nomeProfissional}</h4>
-                      <p className="text-xs font-bold text-slate-500 mt-0.5">{o.dadosProfissional}</p>
-                    </div>
-                    <div className="text-left sm:text-right">
-                      {editingOrcId === o.id ? (
-                        <div className="flex items-center gap-2 justify-end bg-blue-50 p-1.5 rounded-lg border border-blue-100 animate-in fade-in">
-                          <input type="number" step="0.01" value={editingOrcValor} onChange={e=>setEditingOrcValor(e.target.value)} className="w-24 text-right p-1.5 border rounded outline-none font-black text-[#1e5aa0] text-sm" />
-                          <button onClick={()=>saveOrcValue(o.id)} className="bg-emerald-600 text-white p-1.5 rounded hover:bg-emerald-700"><Check size={14}/></button>
-                          <button onClick={()=>setEditingOrcId(null)} className="bg-red-500 text-white p-1.5 rounded hover:bg-red-600"><X size={14}/></button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center sm:justify-end gap-2 group">
-                          <p className={`text-xl font-black ${o.status === 'PENDENTE' ? 'text-slate-800' : o.status === 'APROVADO' ? 'text-emerald-600' : 'text-[#1e5aa0]'}`}>{formatCurrency(o.valor)}</p>
-                          {canEdit && o.status === 'PENDENTE' && <button onClick={()=>{setEditingOrcId(o.id); setEditingOrcValor(o.valor);}} className="text-slate-300 hover:text-[#1e5aa0] opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"><Edit size={16}/></button>}
-                        </div>
-                      )}
-                      <p className="text-[9px] font-bold text-slate-400 uppercase mt-1">Lançado por {o.criadoPor?.split(' ')[0]}</p>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 mb-4 text-xs font-medium text-slate-700">{o.observacao}</div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
-                    <div className="flex flex-wrap gap-2">
-                      {o.dataAprovacao && <div className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded border border-emerald-100 uppercase">Aprovado: {formatDate(o.dataAprovacao)} ({o.aprovadoPor?.split(' ')[0]})</div>}
-                      {o.dataRealizacao && <div className="text-[9px] font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded border border-blue-100 uppercase">Realizado: {formatDate(o.dataRealizacao)} ({o.realizadoPor?.split(' ')[0]})</div>}
-                    </div>
-
-                    {canEdit && (
-                      <div className="flex gap-2">
-                        {o.status === 'PENDENTE' && <button onClick={()=>changeOrcStatus(o.id, 'APROVADO')} className="bg-emerald-100 hover:bg-emerald-200 text-emerald-800 px-3 py-1.5 rounded text-xs font-bold uppercase transition-colors">Aprovar Orçamento</button>}
-                        {o.status === 'APROVADO' && (
-                          <>
-                            <button onClick={()=>changeOrcStatus(o.id, 'PENDENTE')} className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded text-xs font-bold uppercase transition-colors">Desfazer Aprovação</button>
-                            <button onClick={()=>changeOrcStatus(o.id, 'REALIZADO')} className="bg-[#1e5aa0] hover:bg-[#154278] text-white px-3 py-1.5 rounded text-xs font-bold uppercase transition-colors flex items-center gap-1"><HardHat size={14}/> Serviço Realizado</button>
-                          </>
-                        )}
-                        {o.status === 'REALIZADO' && <button onClick={()=>changeOrcStatus(o.id, 'APROVADO')} className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded text-xs font-bold uppercase transition-colors flex items-center gap-1"><X size={14}/> Desfazer Realização</button>}
+          {formData.requiresBudget && (
+            <div className="border border-slate-200 rounded-xl p-5 bg-slate-50 shadow-inner">
+              <h4 className="font-black text-slate-700 text-sm uppercase mb-4 border-b pb-2 flex items-center gap-2"><DollarSign size={18}/> Inserir Proposta de Orçamento</h4>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase">Vincular a um Ambiente (Opcional)</label><select value={newBudget.ambienteId} onChange={e=>setNewBudget({...newBudget, ambienteId:e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none text-xs font-bold"><option value="">Não vincular (Geral)</option>{ambientesProjeto.map(a=><option key={a.id} value={a.id}>{a.nome}</option>)}</select></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase">Categoria</label><select value={newBudget.category} onChange={e=>setNewBudget({...newBudget, category:e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none text-xs font-bold"><option value="SERVICO">Serviço/Mão de Obra</option><option value="PRODUTO">Produto/Material</option></select></div>
+                <div className="sm:col-span-2"><label className="text-[10px] font-bold text-slate-500 uppercase">Nome Profissional / Fornecedor / Loja *</label><input value={newBudget.professionalName} onChange={e=>setNewBudget({...newBudget, professionalName:e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none text-sm font-bold" /></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase">Valor Orçado (R$) *</label><input type="number" step="0.01" value={newBudget.value} onChange={e=>setNewBudget({...newBudget, value:e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none text-sm font-black text-[#1e5aa0]" /></div>
+                <div><label className="text-[10px] font-bold text-slate-500 uppercase">Detalhes Adicionais</label><input value={newBudget.obs} onChange={e=>setNewBudget({...newBudget, obs:e.target.value})} className="w-full p-2.5 border rounded-lg mt-1 outline-none text-sm" placeholder="Ex: Frete incluído" /></div>
+              </div>
+              <button type="button" onClick={addBudget} className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-lg text-xs uppercase hover:bg-[#154278] shadow flex justify-center items-center gap-1"><Plus size={16}/> Adicionar Orçamento à Lista</button>
+              
+              {formData.budgets.length > 0 && (
+                <div className="mt-6 space-y-2">
+                  <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Orçamentos Lançados nesta Tarefa:</h5>
+                  {formData.budgets.map((b, i) => (
+                    <div key={i} className="bg-white p-3 border rounded-xl flex justify-between items-center shadow-sm">
+                      <div className="flex-1 min-w-0 pr-4">
+                        <p className="font-black text-sm text-slate-800 truncate">{b.professionalName}</p>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase truncate">{b.ambienteNome ? `Ambiente: ${b.ambienteNome}` : 'Geral'} • {formatCurrency(b.value)}</p>
                       </div>
-                    )}
-                  </div>
+                      <button type="button" onClick={()=>{const n=[...formData.budgets]; n.splice(i,1); setFormData({...formData, budgets: n});}} className="text-slate-300 hover:text-red-500 p-2 bg-slate-50 rounded-lg"><Trash2 size={16}/></button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-              {(liveChecklist.orcamentos || []).length === 0 && !showOrcForm && (
-                <div className="text-center py-10 bg-white border border-dashed rounded-xl"><BriefcaseBusiness size={32} className="mx-auto mb-2 text-slate-300"/><p className="text-sm font-bold text-slate-500">Nenhum orçamento cadastrado para esta tarefa.</p></div>
               )}
             </div>
-          </div>
-        )}
+          )}
 
-        {activeTab === 'DOCUMENTOS' && (
-          <div className="flex-1 overflow-y-auto p-6 bg-slate-100 flex flex-col">
-            <div className="bg-white p-4 border border-blue-200 rounded-xl flex justify-between items-center mb-6 shadow-sm">
-              <div><h3 className="font-black text-[#1e5aa0] uppercase text-sm">Anexos da Tarefa</h3><p className="text-[10px] font-bold text-slate-500 uppercase mt-0.5">Estes arquivos também aparecerão no cofre do projeto.</p></div>
-              <div><button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="bg-[#1e5aa0] text-white px-4 py-2 rounded-lg font-bold flex items-center space-x-2 text-xs uppercase tracking-wide transition-colors shadow-sm hover:bg-[#154278]"><Paperclip size={14} /> <span>{uploading ? 'Enviando...' : 'Anexar Documento'}</span></button><input type="file" multiple ref={fileInputRef} onChange={handleUpload} className="hidden" /></div>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-              {documents.map(d => (
-                <div key={d.id} className="bg-white border border-slate-200 rounded-xl p-3 hover:border-[#1e5aa0] hover:shadow-md transition-all flex flex-col items-center text-center relative group">
-                  <button onClick={()=>deleteDocu(d.id)} className="absolute top-2 right-2 text-red-400 opacity-0 group-hover:opacity-100 hover:text-red-600"><Trash2 size={14}/></button>
-                  <FileText size={32} className="mb-2 text-slate-300 group-hover:text-[#1e5aa0]" />
-                  <p className="text-[10px] font-bold text-slate-700 truncate w-full px-1 uppercase" title={d.nome}>{d.nome}</p>
-                  <p className="text-[9px] text-slate-400 mt-1 font-bold">{(d.tamanho / 1024).toFixed(0)} KB</p>
-                  <p className="text-[8px] text-[#1e5aa0] mt-1 font-bold bg-blue-50 px-1 rounded truncate w-full" title={d.uploadedBy}>Por: {d.uploadedBy.split(' ')[0]}</p>
-                </div>
-              ))}
-              {documents.length===0 && <div className="col-span-full text-center text-slate-400 font-bold py-12 border border-dashed rounded-xl bg-white"><FolderOpen size={32} className="mx-auto mb-2 opacity-30"/><p className="text-sm">Nenhum documento anexado.</p></div>}
+          <div className="border-t border-slate-200 pt-4">
+            <h4 className="font-bold text-slate-700 text-xs uppercase mb-2">Anexar Documentos Extras (Opcional)</h4>
+            <input type="file" multiple onChange={handleFile} className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-[#1e5aa0] hover:file:bg-blue-100 cursor-pointer" />
+            <div className="flex gap-2 flex-wrap mt-3">
+              {docsToUpload.map((d, i) => <span key={i} className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-1.5 rounded-lg border border-indigo-100 flex items-center gap-1"><FileText size={10}/> {d.nome}</span>)}
             </div>
           </div>
-        )}
+        </form>
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end space-x-3 rounded-b-2xl"><button onClick={onClose} type="button" className="px-6 py-3 rounded-lg font-bold text-slate-600 hover:bg-slate-200">Cancelar</button><button form="chkform" type="submit" className="px-6 py-3 rounded-lg font-bold text-white bg-[#1e5aa0] hover:bg-[#154278] shadow">Salvar Tarefa Completa</button></div>
+      </div>
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+    </div>
+  );
+}
 
+// --- MODAIS GERAIS E COMPARTILHADOS ---
+function AlertModal({ message, onClose }) {
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[9999] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center animate-in zoom-in-95 duration-200">
+        <AlertCircle size={48} className="text-amber-500 mx-auto mb-4" />
+        <p className="text-slate-800 font-bold mb-6">{message}</p>
+        <button onClick={onClose} className="w-full bg-[#1e5aa0] hover:bg-[#154278] text-white py-3 rounded-xl font-bold transition-colors">Entendi</button>
       </div>
     </div>
   );
 }
 
-// --- MODAIS GERAIS ---
-function AlertModal({ title, message, onClose }) {
-  return <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[9999]"><div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center"><AlertCircle size={48} className="text-amber-500 mx-auto mb-4" /><h3 className="text-lg font-black text-slate-800 mb-2">{title}</h3><p className="text-slate-600 mb-6 font-medium">{message}</p><button onClick={onClose} className="w-full bg-[#1e5aa0] text-white py-3 rounded-xl font-bold">Entendi</button></div></div>;
-}
-function ConfirmModal({ title, message, onConfirm, onCancel }) {
-  return <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-[9999]"><div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center"><Info size={48} className="text-[#1e5aa0] mx-auto mb-4" /><h3 className="text-lg font-black text-slate-800 mb-2">{title}</h3><p className="text-slate-600 mb-6 font-medium">{message}</p><div className="flex gap-3"><button onClick={onCancel} className="flex-1 bg-slate-100 text-slate-700 py-3 rounded-xl font-bold">Cancelar</button><button onClick={onConfirm} className="flex-1 bg-red-600 text-white py-3 rounded-xl font-bold">Confirmar</button></div></div></div>;
+function ConfirmModal({ message, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[9999] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center animate-in zoom-in-95 duration-200">
+        <Info size={48} className="text-[#1e5aa0] mx-auto mb-4" />
+        <p className="text-slate-800 font-bold mb-6">{message}</p>
+        <div className="flex gap-3">
+          <button onClick={onCancel} className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold transition-colors">Cancelar</button>
+          <button onClick={onConfirm} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl font-bold transition-colors shadow-sm">Confirmar</button>
+        </div>
+      </div>
+    </div>
+  );
 }

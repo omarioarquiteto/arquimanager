@@ -1398,6 +1398,7 @@ function FinancialReportModal({ projects, onClose }) {
 function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser, documents }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingChk, setEditingChk] = useState(null);
+  const [activeTab, setActiveTab] = useState('pendentes'); // NOVA ABA
   
   const myChecklists = useMemo(() => {
     return checklists.filter(c => c.assignedTo === appUser.id || c.assignedTo === 'ALL' || appUser.role === 'gestor')
@@ -1408,6 +1409,7 @@ function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser,
   }, [checklists, appUser]);
 
   const handleToggleConcluido = async (chk) => {
+    // O sistema já grava a data de conclusão automaticamente aqui:
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'checklists', chk.id), { concluido: !chk.concluido, dataConclusao: !chk.concluido ? getToday() : null });
   };
   
@@ -1419,17 +1421,33 @@ function ChecklistView({ projects, checklists, companyUsers, canCreate, appUser,
     });
   };
 
+  // FILTROS DAS ABAS
+  const pendentes = myChecklists.filter(c => !c.concluido);
+  const concluidas = myChecklists.filter(c => c.concluido);
+  const currentList = activeTab === 'pendentes' ? pendentes : concluidas;
+
   return (
     <div className="h-full flex flex-col">
       <div className="flex justify-between items-center mb-6">
         <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tarefas & Orçamentos</h3>
         {canCreate && <button onClick={() => {setEditingChk(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Nova Tarefa</span></button>}
       </div>
+
+      {/* ABAS */}
+      <div className="flex gap-4 mb-4 border-b border-slate-200 shrink-0">
+        <button onClick={() => setActiveTab('pendentes')} className={`pb-3 px-2 text-sm font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'pendentes' ? 'border-[#1e5aa0] text-[#1e5aa0]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+          Pendentes ({pendentes.length})
+        </button>
+        <button onClick={() => setActiveTab('concluidas')} className={`pb-3 px-2 text-sm font-black uppercase tracking-wide border-b-2 transition-colors ${activeTab === 'concluidas' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+          Concluídas ({concluidas.length})
+        </button>
+      </div>
+
       <div className="flex-1 overflow-auto space-y-4 pb-12">
-        {myChecklists.map(chk => (
+        {currentList.map(chk => (
           <ChecklistCard key={chk.id} chk={chk} projects={projects} users={companyUsers} appUser={appUser} onToggle={()=>handleToggleConcluido(chk)} onEdit={()=>{setEditingChk(chk); setIsModalOpen(true);}} onDelete={()=>handleDelete(chk.id)} allDocs={documents} />
         ))}
-        {myChecklists.length === 0 && <div className="text-center text-slate-400 py-12 font-medium border border-dashed rounded-xl bg-white">Nenhuma tarefa atribuída a você no momento.</div>}
+        {currentList.length === 0 && <div className="text-center text-slate-400 py-12 font-medium border border-dashed rounded-xl bg-white">Nenhuma tarefa nesta categoria.</div>}
       </div>
       {isModalOpen && <ChecklistModal appUser={appUser} projects={projects} users={companyUsers} editingChk={editingChk} onClose={()=>setIsModalOpen(false)} />}
       {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
@@ -1453,12 +1471,12 @@ function ChecklistCard({ chk, projects, users, appUser, onToggle, onEdit, onDele
   };
 
   return (
-    <div className={`bg-white rounded-2xl border p-5 shadow-sm transition-all relative ${chk.concluido ? 'border-slate-200 opacity-70' : chk.requiresBudget ? 'border-amber-400 shadow-amber-100' : 'border-slate-200 hover:shadow-md'}`}>
+    <div className={`bg-white rounded-2xl border p-5 shadow-sm transition-all relative ${chk.concluido ? 'border-slate-200 bg-slate-50' : chk.requiresBudget ? 'border-amber-400 shadow-amber-100' : 'border-slate-200 hover:shadow-md'}`}>
       <div className="flex gap-4 items-start">
         <button onClick={onToggle} className="mt-1 transition-transform hover:scale-110">{chk.concluido ? <CheckCircle2 className="text-emerald-500" size={28}/> : <Circle className="text-slate-300 hover:text-[#1e5aa0]" size={28}/>}</button>
         <div className="flex-1">
           <div className="flex justify-between items-start">
-            <h4 className={`font-black text-lg ${chk.concluido?'line-through text-slate-400':'text-slate-800'}`}>{chk.descricao}</h4>
+            <h4 className={`font-black text-lg ${chk.concluido?'line-through text-slate-500':'text-slate-800'}`}>{chk.descricao}</h4>
             <div className="flex gap-2">
               {chk.requiresBudget && <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase">Orçamento Req.</span>}
               <button onClick={onEdit} className="text-slate-400 hover:text-[#1e5aa0]"><Edit size={16}/></button>
@@ -1469,13 +1487,19 @@ function ChecklistCard({ chk, projects, users, appUser, onToggle, onEdit, onDele
             <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded border uppercase">{p?.nomeProjeto || 'Projeto Indefinido'}</span>
             <span className="text-slate-500 flex items-center gap-1"><Users size={14}/> Resp: {resp?.nome || 'Todos'}</span>
             <span className={`flex items-center gap-1 ${new Date(chk.dataPrevista) < new Date(getToday()) && !chk.concluido ? 'text-red-600' : 'text-slate-500'}`}><Clock size={14}/> Prev: {formatDate(chk.dataPrevista)}</span>
+            
+            {/* EXIBIÇÃO DA DATA DE CONCLUSÃO */}
+            {chk.concluido && chk.dataConclusao && (
+              <span className="text-emerald-600 flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100"><CheckCircle2 size={14}/> Concluída a: {formatDate(chk.dataConclusao)}</span>
+            )}
+
             {!chk.requiresBudget && chk.valor > 0 && <span className="text-emerald-600 flex items-center gap-1"><DollarSign size={14}/> {formatCurrency(chk.valor)}</span>}
           </div>
 
           {chk.requiresBudget && (
             <div className="mt-4 border-t pt-4">
               <button onClick={()=>setShowBudgets(!showBudgets)} className="w-full bg-amber-50 text-amber-800 font-bold text-xs py-2 rounded-lg border border-amber-200 uppercase tracking-wide">
-                {showBudgets ? 'Ocultar Orçamentos' : `Gerir Orçamentos (${(chk.budgets||[]).length})`}
+                {showBudgets ? 'Ocultar Orçamentos' : `Gerenciar Orçamentos (${(chk.budgets||[]).length})`}
               </button>
               {showBudgets && (
                 <div className="mt-3 space-y-3">

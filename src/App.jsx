@@ -141,7 +141,15 @@ const printReport = (title, htmlContent) => {
 // --- COMPONENTE PRINCIPAL (ROOT) ---
 export default function App() {
   const [firebaseUser, setFirebaseUser] = useState(null);
-  const [appUser, setAppUser] = useState(null);
+  // Inicializa a sessão buscando da memória do navegador
+  const [appUser, setAppUser] = useState(() => {
+    try {
+      const savedUser = localStorage.getItem('arqui_user_session');
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [loadingAuth, setLoadingAuth] = useState(true);
 
   useEffect(() => {
@@ -157,10 +165,22 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">Conectando ao ArquiManager...</div>;
-  if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} onUnlock={setAppUser} />;
+// Lógica de Login: Atualiza estado e guarda na memória do navegador
+  const handleLoginSuccess = (user) => {
+    localStorage.setItem('arqui_user_session', JSON.stringify(user));
+    setAppUser(user);
+  };
 
-  return <MainLayout firebaseUser={firebaseUser} appUser={appUser} onLogout={() => setAppUser(null)} />;
+  // Lógica de Logout: Limpa a memória
+  const handleLogout = () => {
+    localStorage.removeItem('arqui_user_session');
+    setAppUser(null);
+  };
+
+  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">Conectando ao ArquiManager...</div>;
+  if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} onUnlock={handleLoginSuccess} />;
+
+  return <MainLayout firebaseUser={firebaseUser} appUser={appUser} onLogout={handleLogout} />;
 }
 
 // --- TELA DE LOGIN E CADASTRO DA EMPRESA ---

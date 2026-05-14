@@ -271,6 +271,111 @@ function LoginScreen({ firebaseUser, onUnlock }) {
   );
 }
 
+// --- VISÃO: GESTÃO DE CLIENTES (COM PROTEÇÃO CONTRA TELA BRANCA) ---
+function ClientsView({ clients, projects, canCreate, canEdit, canDelete, appUser, onOpenProject }) {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState(null);
+  const [alertMsg, setAlertMsg] = useState('');
+  const [confirmData, setConfirmData] = useState(null);
+
+  // Redes de segurança para garantir que os dados são arrays válidos
+  const safeClients = Array.isArray(clients) ? clients : [];
+  const safeProjects = Array.isArray(projects) ? projects : [];
+
+  const handleDelete = (client) => {
+    // Verifica se existem projetos vinculados antes de permitir a exclusão
+    const temProjetos = safeProjects.some(p => p && p.clientId === client.id);
+    
+    if (temProjetos) {
+      return setAlertMsg('Há projetos vinculados a este cliente. Não é possível excluir.');
+    }
+    
+    setConfirmData({
+      message: 'Excluir cliente permanentemente?',
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id));
+          setConfirmData(null);
+        } catch (err) {
+          console.error("Erro ao eliminar cliente:", err);
+        }
+      }
+    });
+  };
+
+  return (
+    <div className="h-full flex flex-col animate-in fade-in">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Clientes</h3>
+          <p className="text-slate-500 text-sm font-medium">Gestão da base de contactos e projetos vinculados.</p>
+        </div>
+        {canCreate && (
+          <button 
+            onClick={() => {setEditingClient(null); setIsModalOpen(true);}} 
+            className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278] transition-colors"
+          >
+            <Plus size={18}/><span>Novo Cliente</span>
+          </button>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 overflow-auto">
+        <table className="w-full text-left text-sm min-w-[600px]">
+          <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0 z-10">
+            <tr>
+              <th className="p-4">Nome do Cliente</th>
+              <th className="p-4">Informações de Contacto</th>
+              <th className="p-4 text-center">Projetos Ativos</th>
+              <th className="p-4 text-center">Ações</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {safeClients.length > 0 ? safeClients.map(c => (
+              <tr key={c.id} className="hover:bg-slate-50 transition-colors">
+                <td className="p-4 font-bold text-slate-800">{c.nome}</td>
+                <td className="p-4">
+                  <div className="flex flex-col">
+                    <span className="font-medium text-slate-700">{c.telefone || '(Sem telefone)'}</span>
+                    <span className="text-xs text-slate-400">{c.email || '(Sem e-mail)'}</span>
+                  </div>
+                </td>
+                <td className="p-4 text-center">
+                  <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full font-bold text-xs border border-slate-200">
+                    {safeProjects.filter(p => p && p.clientId === c.id).length} Projetos
+                  </span>
+                </td>
+                <td className="p-4 text-center space-x-3">
+                  {canEdit && (
+                    <button onClick={() => {setEditingClient(c); setIsModalOpen(true);}} className="text-[#5a82b5] hover:text-[#1e5aa0] transition-colors">
+                      <Edit size={18}/>
+                    </button>
+                  )}
+                  {canDelete && (
+                    <button onClick={() => handleDelete(c)} className="text-red-400 hover:text-red-600 transition-colors">
+                      <Trash2 size={18}/>
+                    </button>
+                  )}
+                </td>
+              </tr>
+            )) : (
+              <tr>
+                <td colSpan="4" className="p-10 text-center text-slate-400 font-bold uppercase text-xs">
+                  Nenhum cliente registado.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {isModalOpen && <ClientModal appUser={appUser} client={editingClient} onClose={()=>setIsModalOpen(false)}/>}
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
+    </div>
+  );
+}
+
 // --- LAYOUT PRINCIPAL E GESTÃO DE ESTADO GLOBAL ---
 function MainLayout({ firebaseUser, appUser, onLogout }) {
   const [currentView, setCurrentView] = useState('dashboard');
@@ -304,11 +409,14 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
     return () => { uCompany(); uUsers(); uClients(); uProjects(); uChecklists(); uDocs(); };
   }, [firebaseUser, appUser]);
 
-  const allowedProjects = useMemo(() => {
+const allowedProjects = useMemo(() => {
+    if (!appUser || !projects) return []; // Proteção inicial
     if (appUser.role === 'gestor') return projects;
     if (appUser.allowedProjects === 'ALL') return projects;
-    const projIds = appUser.allowedProjects || [];
-    return projects.filter(p => projIds.includes(p.id));
+    
+    // Garante que projIds seja sempre um array, mesmo que o campo não exista no Firebase
+    const projIds = Array.isArray(appUser.allowedProjects) ? appUser.allowedProjects : [];
+    return projects.filter(p => p && p.id && projIds.includes(p.id));
   }, [projects, appUser]);
 
   const hasScreenAccess = (screenId) => appUser.role === 'gestor' || (appUser.permissions?.screens || []).includes(screenId);

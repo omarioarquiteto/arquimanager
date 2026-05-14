@@ -44,7 +44,7 @@ const FASES_ANALITICAS = ['LEVANTAMENTO', 'ESTUDO PRELIMINAR', 'PROJETO CRIATIVO
 const SCREENS = [{id: 'dashboard', label: 'Dashboard'}, {id: 'projetos', label: 'Projetos'}, {id: 'recebimentos', label: 'Financeiro'}, {id: 'checklist', label: 'Tarefas & Orçamentos'}, {id: 'clients', label: 'Clientes'}];
 const CATEGORIAS_AMBIENTE = ['Paredes', 'Esquadrias', 'Piso', 'Teto', 'Moveis', 'Decoração', 'Paisagismo', 'Revestimentos', 'Pedras', 'Louças', 'Metais', 'Outros'];
 
-// --- GERADOR DE RELATÓRIO NATIVO (HTML PARA IMPRESSÃO/PDF) ---
+// --- GERADOR DE RELATÓRIO NATIVO (HTML COM PRÉ-VISUALIZAÇÃO E OPÇÕES) ---
 const printReport = (title, htmlContent) => {
   const win = window.open('', '_blank');
   win.document.write(`
@@ -52,7 +52,46 @@ const printReport = (title, htmlContent) => {
       <head>
         <title>${title}</title>
         <style>
-          body { font-family: Arial, sans-serif; padding: 40px; color: #333; line-height: 1.6; }
+          body { font-family: Arial, sans-serif; padding: 0; margin: 0; color: #333; line-height: 1.6; background: #f1f5f9; }
+          
+          /* Barra de Ferramentas superior fixa */
+          .toolbar { 
+            background: #1e293b; 
+            padding: 15px; 
+            display: flex; 
+            gap: 12px; 
+            justify-content: center; 
+            position: sticky; 
+            top: 0; 
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          
+          .btn { 
+            padding: 10px 20px; 
+            border-radius: 6px; 
+            font-weight: bold; 
+            cursor: pointer; 
+            border: none; 
+            font-size: 13px; 
+            text-transform: uppercase;
+            transition: all 0.2s;
+          }
+          .btn-pdf { background: #1e5aa0; color: white; }
+          .btn-pdf:hover { background: #154278; }
+          .btn-txt { background: #64748b; color: white; }
+          .btn-txt:hover { background: #475569; }
+
+          /* Área do conteúdo do relatório */
+          .content-wrapper {
+            background: white;
+            width: 800px;
+            margin: 30px auto;
+            padding: 50px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+            min-height: 100vh;
+          }
+
           h1 { color: #1e5aa0; border-bottom: 2px solid #1e5aa0; padding-bottom: 10px; }
           h2 { color: #444; margin-top: 30px; font-size: 18px; background: #f1f5f9; padding: 10px; border-radius: 5px; }
           table { border-collapse: collapse; margin-top: 15px; width: 100%; }
@@ -60,14 +99,43 @@ const printReport = (title, htmlContent) => {
           th { background-color: #1e5aa0; color: white; }
           .total-box { margin-top: 30px; padding: 20px; background: #e0f2fe; border: 2px solid #bae6fd; border-radius: 8px; font-size: 18px; font-weight: bold; text-align: right; }
           .total-box span { color: #0369a1; }
-          @media print { body { padding: 0; } }
+
+          /* Esconde a barra de ferramentas ao imprimir */
+          @media print { 
+            .toolbar { display: none !important; } 
+            body { background: white; }
+            .content-wrapper { margin: 0; padding: 0; width: 100%; box-shadow: none; }
+          }
         </style>
       </head>
-      <body>${htmlContent}</body>
+      <body>
+        <div class="toolbar">
+          <button class="btn btn-pdf" onclick="window.print()">Gerar PDF / Imprimir</button>
+          <button class="btn btn-txt" onclick="downloadTxt()">Exportar para TXT</button>
+        </div>
+        
+        <div class="content-wrapper" id="report-body">
+          ${htmlContent}
+        </div>
+
+        <script>
+          function downloadTxt() {
+            // Captura o texto limpo do relatório
+            const content = document.getElementById('report-body').innerText;
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '${title}.txt';
+            a.click();
+            window.URL.revokeObjectURL(url);
+          }
+        </script>
+      </body>
     </html>
   `);
   win.document.close();
-  setTimeout(() => { win.print(); }, 500);
+  // A linha setTimeout(() => { win.print(); }, 500); FOI REMOVIDA para não abrir a impressão sozinha.
 };
 
 // --- COMPONENTE PRINCIPAL (ROOT) ---
@@ -926,6 +994,10 @@ function EnvironmentEditor({ env, project, appUser, allDocs, onSave, onBack, glo
   const [localEnv, setLocalEnv] = useState(env);
   const [activeCat, setActiveCat] = useState(CATEGORIAS_AMBIENTE[0]);
   const [itemForm, setItemForm] = useState({ nome: '', marca: '', modelo: '', codigo: '', valor: '', quantidade: 1 });
+  const [zoomedImage, setZoomedImage] = useState(null);
+
+  // 1. NOVO ESTADO: Armazena o ID do item que está sendo editado
+  const [editingItemId, setEditingItemId] = useState(null);
 
   const envDocs = allDocs.filter(d => d.ambienteId === localEnv.id);
   const refAmbiente = envDocs.filter(d => d.docType === 'referencia_ambiente');
@@ -935,13 +1007,48 @@ function EnvironmentEditor({ env, project, appUser, allDocs, onSave, onBack, glo
     setLocalEnv(updated); onSave(updated);
   };
 
-  const addItem = (e) => {
+  // 2. FUNÇÃO CARREGAR EDIÇÃO: Preenche o formulário com os dados do item
+  const handleEditItem = (item) => {
+    setItemForm({
+      nome: item.nome,
+      marca: item.marca || '',
+      modelo: item.modelo || '',
+      codigo: item.codigo || '',
+      valor: item.valor || '',
+      quantidade: item.quantidade || 1
+    });
+    setEditingItemId(item.id);
+    // Rola para o topo do formulário para facilitar a visualização no celular
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // 3. FUNÇÃO SALVAR ALTERADA: Agora lida com Adição e Edição
+  const handleSaveItem = (e) => {
     e.preventDefault();
     if(!itemForm.nome) return;
-    const newItem = { id: generateId(), categoria: activeCat, ...itemForm, valor: parseFloat(itemForm.valor||0), quantidade: parseInt(itemForm.quantidade||1) };
-    const updated = {...localEnv, itens: [...localEnv.itens, newItem]};
-    setLocalEnv(updated); onSave(updated);
+    
+    let updatedItemsList;
+
+    if (editingItemId) {
+      // Lógica de Atualização
+      updatedItemsList = localEnv.itens.map(it => 
+        it.id === editingItemId 
+          ? { ...it, ...itemForm, valor: parseFloat(itemForm.valor||0), quantidade: parseInt(itemForm.quantidade||1) } 
+          : it
+      );
+    } else {
+      // Lógica de Novo Item
+      const newItem = { id: generateId(), categoria: activeCat, ...itemForm, valor: parseFloat(itemForm.valor||0), quantidade: parseInt(itemForm.quantidade||1) };
+      updatedItemsList = [...localEnv.itens, newItem];
+    }
+
+    const updated = {...localEnv, itens: updatedItemsList};
+    setLocalEnv(updated); 
+    onSave(updated);
+    
+    // Limpa o formulário e sai do modo de edição
     setItemForm({ nome: '', marca: '', modelo: '', codigo: '', valor: '', quantidade: 1 });
+    setEditingItemId(null);
   };
 
   const deleteItem = (itemId) => {
@@ -952,47 +1059,56 @@ function EnvironmentEditor({ env, project, appUser, allDocs, onSave, onBack, glo
   const catItems = localEnv.itens.filter(i => i.categoria === activeCat);
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 animate-in fade-in">
+    <div className="flex flex-col h-full bg-slate-50 animate-in fade-in relative">
       <div className="bg-white p-4 border-b flex justify-between items-center shadow-sm z-10 shrink-0">
-        <div className="flex items-center gap-4"><button onClick={onBack} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600"><ChevronLeft size={20}/></button><input type="text" value={localEnv.nome} onChange={e=>updateField('nome', e.target.value)} className="font-black text-xl text-[#1e5aa0] uppercase outline-none bg-transparent border-b border-transparent focus:border-[#1e5aa0]" placeholder="Nome do Ambiente" /></div>
-        <div className="text-right"><p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Total do Ambiente</p><p className="font-black text-lg text-emerald-600">{formatCurrency(localEnv.itens.reduce((s,i)=>s+(i.valor*i.quantidade),0))}</p></div>
+        <div className="flex items-center gap-4">
+          <button onClick={onBack} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600"><ChevronLeft size={20}/></button>
+          <input type="text" value={localEnv.nome} onChange={e=>updateField('nome', e.target.value)} className="font-black text-xl text-[#1e5aa0] uppercase outline-none bg-transparent border-b border-transparent focus:border-[#1e5aa0]" placeholder="Nome do Ambiente" />
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Total do Ambiente</p>
+          <p className="font-black text-lg text-emerald-600">{formatCurrency(localEnv.itens.reduce((s,i)=>s+(i.valor*i.quantidade),0))}</p>
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto p-6 flex flex-col md:flex-row gap-6">
+        {/* Lado Esquerdo: Briefing e Fotos */}
         <div className="w-full md:w-1/3 space-y-6">
           <div className="bg-white p-5 rounded-xl border shadow-sm">
             <h4 className="font-black text-slate-700 uppercase text-xs mb-3">Detalhes e Briefing do Ambiente</h4>
-            <textarea rows="4" value={localEnv.detalhes} onChange={e=>updateField('detalhes', e.target.value)} placeholder="Ex: Quarto de menino 10 anos, gamer..." className="w-full p-2.5 border rounded-lg outline-none resize-none text-sm font-medium mb-3"></textarea>
-            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer mb-2"><input type="checkbox" checked={localEnv.usarEstiloGeral} onChange={e=>updateField('usarEstiloGeral', e.target.checked)} className="w-4 h-4 accent-[#1e5aa0]"/> Usar mesmo estilo do projeto geral</label>
-            {!localEnv.usarEstiloGeral && <input type="text" placeholder="Estilo específico do ambiente" value={localEnv.estilo} onChange={e=>updateField('estilo', e.target.value)} className="w-full p-2.5 border rounded-lg outline-none text-sm font-bold" />}
-          </div>
-          <div className="bg-white p-5 rounded-xl border shadow-sm">
-            <h4 className="font-black text-slate-700 uppercase text-xs mb-3 flex justify-between items-center">Referências do Ambiente <label className="text-[#1e5aa0] cursor-pointer hover:underline text-[10px]"><Upload size={12} className="inline"/> Upload<input type="file" multiple className="hidden" onChange={(e)=>onUpload(e, 'referencia_ambiente')} /></label></h4>
-            <div className="grid grid-cols-3 gap-2">
-              {refAmbiente.map(d => <div key={d.id} className="relative group border rounded p-1"><button onClick={()=>deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documents', d.id))} className="absolute top-0 right-0 bg-red-500 text-white rounded-bl p-0.5 opacity-0 group-hover:opacity-100"><X size={10}/></button><img src={d.conteudoBase64} alt={d.nome} className="w-full h-12 object-cover rounded" /></div>)}
-            </div>
+            <textarea rows="4" value={localEnv.detalhes} onChange={e=>updateField('detalhes', e.target.value)} placeholder="Ex: Detalhes do acabamento..." className="w-full p-2.5 border rounded-lg outline-none resize-none text-sm font-medium mb-3"></textarea>
+            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer mb-2">
+              <input type="checkbox" checked={localEnv.usarEstiloGeral} onChange={e=>updateField('usarEstiloGeral', e.target.checked)} className="w-4 h-4 accent-[#1e5aa0]"/> Usar mesmo estilo do projeto geral
+            </label>
+            {!localEnv.usarEstiloGeral && <input type="text" placeholder="Estilo específico" value={localEnv.estilo} onChange={e=>updateField('estilo', e.target.value)} className="w-full p-2.5 border rounded-lg outline-none text-sm font-bold" />}
           </div>
         </div>
 
+        {/* Lado Direito: Itens e Formulário */}
         <div className="w-full md:w-2/3 bg-white border rounded-xl shadow-sm flex flex-col overflow-hidden">
           <div className="flex bg-slate-800 text-slate-300 overflow-x-auto shrink-0 custom-scrollbar">
             {CATEGORIAS_AMBIENTE.map(cat => (
-              <button key={cat} onClick={()=>setActiveCat(cat)} className={`px-4 py-3 text-xs font-black uppercase tracking-widest whitespace-nowrap transition-colors border-b-2 ${activeCat === cat ? 'bg-slate-900 text-white border-[#1e5aa0]' : 'border-transparent hover:bg-slate-700'}`}>
+              <button key={cat} onClick={()=>{setActiveCat(cat); setEditingItemId(null); setItemForm({ nome: '', marca: '', modelo: '', codigo: '', valor: '', quantidade: 1 });}} className={`px-4 py-3 text-xs font-black uppercase tracking-widest whitespace-nowrap transition-colors border-b-2 ${activeCat === cat ? 'bg-slate-900 text-white border-[#1e5aa0]' : 'border-transparent hover:bg-slate-700'}`}>
                 {cat} {localEnv.itens.filter(i=>i.categoria===cat).length > 0 && <span className="bg-[#1e5aa0] text-white px-1.5 rounded-full ml-1 text-[9px]">{localEnv.itens.filter(i=>i.categoria===cat).length}</span>}
               </button>
             ))}
           </div>
-          <div className="p-5 flex-1 overflow-y-auto bg-slate-50 flex flex-col">
-            <form onSubmit={addItem} className="bg-white p-4 rounded-xl border border-blue-100 shadow-sm mb-6 shrink-0">
-              <h5 className="text-xs font-black text-[#1e5aa0] uppercase mb-3">Adicionar Item em {activeCat}</h5>
+
+          <div className="p-5 flex-1 overflow-y-auto bg-slate-50">
+            {/* FORMULÁRIO DE ADIÇÃO/EDIÇÃO */}
+            <form onSubmit={handleSaveItem} className={`p-4 rounded-xl border shadow-sm mb-6 shrink-0 transition-colors ${editingItemId ? 'bg-amber-50 border-amber-200' : 'bg-white border-blue-100'}`}>
+              <h5 className="text-xs font-black text-[#1e5aa0] uppercase mb-3 flex justify-between">
+                {editingItemId ? `Editando Item em ${activeCat}` : `Adicionar Item em ${activeCat}`}
+                {editingItemId && <button type="button" onClick={()=>{setEditingItemId(null); setItemForm({ nome: '', marca: '', modelo: '', codigo: '', valor: '', quantidade: 1 });}} className="text-red-500 hover:underline">Cancelar Edição</button>}
+              </h5>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="md:col-span-2"><input required placeholder="Nome/Descrição do Item *" value={itemForm.nome} onChange={e=>setItemForm({...itemForm, nome:e.target.value})} className="w-full p-2 border rounded text-xs font-bold" /></div>
+                <div className="md:col-span-2"><input required placeholder="Item *" value={itemForm.nome} onChange={e=>setItemForm({...itemForm, nome:e.target.value})} className="w-full p-2 border rounded text-xs font-bold" /></div>
                 <div><input placeholder="Marca" value={itemForm.marca} onChange={e=>setItemForm({...itemForm, marca:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
-                <div><input placeholder="Modelo/Linha" value={itemForm.modelo} onChange={e=>setItemForm({...itemForm, modelo:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
-                <div><input placeholder="Cód. Produto" value={itemForm.codigo} onChange={e=>setItemForm({...itemForm, codigo:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
+                <div><input placeholder="Modelo" value={itemForm.modelo} onChange={e=>setItemForm({...itemForm, modelo:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
+                <div><input placeholder="Cód." value={itemForm.codigo} onChange={e=>setItemForm({...itemForm, codigo:e.target.value})} className="w-full p-2 border rounded text-xs" /></div>
                 <div><input type="number" min="1" required placeholder="Qtd *" value={itemForm.quantidade} onChange={e=>setItemForm({...itemForm, quantidade:e.target.value})} className="w-full p-2 border rounded text-xs font-bold text-center" /></div>
-                <div><input type="number" step="0.01" required placeholder="Valor Unit (R$) *" value={itemForm.valor} onChange={e=>setItemForm({...itemForm, valor:e.target.value})} className="w-full p-2 border rounded text-xs font-black text-emerald-600" /></div>
-                <div><button type="submit" className="w-full bg-[#1e5aa0] text-white font-bold py-2 rounded text-xs uppercase hover:bg-[#154278]">Inserir</button></div>
+                <div><input type="number" step="0.01" required placeholder="Valor (R$) *" value={itemForm.valor} onChange={e=>setItemForm({...itemForm, valor:e.target.value})} className="w-full p-2 border rounded text-xs font-black text-emerald-600" /></div>
+                <div><button type="submit" className={`w-full text-white font-bold py-2 rounded text-xs uppercase shadow-sm ${editingItemId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-[#1e5aa0] hover:bg-[#154278]'}`}>{editingItemId ? 'Atualizar' : 'Inserir'}</button></div>
               </div>
             </form>
 
@@ -1000,12 +1116,21 @@ function EnvironmentEditor({ env, project, appUser, allDocs, onSave, onBack, glo
               {catItems.map(item => {
                 const itemDocs = envDocs.filter(d => d.itemId === item.id);
                 return (
-                  <div key={item.id} className="bg-white border p-3 rounded-lg shadow-sm flex flex-col md:flex-row gap-4 relative">
-                    <button onClick={()=>deleteItem(item.id)} className="absolute top-2 right-2 text-slate-300 hover:text-red-500"><X size={16}/></button>
+                  <div key={item.id} className={`bg-white border p-3 rounded-lg shadow-sm flex flex-col md:flex-row gap-4 relative transition-all ${editingItemId === item.id ? 'ring-2 ring-amber-400' : ''}`}>
+                    <div className="absolute top-2 right-2 flex gap-2">
+                      {/* 4. BOTÃO DE EDIÇÃO NO CARD DO ITEM */}
+                      <button onClick={() => handleEditItem(item)} className="text-slate-400 hover:text-amber-600"><Edit size={16}/></button>
+                      <button onClick={() => deleteItem(item.id)} className="text-slate-300 hover:text-red-500"><X size={16}/></button>
+                    </div>
+
                     <div className="w-20 h-20 bg-slate-100 rounded border flex items-center justify-center shrink-0 overflow-hidden relative group">
                       {itemDocs.length > 0 ? <img src={itemDocs[0].conteudoBase64} className="w-full h-full object-cover" /> : <PaintBucket size={24} className="text-slate-300"/>}
-                      <label className="absolute inset-0 bg-black/50 text-white flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity text-[9px] font-bold uppercase text-center"><Upload size={12} className="mb-1"/> <input type="file" className="hidden" onChange={(e)=>onUpload(e, 'item_ambiente', item.id)} /></label>
+                      <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-1 p-1">
+                        {itemDocs.length > 0 && <button onClick={() => setZoomedImage(itemDocs[0].conteudoBase64)} className="text-white bg-white/20 hover:bg-[#1e5aa0] p-1 rounded w-full flex justify-center items-center gap-1 text-[9px] font-bold uppercase transition-colors"><Eye size={12}/> Ver</button>}
+                        <label className="text-white bg-white/20 hover:bg-[#1e5aa0] p-1 rounded w-full flex justify-center items-center gap-1 text-[9px] font-bold uppercase cursor-pointer transition-colors"><Upload size={12}/> <input type="file" className="hidden" onChange={(e)=>onUpload(e, 'item_ambiente', item.id)} /> {itemDocs.length > 0 ? 'Trocar' : 'Upload'}</label>
+                      </div>
                     </div>
+
                     <div className="flex-1">
                       <p className="font-black text-slate-800 text-sm uppercase">{item.nome}</p>
                       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-slate-500 font-medium">
@@ -1019,11 +1144,18 @@ function EnvironmentEditor({ env, project, appUser, allDocs, onSave, onBack, glo
                   </div>
                 );
               })}
-              {catItems.length === 0 && <div className="text-center py-10 text-slate-400 text-xs font-bold uppercase border border-dashed rounded-xl">Nenhum item inserido em {activeCat}.</div>}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Modal de Zoom */}
+      {zoomedImage && (
+        <div className="fixed inset-0 bg-slate-900/90 z-[9999] flex items-center justify-center p-4 backdrop-blur-sm cursor-pointer" onClick={() => setZoomedImage(null)}>
+          <button className="absolute top-4 right-4 text-white hover:text-red-500 bg-black/50 p-2 rounded-full"><X size={24}/></button>
+          <img src={zoomedImage} className="max-w-[95vw] max-h-[90vh] object-contain rounded-xl shadow-2xl" />
+        </div>
+      )}
     </div>
   );
 }
@@ -1340,22 +1472,34 @@ function FinancialReportModal({ projects, onClose }) {
   const [dataIni, setDataIni] = useState(getToday().slice(0,8)+'01');
   const [dataFim, setDataFim] = useState(getToday());
 
-  const generateReport = (e) => {
+const generateReport = (e) => {
     e.preventDefault();
     let recebidos = 0, previstosPendentes = 0;
     const listaHtml = [];
 
     projects.forEach(p => {
       (p.parcelas||[]).forEach(parc => {
-        const dTarget = parc.paga ? parc.dataRecebimento : parc.dataVencimento;
-        if (dTarget >= dataIni && dTarget <= dataFim) {
-          if(parc.paga) recebidos += parc.valor; else previstosPendentes += parc.valor;
+        // CORREÇÃO AQUI: Fallback (plano B) para a data de vencimento em parcelas antigas
+        const dTarget = parc.paga ? (parc.dataRecebimento || parc.dataVencimento) : parc.dataVencimento;
+        
+        // Só tenta somar se existir uma data válida e ela estiver dentro do período
+        if (dTarget && dTarget >= dataIni && dTarget <= dataFim) {
+          const valorParcela = Number(parc.valor) || 0;
+          
+          if(parc.paga) {
+            recebidos += valorParcela;
+          } else {
+            previstosPendentes += valorParcela;
+          }
+
           listaHtml.push(`
             <tr>
               <td>${formatDate(dTarget)}</td>
               <td>${p.nomeProjeto} - ${p.clientName}</td>
-              <td style="color:${parc.paga?'#059669':'#d97706'}">${parc.paga ? `PAGO (${parc.formaRecebimento || '-'})` : 'PENDENTE'}</td>
-              <td style="text-align:right;">${formatCurrency(parc.valor)}</td>
+              <td style="color:${parc.paga?'#059669':'#d97706'}">
+                ${parc.paga ? `PAGO (${parc.formaRecebimento || 'Antigo/Não especificado'})` : 'PENDENTE'}
+              </td>
+              <td style="text-align:right;">${formatCurrency(valorParcela)}</td>
             </tr>
           `);
         }

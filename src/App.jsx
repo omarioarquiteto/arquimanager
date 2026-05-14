@@ -524,56 +524,145 @@ function UserModal({ appUser, projects, editingUser, onClose }) {
   );
 }
 
-// --- DASHBOARD ---
+// --- DASHBOARD OTIMIZADA COM FOCO EM UX ---
 function DashboardView({ projects, checklists, companyUsers, appUser }) {
   const totalValue = projects.reduce((sum, p) => sum + Number(p.valorTotal), 0);
   let received = 0, pending = 0;
   projects.forEach(p => (p.parcelas || []).forEach(parc => { if (parc.paga) received += Number(parc.valor); else pending += Number(parc.valor); }));
 
+  // Filtra apenas projetos que realmente estão a rodar
+  const activeProjects = projects.filter(p => p.status === 'EM ANDAMENTO');
+
+  const todayStr = getToday();
   const limitDate = new Date(); limitDate.setDate(limitDate.getDate() + 3);
-  const myTasks = checklists.filter(c => !c.concluido && (c.assignedTo === appUser.id || c.assignedTo === 'ALL' || appUser.role === 'gestor') && new Date(c.dataPrevista) <= limitDate).sort((a,b) => new Date(a.dataPrevista) - new Date(b.dataPrevista));
+  
+  const myTasks = checklists
+    .filter(c => !c.concluido && (c.assignedTo === appUser.id || c.assignedTo === 'ALL' || appUser.role === 'gestor') && new Date(c.dataPrevista) <= limitDate)
+    .sort((a,b) => new Date(a.dataPrevista) - new Date(b.dataPrevista));
+
+  const overdueTasks = myTasks.filter(t => t.dataPrevista < todayStr);
+  const todayTasks = myTasks.filter(t => t.dataPrevista === todayStr);
+
+  // Saudação Dinâmica
+  const hours = new Date().getHours();
+  const greeting = hours < 12 ? 'Bom dia' : hours < 18 ? 'Boa tarde' : 'Boa noite';
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Contratos Totais" value={formatCurrency(totalValue)} icon={<Wallet className="text-blue-500" />} color="blue" />
-        <StatCard title="Total Recebido" value={formatCurrency(received)} icon={<TrendingUp className="text-emerald-500" />} color="emerald" />
-        <StatCard title="A Receber" value={formatCurrency(pending)} icon={<CalendarDays className="text-amber-500" />} color="amber" />
-        <StatCard title="Projetos Ativos" value={projects.filter(p => p.status === 'EM ANDAMENTO').length} icon={<FolderKanban className="text-indigo-500" />} color="indigo" />
+      
+      {/* CABEÇALHO DE BOAS VINDAS E ALERTA */}
+      <div className="bg-gradient-to-r from-[#1e5aa0] to-[#154278] rounded-2xl p-6 sm:p-8 text-white shadow-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative overflow-hidden">
+        <div className="absolute -right-10 -top-10 opacity-10 pointer-events-none"><Building2 size={200} /></div>
+        <div className="z-10">
+          <h2 className="text-2xl sm:text-3xl font-black tracking-tight">{greeting}, {appUser.nome.split(' ')[0]}! 👋</h2>
+          <p className="text-blue-100 mt-1 font-medium text-sm">Resumo do escritório para hoje, {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}.</p>
+        </div>
+        <div className="z-10 bg-white/10 backdrop-blur-md px-5 py-3 rounded-xl border border-white/20 flex items-center gap-3">
+          <div className={`${overdueTasks.length > 0 ? 'bg-red-500 animate-pulse' : 'bg-amber-500'} p-2 rounded-lg shadow-inner`}>
+            <AlertCircle className="text-white" size={24}/>
+          </div>
+          <div>
+            <p className="text-[10px] font-black text-blue-100 uppercase tracking-widest">Atenção Requerida</p>
+            <p className="font-black text-lg leading-tight">{overdueTasks.length + todayTasks.length} tarefas urgentes</p>
+          </div>
+        </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-96">
-          <h3 className="text-lg font-black text-slate-800 uppercase border-b pb-2 mb-4">Evolução dos Projetos</h3>
-          <div className="overflow-y-auto space-y-4 pr-2">
-            {projects.map(p => {
+
+      {/* CARTÕES DE KPI (INDICADORES) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard title="Valor em Contratos" subtitle={`${activeProjects.length} obras em andamento`} value={formatCurrency(totalValue)} icon={<Wallet size={24} />} color="blue" />
+        <StatCard title="Receita Realizada" subtitle="Total faturado até o momento" value={formatCurrency(received)} icon={<TrendingUp size={24} />} color="emerald" />
+        <StatCard title="A Receber" subtitle="Inadimplência ou a vencer" value={formatCurrency(pending)} icon={<CalendarDays size={24} />} color="amber" />
+        <StatCard title="Volume de Projetos" subtitle="Contratos ativos no painel" value={activeProjects.length} icon={<FolderKanban size={24} />} color="indigo" />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* ACOMPANHAMENTO DE PROJETOS ATIVOS */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[420px]">
+          <div className="flex justify-between items-end border-b border-slate-100 pb-3 mb-4 shrink-0">
+            <div>
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Status das Obras Ativas</h3>
+              <p className="text-xs font-bold text-slate-400">Acompanhamento do progresso das fases</p>
+            </div>
+          </div>
+          <div className="overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+            {activeProjects.map(p => {
               const currentFaseIndex = FASES_ANALITICAS.indexOf(p.faseAnalitica || 'LEVANTAMENTO');
               const percent = Math.round(((currentFaseIndex + 1) / FASES_ANALITICAS.length) * 100);
               return (
-                <div key={p.id} className="border border-slate-100 p-4 rounded-xl hover:shadow-md transition-shadow">
-                  <div className="flex justify-between items-center mb-2"><p className="font-bold text-slate-800 text-sm">{p.nomeProjeto}</p><span className="text-[10px] px-2 py-1 rounded-full font-bold bg-blue-100 text-blue-800">{p.status}</span></div>
-                  <div className="flex justify-between text-xs mb-1 font-medium"><span className="text-slate-500">{p.faseAnalitica || 'LEVANTAMENTO'}</span><span className="text-[#1e5aa0] font-black">{percent}%</span></div>
-                  <div className="w-full bg-slate-100 rounded-full h-2"><div className="bg-[#1e5aa0] h-2 rounded-full" style={{width: `${percent}%`}}></div></div>
+                <div key={p.id} className="group border border-slate-100 p-4 rounded-xl hover:border-blue-200 hover:shadow-md transition-all bg-slate-50 hover:bg-white relative overflow-hidden">
+                  <div className="flex justify-between items-start mb-3">
+                    <div className="flex-1 min-w-0 pr-4">
+                      <p className="font-black text-slate-800 text-sm truncate group-hover:text-[#1e5aa0] transition-colors">{p.nomeProjeto}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1 mt-0.5"><Users size={12}/> {p.clientName}</p>
+                    </div>
+                    <span className="text-[9px] px-2.5 py-1 rounded-md font-black bg-blue-100 text-blue-800 shrink-0 uppercase tracking-widest border border-blue-200">{p.faseAnalitica || 'LEVANTAMENTO'}</span>
+                  </div>
+                  <div className="flex justify-between text-[10px] mb-1.5 font-black uppercase text-slate-400">
+                    <span>Progresso Geral</span>
+                    <span className="text-[#1e5aa0]">{percent}%</span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+                    <div className="bg-gradient-to-r from-blue-400 to-[#1e5aa0] h-full rounded-full transition-all duration-1000" style={{width: `${percent}%`}}></div>
+                  </div>
                 </div>
               );
             })}
-            {projects.length === 0 && <p className="text-slate-400 text-sm text-center pt-8">Nenhum projeto permitido para você.</p>}
+            {activeProjects.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 pt-10">
+                <FolderOpen size={48} className="mb-3 opacity-20"/>
+                <p className="text-sm font-medium">Nenhum projeto ativo no momento.</p>
+              </div>
+            )}
           </div>
         </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-96">
-          <h3 className="text-lg font-black text-slate-800 uppercase border-b pb-2 mb-4">Suas Tarefas Pendentes (Até 3 dias)</h3>
-          <div className="overflow-y-auto space-y-3 pr-2">
+
+        {/* TAREFAS COM INDICADORES DE URGÊNCIA */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[420px]">
+          <div className="flex justify-between items-end border-b border-slate-100 pb-3 mb-4 shrink-0">
+            <div>
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Painel de Pendências</h3>
+              <p className="text-xs font-bold text-slate-400">Próximos 3 dias e urgências da sua equipe</p>
+            </div>
+          </div>
+          <div className="overflow-y-auto space-y-3 pr-2 custom-scrollbar">
             {myTasks.map(chk => {
               const p = projects.find(proj => proj.id === chk.projectId);
-              const isLate = new Date(chk.dataPrevista) < new Date(getToday());
+              const isLate = chk.dataPrevista < todayStr;
+              const isToday = chk.dataPrevista === todayStr;
+              
+              let badgeColor = "bg-slate-100 text-slate-600 border-slate-200";
+              let dotColor = "bg-slate-300";
+              let statusText = "Em breve";
+              
+              if (isLate) { badgeColor = "bg-red-50 text-red-700 border-red-200"; dotColor = "bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]"; statusText = "Atrasada"; }
+              else if (isToday) { badgeColor = "bg-amber-50 text-amber-700 border-amber-200"; dotColor = "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.6)]"; statusText = "Hoje"; }
+
               return (
-                <div key={chk.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100 flex gap-3 items-start">
-                  <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${isLate ? 'bg-red-500' : 'bg-amber-400'}`}></div>
-                  <div className="flex-1"><p className="font-bold text-sm text-slate-800">{chk.descricao}</p><p className="text-[10px] font-bold text-slate-500 uppercase mt-1">{p?.nomeProjeto || 'Projeto Excluído'}</p></div>
-                  <div className={`text-xs font-black ${isLate ? 'text-red-600' : 'text-slate-600'}`}>{formatDate(chk.dataPrevista)}</div>
+                <div key={chk.id} className="p-4 bg-white rounded-xl border border-slate-100 flex gap-4 items-center hover:shadow-md transition-shadow group">
+                  <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`}></div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-sm text-slate-800 truncate group-hover:text-[#1e5aa0] transition-colors">{chk.descricao}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase mt-1 truncate flex items-center gap-1"><FolderKanban size={10}/> {p?.nomeProjeto || 'Geral'}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${badgeColor}`}>
+                      {statusText}
+                    </span>
+                    <div className="text-xs font-bold text-slate-500 mt-1.5 flex items-center justify-end gap-1">
+                      <Clock size={12} className={isLate ? 'text-red-500' : ''}/>
+                      <span className={isLate ? 'text-red-600' : ''}>{formatDate(chk.dataPrevista)}</span>
+                    </div>
+                  </div>
                 </div>
               );
             })}
-            {myTasks.length === 0 && <div className="text-center text-slate-400 py-12"><CheckCircle2 size={40} className="mx-auto mb-2 text-emerald-400 opacity-50"/><p>Tudo em dia!</p></div>}
+            {myTasks.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 pt-10">
+                <CheckCircle2 size={48} className="mb-3 text-emerald-400 opacity-40"/>
+                <p className="text-sm font-medium text-slate-500">Tudo em dia! Nenhuma pendência urgente.</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -581,61 +670,31 @@ function DashboardView({ projects, checklists, companyUsers, appUser }) {
   );
 }
 
-function StatCard({ title, value, icon, color }) {
-  const bgColors = { blue: 'bg-blue-50 text-blue-600', emerald: 'bg-emerald-50 text-emerald-600', amber: 'bg-amber-50 text-amber-600', indigo: 'bg-indigo-50 text-indigo-600' };
-  return (
-    <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex items-center space-x-4">
-      <div className={`p-4 rounded-xl ${bgColors[color]}`}>{icon}</div>
-      <div className="flex-1 min-w-0"><p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</p><p className="text-xl font-black text-slate-800 truncate">{value}</p></div>
-    </div>
-  );
-}
-
-// --- CLIENTES ---
-function ClientsView({ clients, projects, canCreate, canEdit, canDelete, appUser, onOpenProject }) {
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingClient, setEditingClient] = useState(null);
-  const [alertMsg, setAlertMsg] = useState('');
-  const [confirmData, setConfirmData] = useState(null);
-
-  const handleDelete = (client) => {
-    if (projects.some(p => p.clientId === client.id)) return setAlertMsg('Há projetos vinculados a este cliente. Não é possível excluir.');
-    setConfirmData({
-      message: 'Excluir cliente permanentemente?',
-      onConfirm: async () => {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id));
-        setConfirmData(null);
-      }
-    });
+// Subcomponente dos Cartões Superiores
+function StatCard({ title, subtitle, value, icon, color }) {
+  const styles = {
+    blue: { bg: 'bg-blue-600', text: 'text-blue-100' },
+    emerald: { bg: 'bg-emerald-600', text: 'text-emerald-100' },
+    amber: { bg: 'bg-amber-500', text: 'text-amber-100' },
+    indigo: { bg: 'bg-indigo-600', text: 'text-indigo-100' }
   };
+  
+  const theme = styles[color];
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex justify-between items-center mb-6">
-        <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Clientes</h3>
-        {canCreate && <button onClick={() => {setEditingClient(null); setIsModalOpen(true);}} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-lg font-bold flex items-center space-x-2 shadow-sm hover:bg-[#154278]"><Plus size={18}/><span>Novo Cliente</span></button>}
+    <div className={`${theme.bg} p-5 rounded-2xl shadow-md flex items-center space-x-4 relative overflow-hidden transition-transform hover:-translate-y-1`}>
+      {/* Ícone de fundo marca d'água */}
+      <div className="absolute -right-4 -top-4 opacity-10 transform rotate-12 scale-150 pointer-events-none text-white">
+        {icon}
       </div>
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex-1 overflow-auto">
-        <table className="w-full text-left text-sm min-w-[600px]">
-          <thead className="bg-[#5a82b5] text-white text-xs uppercase sticky top-0"><tr><th className="p-4">Nome</th><th className="p-4">Contato</th><th className="p-4 text-center">Projetos</th><th className="p-4 text-center">Ações</th></tr></thead>
-          <tbody className="divide-y divide-slate-100">
-            {clients.map(c => (
-              <tr key={c.id} className="hover:bg-slate-50">
-                <td className="p-4 font-bold text-slate-800">{c.nome}</td>
-                <td className="p-4"><p className="font-medium text-slate-700">{c.telefone}</p><p className="text-xs text-slate-400">{c.email}</p></td>
-                <td className="p-4 text-center"><span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full font-bold text-xs border border-slate-200">{projects.filter(p=>p.clientId===c.id).length} Projetos</span></td>
-                <td className="p-4 text-center space-x-3">
-                  {canEdit && <button onClick={() => {setEditingClient(c); setIsModalOpen(true);}} className="text-[#5a82b5] hover:text-[#1e5aa0]"><Edit size={16}/></button>}
-                  {canDelete && <button onClick={() => handleDelete(c)} className="text-red-500 hover:text-red-700"><Trash2 size={16}/></button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className={`p-3 rounded-xl bg-white/20 text-white shrink-0 z-10 shadow-inner backdrop-blur-sm`}>
+        {icon}
       </div>
-      {isModalOpen && <ClientModal appUser={appUser} client={editingClient} onClose={()=>setIsModalOpen(false)}/>}
-      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
-      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
+      <div className="flex-1 min-w-0 z-10">
+        <p className={`text-[10px] font-black uppercase tracking-widest ${theme.text} opacity-90`}>{title}</p>
+        <p className="text-xl sm:text-2xl font-black text-white truncate my-0.5 leading-tight">{value}</p>
+        <p className={`text-[9px] font-bold ${theme.text} opacity-80 truncate uppercase tracking-wide`}>{subtitle}</p>
+      </div>
     </div>
   );
 }

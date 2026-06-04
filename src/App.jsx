@@ -37,11 +37,21 @@ const formatDate = (dateString) => {
   if (!day) return '';
   return `${day}/${month}/${year.slice(2)}`;
 };
+const maskCPFCNPJ = (v) => {
+  if (!v) return "";
+  v = v.replace(/\D/g, "");
+  if (v.length <= 11) return v.replace(/(\d{3})(\d{3})(\d{3})(\d{1,2})/, "$1.$2.$3-$4");
+  return v.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{1,2})/, "$1.$2.$3/$4-$5");
+};
+const maskCEP = (v) => (v || "").replace(/\D/g, "").replace(/^(\d{5})(\d{3})+?$/, "$1-$2");
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const getToday = () => new Date().toISOString().split('T')[0];
 
 const FASES_ANALITICAS = ['LEVANTAMENTO', 'ESTUDO PRELIMINAR', 'PROJETO CRIATIVO', 'DETALHAMENTO', 'HOMOLOGAÇÃO', 'PROJETO FINALIZADO'];
-const SCREENS = [{id: 'dashboard', label: 'Dashboard'}, {id: 'projetos', label: 'Projetos'}, {id: 'recebimentos', label: 'Financeiro'}, {id: 'checklist', label: 'Tarefas & Orçamentos'}, {id: 'clients', label: 'Clientes'}];
+const SCREENS = [
+  {id: 'dashboard', label: 'Dashboard'}, {id: 'projetos', label: 'Projetos'}, {id: 'recebimentos', label: 'Financeiro (Rec)'}, 
+  {id: 'pagamentos', label: 'Contas a Pagar'}, {id: 'checklist', label: 'Tarefas & Orçamentos'}, {id: 'clients', label: 'Clientes'}
+];
 const CATEGORIAS_AMBIENTE = ['Paredes', 'Esquadrias', 'Piso', 'Teto', 'Moveis', 'Decoração', 'Paisagismo', 'Revestimentos', 'Pedras', 'Louças', 'Metais', 'Outros'];
 
 // --- GERADOR DE RELATÓRIO NATIVO (HTML COM PRÉ-VISUALIZAÇÃO E OPÇÕES) ---
@@ -388,6 +398,11 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
   const [projects, setProjects] = useState([]);
   const [checklists, setChecklists] = useState([]);
   const [documents, setDocuments] = useState([]);
+  const [contasPagar, setContasPagar] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [docTypes, setDocTypes] = useState([]);
+  const [payGroups, setPayGroups] = useState([]);
+  const [paySubgroups, setPaySubgroups] = useState([]);
 
   useEffect(() => {
     if (!firebaseUser || !appUser) return;
@@ -405,8 +420,13 @@ function MainLayout({ firebaseUser, appUser, onLogout }) {
     const uProjects = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'projects'), snap => setProjects(filterByCompany(snap)), errHandler);
     const uChecklists = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'checklists'), snap => setChecklists(filterByCompany(snap)), errHandler);
     const uDocs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'documents'), snap => setDocuments(filterByCompany(snap)), errHandler);
+    const uContas = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'contas_pagar'), snap => setContasPagar(filterByCompany(snap)), errHandler);
+    const uSupp = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'fornecedores'), snap => setSuppliers(filterByCompany(snap)), errHandler);
+    const uDocT = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tipos_documento'), snap => setDocTypes(filterByCompany(snap)), errHandler);
+    const uGrp = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'grupos_pagamento'), snap => setPayGroups(filterByCompany(snap)), errHandler);
+    const uSGrp = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'subgrupos_pagamento'), snap => setPaySubgroups(filterByCompany(snap)), errHandler);
 
-    return () => { uCompany(); uUsers(); uClients(); uProjects(); uChecklists(); uDocs(); };
+    return () => { uCompany(); uUsers(); uClients(); uProjects(); uChecklists(); uDocs(); uContas(); uSupp(); uDocT(); uGrp(); uSGrp(); };
   }, [firebaseUser, appUser]);
 
 const allowedProjects = useMemo(() => {
@@ -431,7 +451,8 @@ const allowedProjects = useMemo(() => {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} canEdit={canEdit} appUser={appUser} /> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} contasPagar={contasPagar} docTypes={docTypes} suppliers={suppliers} canEdit={canEdit} appUser={appUser} /> : <NoAccess />;
+      case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;
       default: return <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} />;
@@ -455,6 +476,7 @@ const allowedProjects = useMemo(() => {
           {hasScreenAccess('dashboard') && <SidebarItem icon={<LayoutDashboard size={18}/>} label="Dashboard" active={currentView === 'dashboard'} onClick={() => { setCurrentView('dashboard'); setIsMobileMenuOpen(false); }} />}
           {hasScreenAccess('projetos') && <SidebarItem icon={<FolderKanban size={18}/>} label="Projetos" active={currentView === 'projetos'} onClick={() => { setCurrentView('projetos'); setIsMobileMenuOpen(false); }} />}
           {hasScreenAccess('recebimentos') && <SidebarItem icon={<CalendarDays size={18}/>} label="Financeiro" active={currentView === 'recebimentos'} onClick={() => { setCurrentView('recebimentos'); setIsMobileMenuOpen(false); }} />}
+          {hasScreenAccess('pagamentos') && <SidebarItem icon={<DollarSign size={18}/>} label="Contas a Pagar" active={currentView === 'pagamentos'} onClick={() => { setCurrentView('pagamentos'); setIsMobileMenuOpen(false); }} />}
           {hasScreenAccess('checklist') && <SidebarItem icon={<ListTodo size={18}/>} label="Tarefas & Orçamentos" active={currentView === 'checklist'} onClick={() => { setCurrentView('checklist'); setIsMobileMenuOpen(false); }} />}
           {hasScreenAccess('clients') && <SidebarItem icon={<Users size={18}/>} label="Clientes" active={currentView === 'clients'} onClick={() => { setCurrentView('clients'); setIsMobileMenuOpen(false); }} />}
           {appUser.role === 'gestor' && <SidebarItem icon={<Settings size={18}/>} label="Equipa e Acessos" active={currentView === 'equipe'} onClick={() => { setCurrentView('equipe'); setIsMobileMenuOpen(false); }} />}
@@ -469,6 +491,446 @@ const allowedProjects = useMemo(() => {
         </div>
         <div className="p-4 sm:p-6 flex-1 overflow-auto bg-slate-50">{renderView()}</div>
       </main>
+    </div>
+  );
+}
+
+// --- NOVO MÓDULO: CONTAS A PAGAR ---
+function PagamentosView({ suppliers, docTypes, groups, subgroups, contasPagar, appUser, canEdit, canDelete }) {
+  const [subTab, setSubTab] = useState('lancamentos');
+  const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [alertMsg, setAlertMsg] = useState('');
+  const [confirmData, setConfirmData] = useState(null);
+
+  const handleDelete = (c) => {
+    if (c.status === 'pago') {
+      return setAlertMsg('Não é possível excluir um lançamento que já foi pago.');
+    }
+    setConfirmData({
+      message: 'Excluir este lançamento permanentemente?',
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', c.id));
+          setConfirmData(null);
+        } catch (err) { console.error("Erro ao eliminar lançamento:", err); }
+      }
+    });
+  };
+
+  return (
+    <div className="h-full flex flex-col animate-in fade-in">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Contas a Pagar</h3>
+          <p className="text-slate-500 text-sm font-medium">Gestão de despesas, faturas e fornecedores do escritório.</p>
+        </div>
+      </div>
+
+      <div className="flex space-x-2 bg-white p-1.5 rounded-xl shadow-sm mb-6 border border-slate-200 shrink-0">
+        {[
+          { id: 'lancamentos', label: 'Lançamentos', icon: <DollarSign size={16}/> },
+          { id: 'fornecedores', label: 'Fornecedores', icon: <Users size={16}/> },
+          { id: 'config', label: 'Configurações', icon: <Settings size={16}/> }
+        ].map(tab => (
+          <button key={tab.id} onClick={() => setSubTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg font-bold text-xs uppercase transition-all ${subTab === tab.id ? 'bg-[#1e5aa0] text-white shadow-md' : 'text-slate-500 hover:bg-slate-100'}`}>
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-auto bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+        {subTab === 'lancamentos' && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center border-b pb-4">
+              <h4 className="font-black text-slate-700 uppercase text-sm">Contas em Aberto</h4>
+              <button 
+                onClick={() => setIsEntryModalOpen(true)}
+                className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 hover:bg-emerald-700 transition-colors"
+              >
+                <Plus size={16}/> Novo Lançamento
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="text-xs text-slate-400 uppercase font-black border-b">
+                  <tr><th className="pb-3">Vencimento</th><th className="pb-3">Fornecedor</th><th className="pb-3">Descrição</th><th className="pb-3 text-right">Valor</th><th className="pb-3 text-center">Status</th><th className="pb-3 text-center">Ações</th></tr>
+                </thead>
+                <tbody className="divide-y">
+                  {contasPagar.map(c => (
+                    <tr key={c.id} className="hover:bg-slate-50">
+                      <td className="py-4 font-bold">{formatDate(c.dataVencimento)}</td>
+                      <td className="py-4 font-bold text-slate-800">{suppliers.find(s=>s.id===c.fornecedorId)?.nome || 'N/A'}</td>
+                      <td className="py-4 text-slate-500">{c.descricao}</td>
+                      <td className="py-4 text-right font-black text-red-600">{formatCurrency(c.valor)}</td>
+                      <td className="py-4 text-center">
+                        <span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase ${c.status === 'pago' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="py-4 text-center space-x-3">
+                        {canEdit && (
+                          <button onClick={() => { setEditingEntry(c); setIsEntryModalOpen(true); }} className="text-[#5a82b5] hover:text-[#1e5aa0]">
+                            <Edit size={16}/>
+                          </button>
+                        )}
+                        {canDelete && (
+                          <button onClick={() => handleDelete(c)} className="text-red-400 hover:text-red-600">
+                            <Trash2 size={16}/>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {contasPagar.length === 0 && <tr><td colSpan="6" className="py-10 text-center text-slate-400 font-bold uppercase text-xs">Nenhum lançamento encontrado.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {subTab === 'fornecedores' && <SuppliersManager suppliers={suppliers} appUser={appUser} />}
+        {subTab === 'config' && <AuxiliarySettings docTypes={docTypes} groups={groups} subgroups={subgroups} appUser={appUser} />}
+      </div>
+
+      {isEntryModalOpen && (
+        <EntryModal 
+          onClose={() => { setIsEntryModalOpen(false); setEditingEntry(null); }} 
+          suppliers={suppliers} 
+          docTypes={docTypes} 
+          groups={groups} 
+          subgroups={subgroups} 
+          appUser={appUser} 
+          editingEntry={editingEntry}
+        />
+      )}
+
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
+    </div>
+  );
+}
+
+function EntryModal({ onClose, suppliers, docTypes, groups, subgroups, appUser, editingEntry }) {
+  const [formData, setFormData] = useState(editingEntry ? {
+    ...editingEntry,
+    valorTotal: editingEntry.valorTotal || editingEntry.valor,
+  } : {
+    dataVencimento: getToday(), fornecedorId: '', descricao: '', valorTotal: '', status: 'pendente',
+    tipoDocumentoId: '', grupoId: '', subgrupoId: '', numParcelas: 1, banco: '', parcelas: []
+  });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showResults, setShowResults] = useState(false);
+
+  useEffect(() => {
+    if (editingEntry && editingEntry.fornecedorId) {
+      const supp = suppliers.find(s => s.id === editingEntry.fornecedorId);
+      if (supp) setSearchTerm(supp.nome);
+    }
+  }, [editingEntry, suppliers]);
+
+  const filteredSuppliers = (suppliers || []).filter(s => (s.nome || "").toLowerCase().includes(searchTerm.toLowerCase()));
+  const selectedDocType = docTypes.find(t => t.id === formData.tipoDocumentoId);
+  const isFatura = selectedDocType?.isFatura;
+
+  // Gera as parcelas automaticamente quando o valor total ou número de parcelas muda
+  const gerarParcelas = () => {
+    const valor = parseFloat(formData.valorTotal || 0);
+    const num = parseInt(formData.numParcelas || 1);
+    if (valor <= 0 || num <= 0) return;
+
+    const valorBase = Math.floor((valor / num) * 100) / 100;
+    const resto = parseFloat((valor - (valorBase * num)).toFixed(2));
+
+    const novasParcelas = Array.from({ length: num }).map((_, i) => {
+      const data = new Date(formData.dataVencimento);
+      data.setMonth(data.getMonth() + i);
+      return {
+        id: generateId(), numero: i + 1, valor: i === 0 ? parseFloat((valorBase + resto).toFixed(2)) : valorBase,
+        dataVencimento: data.toISOString().split('T')[0], status: 'pendente'
+      };
+    });
+    setFormData(prev => ({ ...prev, parcelas: novasParcelas }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!formData.fornecedorId) return alert("Por favor, selecione um fornecedor usando a pesquisa.");
+    try {
+      const data = {
+        ...formData,
+        valor: parseFloat(formData.valorTotal || 0),
+        companyId: appUser.companyId,
+        dataAtualizacao: new Date().toISOString()
+      };
+
+      if (editingEntry) {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', editingEntry.id), data);
+      } else {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'contas_pagar'), {
+          ...data, dataCriacao: new Date().toISOString()
+        });
+      }
+      onClose();
+    } catch (err) { console.error("Erro ao salvar lançamento:", err); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase text-sm">{editingEntry ? 'Editar Lançamento' : 'Novo Lançamento'} <button onClick={onClose}><X size={20}/></button></div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="relative">
+            <label className="text-xs font-bold text-slate-500 uppercase">Fornecedor (Pesquisar) *</label>
+            <div className="relative mt-1">
+              <input required type="text" placeholder="Digite o nome..." value={searchTerm} onFocus={()=>setShowResults(true)} onChange={e=>{setSearchTerm(e.target.value); setShowResults(true); if(formData.fornecedorId) setFormData({...formData, fornecedorId:''});}} className="w-full p-2.5 pl-10 border rounded-lg focus:ring-2 outline-none font-bold text-slate-700" />
+              <Search className="absolute left-3 top-3 text-slate-400" size={18} />
+              {formData.fornecedorId && <CheckCircle2 className="absolute right-3 top-3 text-emerald-500" size={18} />}
+            </div>
+            {showResults && searchTerm && !formData.fornecedorId && (
+              <div className="absolute z-50 w-full bg-white border rounded-lg mt-1 shadow-xl max-h-40 overflow-y-auto divide-y">
+                {filteredSuppliers.map(s => (
+                  <div key={s.id} onClick={()=>{setFormData({...formData, fornecedorId: s.id}); setSearchTerm(s.nome); setShowResults(false);}} className="p-3 hover:bg-blue-50 cursor-pointer text-sm font-bold text-slate-700 transition-colors">{s.nome}</div>
+                ))}
+                {filteredSuppliers.length === 0 && <div className="p-3 text-xs text-slate-400 font-bold uppercase">Nenhum fornecedor encontrado</div>}
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Data 1º Vencimento *</label><input required type="date" value={formData.dataVencimento} onChange={e=>setFormData({...formData, dataVencimento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Valor Total (R$) *</label><input required type="number" step="0.01" value={formData.valorTotal} onChange={e=>setFormData({...formData, valorTotal:e.target.value})} onBlur={gerarParcelas} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold text-red-600" /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="text-xs font-bold text-slate-500 uppercase">Nº de Parcelas *</label><input required type="number" min="1" value={formData.numParcelas} onChange={e=>setFormData({...formData, numParcelas:e.target.value})} onBlur={gerarParcelas} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+            {isFatura && (
+              <div className="animate-in slide-in-from-top-2">
+                <label className="text-xs font-bold text-[#1e5aa0] uppercase">Instituição / Banco *</label>
+                <input required type="text" placeholder="Ex: Itaú, Nubank..." value={formData.banco} onChange={e=>setFormData({...formData, banco:e.target.value})} className="w-full p-2.5 border border-blue-200 rounded-lg focus:ring-2 mt-1 outline-none font-bold bg-blue-50" />
+              </div>
+            )}
+          </div>
+          <div><label className="text-xs font-bold text-slate-500 uppercase">Descrição / Observação</label><input value={formData.descricao} onChange={e=>setFormData({...formData, descricao:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+          
+          {formData.parcelas.length > 0 && (
+            <div className="border rounded-xl overflow-hidden">
+              <div className="bg-slate-100 p-2 text-[10px] font-black uppercase text-slate-500 text-center border-b">Detalhamento das Parcelas</div>
+              <div className="max-h-32 overflow-y-auto divide-y bg-white">
+                {formData.parcelas.map((p, idx) => (
+                  <div key={p.id} className="p-2 grid grid-cols-3 gap-2 items-center">
+                    <span className="text-[10px] font-bold text-slate-400">Parc. {p.numero}</span>
+                    <input type="date" value={p.dataVencimento} onChange={e => {
+                      const newP = [...formData.parcelas];
+                      newP[idx].dataVencimento = e.target.value;
+                      setFormData({...formData, parcelas: newP});
+                    }} className="text-[10px] font-bold border rounded p-1 outline-none" />
+                    <input type="number" step="0.01" value={p.valor} onChange={e => {
+                      const newP = [...formData.parcelas];
+                      newP[idx].valor = parseFloat(e.target.value || 0);
+                      setFormData({...formData, parcelas: newP});
+                    }} className="text-[10px] font-black text-red-600 border rounded p-1 outline-none text-right" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border-t pt-4 bg-slate-50 p-3 rounded-xl border border-dashed">
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase">Tipo Documento</label>
+              <select value={formData.tipoDocumentoId} onChange={e=>setFormData({...formData, tipoDocumentoId:e.target.value})} className="w-full p-2 border rounded bg-white text-xs font-bold mt-1 outline-none"><option value="">Selecione...</option>{docTypes.map(t=><option key={t.id} value={t.id}>{t.nome}</option>)}</select>
+            </div>
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase">Grupo</label>
+              <select value={formData.grupoId} onChange={e=>setFormData({...formData, grupoId:e.target.value})} className="w-full p-2 border rounded bg-white text-xs font-bold mt-1 outline-none"><option value="">Selecione...</option>{groups.map(g=><option key={g.id} value={g.id}>{g.nome}</option>)}</select>
+            </div>
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase">Subgrupo</label>
+              <select value={formData.subgrupoId} onChange={e=>setFormData({...formData, subgrupoId:e.target.value})} className="w-full p-2 border rounded bg-white text-xs font-bold mt-1 outline-none"><option value="">Selecione...</option>{subgroups.map(s=><option key={s.id} value={s.id}>{s.nome}</option>)}</select>
+            </div>
+          </div>
+          <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3.5 rounded-xl hover:bg-emerald-700 shadow-lg uppercase text-xs transition-all active:scale-95 mt-2">Confirmar Lançamento</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function SuppliersManager({ suppliers, appUser }) {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [formData, setFormData] = useState({ nome: '', documento: '', email: '', telefone: '', cep: '', logradouro: '', bairro: '', cidade: '', uf: '' });
+  const [editingSupplier, setEditingSupplier] = useState(null);
+
+  // Sincroniza o formulário ao abrir para edição ou resetar para novo
+  useEffect(() => {
+    if (editingSupplier && isModalOpen) {
+      setFormData({
+        nome: editingSupplier.nome || '',
+        documento: editingSupplier.documento || '',
+        email: editingSupplier.email || '',
+        telefone: editingSupplier.telefone || '',
+        cep: editingSupplier.cep || '',
+        logradouro: editingSupplier.logradouro || '',
+        bairro: editingSupplier.bairro || '',
+        cidade: editingSupplier.cidade || '',
+        uf: editingSupplier.uf || ''
+      });
+    } else if (!isModalOpen) {
+      setFormData({ nome: '', documento: '', email: '', telefone: '', cep: '', logradouro: '', bairro: '', cidade: '', uf: '' });
+      setEditingSupplier(null);
+    }
+  }, [editingSupplier, isModalOpen]);
+
+  const handleCepBlur = async (e) => {
+    const cep = e.target.value.replace(/\D/g, '');
+    if (cep.length === 8) {
+      try {
+        const res = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+        const data = await res.json();
+        if (!data.erro) {
+          setFormData(prev => ({ ...prev, logradouro: data.logradouro, bairro: data.bairro, cidade: data.localidade, uf: data.uf }));
+        }
+      } catch (err) { console.error("Erro na busca de CEP:", err); }
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const data = { ...formData, companyId: appUser.companyId };
+    if (editingSupplier) {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'fornecedores', editingSupplier.id), data);
+    } else {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'fornecedores'), data);
+    }
+    setIsModalOpen(false);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center border-b pb-4">
+        <h4 className="font-black text-slate-700 uppercase text-sm">Cadastro de Fornecedores</h4>
+        <button onClick={()=>setIsModalOpen(true)} className="bg-[#1e5aa0] text-white px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 hover:bg-[#154278]">
+          <Plus size={16}/> Novo Fornecedor
+        </button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {suppliers.map(s => (
+          <div key={s.id} className="border rounded-xl p-4 bg-slate-50 relative group hover:border-[#1e5aa0] transition-colors">
+            <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button onClick={(e) => { e.stopPropagation(); setEditingSupplier(s); setIsModalOpen(true); }} className="text-slate-300 hover:text-[#1e5aa0]"><Edit size={16}/></button>
+              <button onClick={(e) => { e.stopPropagation(); deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'fornecedores', s.id)); }} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
+            </div>
+            <p className="font-black text-slate-800 uppercase text-xs mb-1">{s.nome}</p>
+            <p className="text-[10px] text-slate-500 font-bold mb-3">{s.documento ? maskCPFCNPJ(s.documento) : 'Sem documento'}</p>
+            <div className="flex flex-col gap-1 text-[10px] font-bold text-[#1e5aa0]">
+              <span className="flex items-center gap-1"><Clock size={12}/> {s.telefone || '(00) 0000-0000'}</span>
+              <span className="flex items-center gap-1"><Eye size={12}/> {s.email || 'sem@email.com'}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase text-sm">
+              {editingSupplier ? 'Editar Fornecedor' : 'Novo Fornecedor'} 
+              <button onClick={()=>{setIsModalOpen(false); setEditingSupplier(null);}}><X size={20}/></button>
+            </div>
+            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              <div><label className="text-xs font-bold text-slate-500 uppercase">Nome / Razão Social *</label><input required value={formData.nome} onChange={e=>setFormData({...formData, nome:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-xs font-bold text-slate-500 uppercase">CPF / CNPJ</label><input value={maskCPFCNPJ(formData.documento)} onChange={e=>setFormData({...formData, documento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+                <div><label className="text-xs font-bold text-slate-500 uppercase">Telefone</label><input value={formData.telefone} onChange={e=>setFormData({...formData, telefone:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+              </div>
+              <div><label className="text-xs font-bold text-slate-500 uppercase">E-mail</label><input type="email" value={formData.email} onChange={e=>setFormData({...formData, email:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+              <div className="grid grid-cols-3 gap-4 border-t pt-4">
+                <div className="col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input value={maskCEP(formData.cep || '')} onBlur={handleCepBlur} onChange={e=>setFormData({...formData, cep:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+                <div className="col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Endereço</label><input value={formData.logradouro || ''} onChange={e=>setFormData({...formData, logradouro:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-xs font-bold text-slate-500 uppercase">Bairro</label><input value={formData.bairro || ''} onChange={e=>setFormData({...formData, bairro:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /></div>
+                <div><label className="text-xs font-bold text-slate-500 uppercase">Cidade / UF</label><div className="flex gap-1"><input value={formData.cidade || ''} onChange={e=>setFormData({...formData, cidade:e.target.value})} className="flex-1 p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold" /><input value={formData.uf || ''} onChange={e=>setFormData({...formData, uf:e.target.value.toUpperCase()})} maxLength="2" className="w-12 p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold text-center" /></div></div>
+              </div>
+              <button type="submit" className="w-full bg-[#1e5aa0] text-white font-bold py-3 rounded-xl hover:bg-[#154278] shadow-md uppercase text-xs">{editingSupplier ? 'Salvar Alterações' : 'Cadastrar Fornecedor'}</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuxiliarySettings({ docTypes, groups, subgroups, appUser }) {
+  const [newType, setNewType] = useState({ nome: '', isFatura: false });
+  const [newGroup, setNewGroup] = useState('');
+  const [newSub, setNewSub] = useState('');
+
+  const add = async (col, data, setter, isString = false) => {
+    const payload = isString ? { nome: data } : data;
+    if (!payload.nome) return;
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', col), { ...payload, companyId: appUser.companyId });
+    setter(isString ? '' : { nome: '', isFatura: false });
+  };
+
+  const del = async (col, id) => {
+    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', col, id));
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      {/* Tipos de Documento */}
+      <div className="space-y-4">
+        <h4 className="font-black text-slate-700 uppercase text-xs border-b pb-2">Tipos de Documento</h4>
+        <div className="flex flex-col gap-2">
+          <input className="border rounded-lg p-2 text-xs font-bold" placeholder="Ex: NF, Recibo..." value={newType.nome} onChange={e=>setNewType({...newType, nome: e.target.value})} />
+          <label className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-500">
+            <input type="checkbox" checked={newType.isFatura} onChange={e=>setNewType({...newType, isFatura: e.target.checked})} className="w-4 h-4 accent-[#1e5aa0]" /> É uma Fatura?
+          </label>
+          <button onClick={()=>add('tipos_documento', newType, setNewType)} className="bg-slate-100 hover:bg-slate-200 p-2 rounded-lg font-bold text-xs uppercase text-slate-600 transition-colors">Adicionar</button>
+        </div>
+        <div className="space-y-1">
+          {docTypes.map(t => (
+            <div key={t.id} className="flex justify-between items-center p-2 bg-slate-50 rounded border border-slate-100 text-[10px] font-bold uppercase">
+              <span>{t.nome} {t.isFatura && '💳'}</span>
+              <button onClick={()=>del('tipos_documento', t.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Grupos de Pagamento */}
+      <div className="space-y-4">
+        <h4 className="font-black text-slate-700 uppercase text-xs border-b pb-2">Grupos de Despesa</h4>
+        <div className="flex gap-2">
+          <input className="flex-1 border rounded-lg p-2 text-xs font-bold" placeholder="Ex: Fixas, Impostos..." value={newGroup} onChange={e=>setNewGroup(e.target.value)} />
+          <button onClick={()=>add('grupos_pagamento', newGroup, setNewGroup, true)} className="bg-slate-100 hover:bg-slate-200 p-2 rounded-lg font-bold text-xs uppercase text-slate-600 transition-colors">Add</button>
+        </div>
+        <div className="space-y-1">
+          {groups.map(g => (
+            <div key={g.id} className="flex justify-between items-center p-2 bg-slate-50 rounded border border-slate-100 text-[10px] font-bold uppercase">
+              <span>{g.nome}</span>
+              <button onClick={()=>del('grupos_pagamento', g.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Subgrupos */}
+      <div className="space-y-4">
+        <h4 className="font-black text-slate-700 uppercase text-xs border-b pb-2">Subgrupos</h4>
+        <div className="flex gap-2">
+          <input className="flex-1 border rounded-lg p-2 text-xs font-bold" placeholder="Ex: Aluguel, Luz..." value={newSub} onChange={e=>setNewSub(e.target.value)} />
+          <button onClick={()=>add('subgrupos_pagamento', newSub, setNewSub, true)} className="bg-slate-100 hover:bg-slate-200 p-2 rounded-lg font-bold text-xs uppercase text-slate-600 transition-colors">Add</button>
+        </div>
+        <div className="space-y-1">
+          {subgroups.map(s => (
+            <div key={s.id} className="flex justify-between items-center p-2 bg-slate-50 rounded border border-slate-100 text-[10px] font-bold uppercase">
+              <span>{s.nome}</span>
+              <button onClick={()=>del('subgrupos_pagamento', s.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -722,7 +1184,7 @@ function DashboardView({ projects, checklists, companyUsers, appUser }) {
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex-1 min-w-0 pr-4">
                       <p className="font-black text-slate-800 text-sm truncate group-hover:text-[#1e5aa0] transition-colors">{p.nomeProjeto}</p>
-                      <p className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1 mt-0.5"><Users size={12}/> {p.clientName}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1"><Users size={12}/> {p.clientName}</p>
                     </div>
                     <span className="text-[9px] px-2.5 py-1 rounded-md font-black bg-blue-100 text-blue-800 shrink-0 uppercase tracking-widest border border-blue-200">{p.faseAnalitica || 'LEVANTAMENTO'}</span>
                   </div>
@@ -859,13 +1321,13 @@ function ClientModal({ appUser, client, onClose }) {
           <div><label className="text-xs font-bold text-slate-500 uppercase">Nome *</label><input required value={formData.nome} onChange={e=>setFormData({...formData, nome:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none font-bold text-slate-800" /></div>
           <div className="grid grid-cols-2 gap-4">
             <div><label className="text-xs font-bold text-slate-500 uppercase">Telefone</label><input value={formData.telefone} onChange={e=>setFormData({...formData, telefone:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
-            <div><label className="text-xs font-bold text-slate-500 uppercase">CPF / CNPJ</label><input value={formData.documento} onChange={e=>setFormData({...formData, documento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
+            <div><label className="text-xs font-bold text-slate-500 uppercase">CPF / CNPJ</label><input type="text" value={maskCPFCNPJ(formData.documento)} onChange={e=>setFormData({...formData, documento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
           </div>
           <div><label className="text-xs font-bold text-slate-500 uppercase">E-mail</label><input type="email" value={formData.email} onChange={e=>setFormData({...formData, email:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
           
-          <div className="border-t pt-4 mt-2"><h4 className="font-bold text-slate-700 uppercase text-sm mb-4">Endereço do Cliente</h4></div>
+          <div className="border-t pt-4 mt-2"><h4 className="font-bold text-slate-700 uppercase text-sm">Endereço do Cliente</h4></div>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input value={formData.cep} onChange={e=>setFormData({...formData, cep:e.target.value})} onBlur={handleCepBlur} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" placeholder="00000-000" /></div>
+            <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input type="text" value={maskCEP(formData.cep)} onChange={e=>setFormData({...formData, cep:e.target.value})} onBlur={handleCepBlur} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" placeholder="00000-000" /></div>
             <div className="sm:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Logradouro / Rua</label><input value={formData.logradouro} onChange={e=>setFormData({...formData, logradouro:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
             <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Número</label><input value={formData.numero} onChange={e=>setFormData({...formData, numero:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
             <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Complemento</label><input value={formData.complemento} onChange={e=>setFormData({...formData, complemento:e.target.value})} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none" /></div>
@@ -1433,7 +1895,7 @@ function ProjectModal({ appUser, clients, companyUsers, project, onClose }) {
                 </label>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input value={formData.cep} onChange={e=>setFormData({...formData, cep:e.target.value})} onBlur={handleCepBlur} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" placeholder="00000-000" /></div>
+                <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">CEP</label><input type="text" value={maskCEP(formData.cep)} onChange={e=>setFormData({...formData, cep:e.target.value})} onBlur={handleCepBlur} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" placeholder="00000-000" /></div>
                 <div className="sm:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Logradouro / Rua</label><input value={formData.logradouro} onChange={e=>setFormData({...formData, logradouro:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
                 <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Número</label><input value={formData.numero} onChange={e=>setFormData({...formData, numero:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
                 <div className="sm:col-span-1"><label className="text-xs font-bold text-slate-500 uppercase">Complemento</label><input value={formData.complemento} onChange={e=>setFormData({...formData, complemento:e.target.value})} disabled={formData.usarEnderecoCliente} className="w-full p-2.5 border rounded-lg focus:ring-2 mt-1 outline-none disabled:bg-slate-100 disabled:text-slate-400" /></div>
@@ -1443,7 +1905,7 @@ function ProjectModal({ appUser, clients, companyUsers, project, onClose }) {
               </div>
             </div>
 
-            <div className="md:col-span-2 border-t pt-4 mt-2"><h4 className="font-bold text-slate-700 uppercase text-sm mb-4"><DollarSign size={16} className="inline mr-1 text-emerald-600"/> Financeiro do Contrato (Seus Honorários)</h4></div>
+            <div className="md:col-span-2 border-t pt-4 mt-2"><h4 className="font-bold text-slate-700 uppercase text-sm"><DollarSign size={16} className="inline mr-1 text-emerald-600"/> Financeiro do Contrato (Seus Honorários)</h4></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Valor do Contrato (R$) *</label><input required type="number" step="0.01" disabled={project?.parcelas?.some(x=>x.paga)} value={formData.valorTotal} onChange={e=>setFormData({...formData, valorTotal:e.target.value})} className="w-full p-2.5 border rounded-lg font-black text-[#1e5aa0] focus:ring-2 mt-1 outline-none disabled:bg-slate-100" /></div>
             <div><label className="text-xs font-bold text-slate-500 uppercase">Parcelamento *</label><select required disabled={project?.parcelas?.some(x=>x.paga)} value={formData.formaPagamento} onChange={e=>setFormData({...formData, formaPagamento:e.target.value})} className="w-full p-2.5 border rounded-lg bg-white mt-1 outline-none font-bold disabled:bg-slate-100">{paymentOptions.map(o=><option key={o}>{o}</option>)}</select></div>
           </div>
@@ -1455,10 +1917,12 @@ function ProjectModal({ appUser, clients, companyUsers, project, onClose }) {
 }
 
 // --- RECEBIMENTOS COM RELATÓRIO E CALENDÁRIO DUPLO ---
-function RecebimentosView({ projects, canEdit, appUser }) {
+function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit, appUser }) {
   const [baseDate, setBaseDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [dayModalItems, setDayModalItems] = useState(null); // Itens do dia selecionado
-  const [payModalItem, setPayModalItem] = useState(null); // Parcela individual a ser paga
+  const [payReceiptData, setPayReceiptData] = useState(null); 
+  const [payAPData, setPayAPData] = useState(null);
+  const [payBillData, setPayBillData] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [confirmData, setConfirmData] = useState(null);
 
@@ -1472,16 +1936,67 @@ function RecebimentosView({ projects, canEdit, appUser }) {
     const date = form.date.value;
     const formaRecebimento = form.formaRecebimento.value;
 
-    const novas = payModalItem.p.parcelas.map((x, i) => i === payModalItem.index ? {...x, paga: true, dataRecebimento: date, formaRecebimento} : x);
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', payModalItem.pId), { parcelas: novas });
-    setPayModalItem(null);
+    const novas = payReceiptData.p.parcelas.map((x, i) => i === payReceiptData.index ? {...x, paga: true, dataRecebimento: date, formaRecebimento} : x);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', payReceiptData.pId), { parcelas: novas });
+    setPayReceiptData(null);
     setDayModalItems(null); // Fecha a listagem do dia
   };
   
   const handleUndo = async (item) => {
     const novas = item.p.parcelas.map((x, i) => i === item.index ? {...x, paga: false, dataRecebimento: null, formaRecebimento: null} : x);
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projects', item.pId), { parcelas: novas });
+    setDayModalItems(null);
+  };
+
+  const handlePayAP = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const date = form.date.value;
+    const formaPagamento = form.formaPagamento.value;
+
+    const novas = payAPData.doc.parcelas.map((x, i) => i === payAPData.index ? {...x, status: 'pago', dataPagamento: date, formaPagamento} : x);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', payAPData.docId), { parcelas: novas });
+    setPayAPData(null);
+    setDayModalItems(null);
+  };
+
+  const handleUndoAP = async (item) => {
+    const novas = item.doc.parcelas.map((x, i) => i === item.index ? {...x, status: 'pendente', dataPagamento: null, formaPagamento: null} : x);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId), { parcelas: novas });
+    setDayModalItems(null);
+  };
+
+  const handlePayBill = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const date = form.date.value;
+    const formaPagamento = form.formaPagamento.value;
+
+    // Paga todas as parcelas que compõem essa fatura agrupada
+    for (const item of payBillData.items) {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId);
+      const docSnap = (contasPagar || []).find(d => d.id === item.docId);
+      if (docSnap) {
+        const novas = docSnap.parcelas.map((x, i) => i === item.index ? {...x, status: 'pago', dataPagamento: date, formaPagamento} : x);
+        await updateDoc(docRef, { parcelas: novas });
+      }
+    }
+    setPayBillData(null);
     setDayModalItems(null); // Fecha a listagem do dia
+  };
+
+  const handleUndoBill = async (bill) => {
+    // Reverte o status de todas as parcelas que compõem essa fatura agrupada
+    for (const item of bill.items) {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId);
+      const docSnap = (contasPagar || []).find(d => d.id === item.docId);
+      if (docSnap) {
+        const novas = docSnap.parcelas.map((x, i) => i === item.index ? { ...x, status: 'pendente', dataPagamento: null, formaPagamento: null } : x);
+        await updateDoc(docRef, { parcelas: novas });
+      }
+    }
+    setPayBillData(null);
+    setDayModalItems(null);
   };
 
   return (
@@ -1489,7 +2004,7 @@ function RecebimentosView({ projects, canEdit, appUser }) {
       <div className="flex justify-between items-center w-full shrink-0 mb-4">
         <h3 className="text-xl font-bold text-slate-800 uppercase tracking-wide border-b-4 border-[#1e5aa0] pb-0.5">Financeiro (Recebimentos)</h3>
         <div className="flex space-x-2">
-          <button onClick={()=>setShowReportModal(true)} className="bg-white border text-[#1e5aa0] px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-1 shadow-sm hover:bg-blue-50"><FileDown size={16}/> Relatório Mensal</button>
+          <button onClick={()=>setShowReportModal(true)} className="bg-white border text-[#1e5aa0] px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-1 shadow-sm hover:bg-blue-50"><FileDown size={16}/> Extrato</button>
           <button onClick={prevMonth} className="bg-white border border-slate-300 text-slate-700 p-2 rounded-lg hover:bg-slate-100 transition-colors shadow-sm"><ChevronLeft size={18} /></button>
           <button onClick={nextMonth} className="bg-white border border-slate-300 text-slate-700 p-2 rounded-lg hover:bg-slate-100 transition-colors shadow-sm"><ChevronRight size={18} /></button>
         </div>
@@ -1502,6 +2017,9 @@ function RecebimentosView({ projects, canEdit, appUser }) {
               key={monthDate.toISOString()} 
               currentDate={monthDate} 
               projects={projects} 
+              contasPagar={contasPagar}
+              suppliers={suppliers}
+              docTypes={docTypes}
               canEdit={canEdit}
               onOpenDayDetails={(items) => setDayModalItems(items)}
             />
@@ -1509,69 +2027,61 @@ function RecebimentosView({ projects, canEdit, appUser }) {
         </div>
       </div>
 
-      {dayModalItems && !payModalItem && (
+      {dayModalItems && !payReceiptData && !payAPData && !payBillData && (
         <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-lg flex flex-col shadow-2xl overflow-hidden max-h-[90vh]">
             <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase">Lançamentos do Dia <button onClick={()=>setDayModalItems(null)}><X size={20}/></button></div>
             <div className="p-6 overflow-y-auto space-y-3">
-              {dayModalItems.map((item, idx) => (
-                <div key={idx} className={`p-4 rounded-xl border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 ${item.paga ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
-                  <div className="flex-1">
-                    <p className="font-black text-slate-800 text-sm uppercase">{item.p.nomeProjeto}</p>
-                    <p className="text-xs text-slate-500 uppercase">{item.p.clientName}</p>
-                    <p className={`font-black text-lg mt-1 ${item.paga ? 'text-emerald-600' : 'text-amber-600'}`}>{formatCurrency(item.valor)}</p>
-                    {item.paga && <p className="text-[10px] text-emerald-700 font-bold mt-1 uppercase">Pago em: {formatDate(item.dataRecebimento)} via {item.formaRecebimento}</p>}
-                  </div>
-                  {canEdit && (
-                    <div className="shrink-0 w-full sm:w-auto">
-                      {!item.paga ? (
-                        <button onClick={() => setPayModalItem(item)} className="w-full bg-emerald-600 text-white px-5 py-2.5 rounded-lg font-bold text-xs hover:bg-emerald-700 shadow uppercase">Efetuar Baixa</button>
-                      ) : (
-                        <button onClick={() => {
-                          setConfirmData({
-                            message: 'Desfazer o recebimento desta parcela?',
-                            onConfirm: async () => { await handleUndo(item); setConfirmData(null); }
-                          });
-                        }} className="w-full bg-white border border-slate-300 text-slate-600 px-5 py-2.5 rounded-lg font-bold text-xs hover:bg-slate-100 shadow-sm uppercase">Desfazer</button>
-                      )}
-                    </div>
-                  )}
-                </div>
+              {dayModalItems.receipts.length > 0 && <h4 className="text-[10px] font-black text-slate-400 uppercase border-b pb-1">Recebimentos</h4>}
+              {dayModalItems.receipts.map((item, idx) => (
+                <DayItemRow key={`rec-${idx}`} title={item.p.nomeProjeto} subtitle={item.p.clientName} value={item.valor} isPaid={item.paga} paidInfo={item.paga ? `Recebido em ${formatDate(item.dataRecebimento)} via ${item.formaRecebimento}` : null} colorClass={item.paga ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'} valueColor="text-emerald-600" onPay={()=>setPayReceiptData(item)} onUndo={()=>setConfirmData({ message: 'Desfazer o recebimento?', onConfirm: async () => { await handleUndo(item); setConfirmData(null); }})} canEdit={canEdit} />
+              ))}
+              
+              {dayModalItems.apIndividual.length > 0 && <h4 className="text-[10px] font-black text-slate-400 uppercase border-b pb-1 mt-4">Contas a Pagar</h4>}
+              {dayModalItems.apIndividual.map((item, idx) => (
+                <DayItemRow key={`ap-${idx}`} title={suppliers.find(s=>s.id===item.doc.fornecedorId)?.nome || 'Fornecedor'} subtitle={item.doc.descricao} value={item.valor} isPaid={item.status === 'pago'} paidInfo={item.status === 'pago' ? `Pago em ${formatDate(item.dataPagamento)} via ${item.formaPagamento}` : null} colorClass={item.status === 'pago' ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'} valueColor="text-red-600" onPay={()=>setPayAPData(item)} onUndo={()=>setConfirmData({ message: 'Desfazer o pagamento?', onConfirm: async () => { await handleUndoAP(item); setConfirmData(null); }})} canEdit={canEdit} />
+              ))}
+
+              {dayModalItems.bills.length > 0 && <h4 className="text-[10px] font-black text-slate-400 uppercase border-b pb-1 mt-4">Faturas de Cartão</h4>}
+              {dayModalItems.bills.map((bill, idx) => (
+                <DayItemRow key={`bill-${idx}`} title={bill.key} subtitle="Fatura Consolidada" value={bill.total} isPaid={bill.isPaid} paidInfo={bill.isPaid ? 'Fatura Liquidada' : null} colorClass={bill.isPaid ? 'bg-blue-50 border-blue-200' : 'bg-slate-50 border-slate-200'} valueColor="text-blue-600" onPay={()=>setPayBillData(bill)} onUndo={() => setConfirmData({ message: 'Desfazer o pagamento desta fatura?', onConfirm: async () => { await handleUndoBill(bill); setConfirmData(null); }})} canEdit={canEdit} />
               ))}
             </div>
           </div>
         </div>
       )}
 
-      {payModalItem && (
+      {/* Modal Baixa Recebimento */}
+      {payReceiptData && (
         <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[90] backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
-            <div className="p-4 bg-emerald-600 text-white font-bold flex justify-between items-center uppercase">Confirmar Recebimento <button onClick={()=>setPayModalItem(null)}><X size={20}/></button></div>
+            <div className="p-4 bg-emerald-600 text-white font-bold flex justify-between items-center uppercase text-sm">Confirmar Recebimento <button onClick={()=>setPayReceiptData(null)}><X size={20}/></button></div>
             <form onSubmit={handlePay} className="p-6 flex flex-col gap-4">
-              <div><p className="text-xs text-slate-500 uppercase font-bold">Projeto</p><p className="font-black text-slate-800">{payModalItem.p.nomeProjeto}</p></div>
-              <div><p className="text-xs text-slate-500 uppercase font-bold">Valor da Parcela</p><p className="font-black text-2xl text-emerald-600">{formatCurrency(payModalItem.valor)}</p></div>
+              <BaixaFormContent label="Recebido via" value={payReceiptData.valor} nameSuffix="Recebimento" color="emerald" options={['PIX', 'DINHEIRO', 'CRÉDITO EM CONTA', 'CHEQUE', 'PERMUTA']} />
+            </form>
+          </div>
+        </div>
+      )}
 
-              <div>
-                <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Forma de Recebimento *</label>
-                <select name="formaRecebimento" required className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm bg-white text-slate-800">
-                  <option value="">Selecione...</option>
-                  <option value="PIX">PIX</option>
-                  <option value="DINHEIRO">DINHEIRO</option>
-                  <option value="CREDITO EM CONTA">CRÉDITO EM CONTA</option>
-                  <option value="CHEQUE">CHEQUE</option>
-                  <option value="PERMUTA">PERMUTA</option>
-                </select>
-              </div>
+      {/* Modal Baixa Contas a Pagar */}
+      {payAPData && (
+        <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[90] backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 bg-red-600 text-white font-bold flex justify-between items-center uppercase text-sm">Confirmar Pagamento <button onClick={()=>setPayAPData(null)}><X size={20}/></button></div>
+            <form onSubmit={handlePayAP} className="p-6 flex flex-col gap-4">
+              <BaixaFormContent label="Pago via" value={payAPData.valor} nameSuffix="Pagamento" color="red" options={['PIX', 'TRANSFERÊNCIA', 'BOLETO', 'CARTÃO DÉBITO', 'DINHEIRO']} />
+            </form>
+          </div>
+        </div>
+      )}
 
-              <div>
-                <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Data em que o cliente pagou *</label>
-                <div className="flex gap-2">
-                  <button type="button" onClick={()=>{document.getElementById('pDate').value=getToday();}} className="bg-slate-100 font-bold text-slate-600 px-3 py-2 rounded-lg text-xs hover:bg-slate-200">Hoje</button>
-                  <input id="pDate" required name="date" type="date" defaultValue={getToday()} className="flex-1 border p-2 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-sm" />
-                </div>
-              </div>
-              
-              <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3 rounded-xl mt-2 hover:bg-emerald-700 shadow-md">Confirmar Baixa</button>
+      {/* Modal Baixa Fatura Cartão */}
+      {payBillData && (
+        <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[90] backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-sm flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 bg-blue-600 text-white font-bold flex justify-between items-center uppercase text-sm">Liquidar Fatura <button onClick={()=>setPayBillData(null)}><X size={20}/></button></div>
+            <form onSubmit={handlePayBill} className="p-6 flex flex-col gap-4">
+              <BaixaFormContent label="Fatura paga via" value={payBillData.total} nameSuffix="Pagamento" color="blue" options={['DÉBITO AUTOMÁTICO', 'PIX', 'SALDO EM CONTA']} />
             </form>
           </div>
         </div>
@@ -1583,7 +2093,55 @@ function RecebimentosView({ projects, canEdit, appUser }) {
   );
 }
 
-function CompactCalendar({ currentDate, projects, canEdit, onOpenDayDetails }) {
+function DayItemRow({ title, subtitle, value, isPaid, paidInfo, colorClass, valueColor, onPay, onUndo, canEdit }) {
+  return (
+    <div className={`p-4 rounded-xl border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 ${colorClass}`}>
+      <div className="flex-1 min-w-0">
+        <p className="font-black text-slate-800 text-sm uppercase truncate">{title}</p>
+        <p className="text-xs text-slate-500 uppercase truncate">{subtitle}</p>
+        <p className={`font-black text-lg mt-1 ${isPaid ? valueColor : 'text-slate-600'}`}>{formatCurrency(value)}</p>
+        {isPaid && <p className="text-[10px] text-slate-500 font-bold mt-1 uppercase flex items-center gap-1"><CheckCircle2 size={12}/> {paidInfo}</p>}
+      </div>
+      {canEdit && (
+        <div className="shrink-0 w-full sm:w-auto">
+          {!isPaid ? (
+            <button onClick={onPay} className="w-full bg-[#1e5aa0] text-white px-5 py-2.5 rounded-lg font-bold text-xs hover:bg-[#154278] shadow uppercase">Efetuar Baixa</button>
+          ) : onUndo && (
+            <button onClick={onUndo} className="w-full bg-white border border-slate-300 text-slate-600 px-5 py-2.5 rounded-lg font-bold text-xs hover:bg-slate-100 shadow-sm uppercase">Desfazer</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BaixaFormContent({ label, value, color, options }) {
+  const btnColor = color === 'emerald' ? 'bg-emerald-600' : color === 'red' ? 'bg-red-600' : 'bg-blue-600';
+  const focusRing = color === 'emerald' ? 'focus:ring-emerald-500' : color === 'red' ? 'focus:ring-red-500' : 'focus:ring-blue-500';
+
+  return (
+    <>
+      <div><p className="text-xs text-slate-500 uppercase font-bold">Valor Total</p><p className={`font-black text-2xl ${color === 'emerald' ? 'text-emerald-600' : color === 'red' ? 'text-red-600' : 'text-blue-600'}`}>{formatCurrency(value)}</p></div>
+      <div>
+        <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">{label} *</label>
+        <select name="formaPagamento" required className={`w-full border p-2.5 rounded-lg outline-none ${focusRing} font-medium text-sm bg-white text-slate-800`}>
+          <option value="">Selecione...</option>
+          {options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </div>
+      <div>
+        <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">Data da Conferência *</label>
+        <div className="flex gap-2">
+          <button type="button" onClick={()=>{document.getElementById('pDate').value=getToday();}} className="bg-slate-100 font-bold text-slate-600 px-3 py-2 rounded-lg text-xs hover:bg-slate-200">Hoje</button>
+          <input id="pDate" required name="date" type="date" defaultValue={getToday()} className={`flex-1 border p-2 rounded-lg outline-none ${focusRing} font-medium text-sm`} />
+        </div>
+      </div>
+      <button type="submit" className={`w-full ${btnColor} text-white font-bold py-3 rounded-xl mt-2 hover:brightness-90 shadow-md uppercase text-xs`}>Confirmar Lançamento</button>
+    </>
+  );
+}
+
+function CompactCalendar({ currentDate, projects, contasPagar, suppliers, docTypes, canEdit, onOpenDayDetails }) {
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -1596,6 +2154,8 @@ function CompactCalendar({ currentDate, projects, canEdit, onOpenDayDetails }) {
 
   const weekDays = ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
   const installmentsThisMonth = {};
+  const apThisMonth = {}; // Contas a Pagar individuais
+  const creditCardBills = {}; // Agrupador de faturas por dia
   let monthTotalPaid = 0, monthTotalPending = 0;
   
   projects.forEach(project => {
@@ -1611,6 +2171,44 @@ function CompactCalendar({ currentDate, projects, canEdit, onOpenDayDetails }) {
     });
   });
 
+  // Processamento de Contas a Pagar
+  (contasPagar || []).forEach(docPay => {
+    const type = (docTypes || []).find(t => t.id === docPay.tipoDocumentoId);
+    (docPay.parcelas || []).forEach((parc, index) => {
+      if (!parc.dataVencimento) return;
+      const [pYear, pMonth, pDay] = parc.dataVencimento.split('-');
+      if (parseInt(pYear) === year && parseInt(pMonth) - 1 === month) {
+        const dayNum = parseInt(pDay);
+        
+        if (type?.isFatura && docPay.banco) {
+          const displayKey = `${type.nome} - ${docPay.banco}`;
+          if (!creditCardBills[dayNum]) creditCardBills[dayNum] = {};
+          if (!creditCardBills[dayNum][displayKey]) creditCardBills[dayNum][displayKey] = { total: 0, items: [], isPaid: true };
+          
+          creditCardBills[dayNum][displayKey].total += Number(parc.valor);
+          creditCardBills[dayNum][displayKey].items.push({ ...parc, docId: docPay.id, index });
+          if (parc.status !== 'pago') creditCardBills[dayNum][displayKey].isPaid = false;
+        } else {
+          if (!apThisMonth[dayNum]) apThisMonth[dayNum] = [];
+          apThisMonth[dayNum].push({ ...parc, docId: docPay.id, index, doc: docPay });
+        }
+      }
+    });
+  });
+
+  const getDayMetadata = (day) => {
+    const receipts = installmentsThisMonth[day] || [];
+    const apIndiv = apThisMonth[day] || [];
+    const bills = Object.entries(creditCardBills[day] || {}).map(([key, data]) => ({ key, ...data }));
+    
+    const hasItems = receipts.length > 0 || apIndiv.length > 0 || bills.length > 0;
+    const allPaid = (receipts.every(r => r.paga)) && 
+                    (apIndiv.every(a => a.status === 'pago')) && 
+                    (bills.every(b => b.isPaid));
+
+    return { receipts, apIndividual: apIndiv, bills, hasItems, allPaid };
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-md border border-slate-200 flex flex-col h-full overflow-hidden">
       <div className="bg-[#5a82b5] text-white p-1.5 sm:p-2 text-center font-bold uppercase text-xs sm:text-sm tracking-widest shrink-0">{currentDate.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</div>
@@ -1618,30 +2216,29 @@ function CompactCalendar({ currentDate, projects, canEdit, onOpenDayDetails }) {
       <div className="grid grid-cols-7 auto-rows-fr bg-white flex-1 min-h-0">
         {days.map((day, idx) => {
           if (!day) return <div key={`empty-${idx}`} className="border-r border-b border-slate-100 bg-slate-50"></div>;
-          const dayInstallments = installmentsThisMonth[day] || [];
-          const totalValue = dayInstallments.reduce((sum, item) => sum + Number(item.valor), 0);
-          const hasInstallments = dayInstallments.length > 0;
-          const allPaid = hasInstallments && dayInstallments.every(item => item.paga);
-          let bgClass = "bg-white";
-          if (hasInstallments && allPaid) bgClass = "bg-[#d4edd9]"; else if (hasInstallments && !allPaid) bgClass = "bg-[#fff3cd]";
+          const meta = getDayMetadata(day);
           
-          const handleDayClick = () => {
-            if (!hasInstallments || !canEdit) return;
-            onOpenDayDetails(dayInstallments);
-          };
-
+          let bgClass = "bg-white";
+          if (meta.hasItems && meta.allPaid) bgClass = "bg-[#d4edd9]"; else if (meta.hasItems && !meta.allPaid) bgClass = "bg-[#fff3cd]";
+          
           return (
-            <div key={day} className={`border-r border-b border-slate-200 p-1 sm:p-1.5 flex flex-col justify-between overflow-hidden ${bgClass} ${hasInstallments ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`} onClick={handleDayClick}>
+            <div key={day} className={`border-r border-b border-slate-200 p-1 sm:p-1.5 flex flex-col justify-between overflow-hidden ${bgClass} ${meta.hasItems ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`} onClick={() => meta.hasItems && onOpenDayDetails(meta)}>
               <div className="flex justify-between items-start mb-0.5 shrink-0">
                 <span className="font-bold text-[10px] sm:text-xs text-slate-800 leading-none">{day}</span>
-                {hasInstallments && <div className={`w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors ${allPaid ? 'bg-[#73c87f] border-[#73c87f]' : 'bg-white border-[#73c87f]'}`}>{allPaid && <Check size={10} className="text-white font-bold" />}</div>}
+                {meta.hasItems && <div className={`w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors ${meta.allPaid ? 'bg-[#73c87f] border-[#73c87f]' : 'bg-white border-[#73c87f]'}`}>{meta.allPaid && <Check size={10} className="text-white font-bold" />}</div>}
               </div>
               <div className="flex-1 flex flex-col justify-end overflow-hidden min-h-0">
                 <div className="flex flex-col gap-px overflow-hidden">
-                  {dayInstallments.slice(0, 2).map((inst, i) => <div key={i} className={`text-[8px] sm:text-[9px] truncate font-semibold leading-tight ${inst.paga ? 'text-green-800 opacity-60 line-through' : 'text-slate-700'}`}>{inst.p.clientName.split(' ')[0]}</div>)}
+                  {meta.receipts.slice(0, 1).map((inst, i) => <div key={`r-${i}`} className={`text-[8px] sm:text-[9px] truncate font-semibold leading-tight ${inst.paga ? 'text-green-800 opacity-60 line-through' : 'text-slate-700'}`}>💰 {inst.p.clientName.split(' ')[0]}</div>)}
+                  {meta.apIndividual.slice(0, 1).map((inst, i) => <div key={`a-${i}`} className={`text-[8px] sm:text-[9px] truncate font-semibold leading-tight ${inst.status === 'pago' ? 'text-red-800 opacity-60 line-through' : 'text-slate-700'}`}>💸 {suppliers.find(s=>s.id===inst.doc.fornecedorId)?.nome.split(' ')[0] || 'Despesa'}</div>)}
                 </div>
-                {dayInstallments.length > 2 && <div className="text-[8px] sm:text-[9px] font-bold text-slate-500 shrink-0">+{dayInstallments.length - 2}</div>}
-                {hasInstallments && <div className={`text-right text-[9px] sm:text-[10px] md:text-[11px] font-black mt-0.5 truncate shrink-0 ${allPaid ? 'text-green-900' : 'text-amber-900'}`}>{formatCurrency(totalValue)}</div>}
+                
+                {/* Consolidado de Faturas */}
+                <div className="flex flex-wrap gap-px mt-0.5">
+                  {meta.bills.map((bill, i) => (
+                    <div key={`b-${i}`} className={`text-[7px] font-black px-1 rounded truncate flex-1 min-w-[30px] ${bill.isPaid ? 'bg-emerald-600 text-white' : 'bg-blue-600 text-white'}`}>💳 {bill.key.split(' - ')[1]}</div>
+                  ))}
+                </div>
               </div>
             </div>
           );

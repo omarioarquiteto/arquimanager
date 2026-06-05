@@ -448,14 +448,14 @@ const allowedProjects = useMemo(() => {
     if (appUser.role === 'cliente') return <div className="p-8 text-center"><h2 className="text-2xl font-bold text-slate-700">Área do Cliente</h2><p className="text-slate-500">Em breve poderá acompanhar os seus projetos aqui.</p></div>;
     
     switch (currentView) {
-      case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} /> : <NoAccess />;
+      case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
       case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} contasPagar={contasPagar} docTypes={docTypes} suppliers={suppliers} canEdit={canEdit} appUser={appUser} /> : <NoAccess />;
       case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;
-      default: return <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} />;
+      default: return <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} />;
     }
   };
 
@@ -1115,7 +1115,7 @@ function UserModal({ appUser, projects, editingUser, onClose }) {
 }
 
 // --- DASHBOARD OTIMIZADA COM FOCO EM UX ---
-function DashboardView({ projects, checklists, companyUsers, appUser }) {
+function DashboardView({ projects, checklists, companyUsers, appUser, contasPagar = [], payGroups = [], paySubgroups = [], docTypes = [] }) {
   const totalValue = projects.reduce((sum, p) => sum + Number(p.valorTotal), 0);
   let received = 0, pending = 0;
   projects.forEach(p => (p.parcelas || []).forEach(parc => { if (parc.paga) received += Number(parc.valor); else pending += Number(parc.valor); }));
@@ -1136,6 +1136,39 @@ function DashboardView({ projects, checklists, companyUsers, appUser }) {
   // Saudação Dinâmica
   const hours = new Date().getHours();
   const greeting = hours < 12 ? 'Bom dia' : hours < 18 ? 'Boa tarde' : 'Boa noite';
+
+  // --- RESUMO FINANCEIRO (PAGAMENTOS) PARA OS GRÁFICOS ---
+  const groupStats = useMemo(() => {
+    const stats = {};
+    (contasPagar || []).forEach(c => {
+      const g = payGroups.find(x => x.id === c.grupoId)?.nome || 'Outros';
+      const sg = paySubgroups.find(x => x.id === c.subgrupoId)?.nome || 'Sem Categoria';
+      if (!stats[g]) stats[g] = { paid: 0, pending: 0, subs: {} };
+      if (!stats[g].subs[sg]) stats[g].subs[sg] = { paid: 0, pending: 0 };
+      (c.parcelas || []).forEach(p => {
+        const val = Number(p.valor) || 0;
+        if (p.status === 'pago') { stats[g].paid += val; stats[g].subs[sg].paid += val; }
+        else { stats[g].pending += val; stats[g].subs[sg].pending += val; }
+      });
+    });
+    return stats;
+  }, [contasPagar, payGroups, paySubgroups]);
+
+  const bankStats = useMemo(() => {
+    const stats = {};
+    const faturaTypeIds = (docTypes || []).filter(t => t.isFatura).map(t => t.id);
+    (contasPagar || []).forEach(c => {
+      if (!faturaTypeIds.includes(c.tipoDocumentoId) || !c.banco) return;
+      (c.parcelas || []).forEach(p => {
+        if (!p.dataVencimento) return;
+        const monthKey = p.dataVencimento.substring(0, 7); // YYYY-MM
+        if (!stats[monthKey]) stats[monthKey] = {};
+        if (!stats[monthKey][c.banco]) stats[monthKey][c.banco] = 0;
+        stats[monthKey][c.banco] += Number(p.valor) || 0;
+      });
+    });
+    return stats;
+  }, [contasPagar, docTypes]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -1253,6 +1286,73 @@ function DashboardView({ projects, checklists, companyUsers, appUser }) {
                 <p className="text-sm font-medium text-slate-500">Tudo em dia! Nenhuma pendência urgente.</p>
               </div>
             )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* GRÁFICO RESUMO POR GRUPO E SUBGRUPO */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <div className="border-b border-slate-100 pb-3 mb-4 flex justify-between items-center">
+            <div>
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Despesas por Categoria</h3>
+              <p className="text-xs font-bold text-slate-400">Total Pago (Verde) vs Pendente (Vermelho)</p>
+            </div>
+            <DollarSign className="text-slate-300" size={24}/>
+          </div>
+          <div className="space-y-6 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            {Object.entries(groupStats).map(([gName, data]) => {
+              const total = data.paid + data.pending;
+              const paidPercent = total > 0 ? (data.paid / total) * 100 : 0;
+              return (
+                <div key={gName} className="space-y-2">
+                  <div className="flex justify-between items-end">
+                    <span className="text-xs font-black text-slate-700 uppercase">{gName}</span>
+                    <span className="text-[10px] font-bold text-slate-400">{formatCurrency(total)}</span>
+                  </div>
+                  <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden flex">
+                    <div className="bg-emerald-500 h-full transition-all duration-500" style={{ width: `${paidPercent}%` }}></div>
+                    <div className="bg-red-400 h-full transition-all duration-500" style={{ width: `${100 - paidPercent}%` }}></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 pl-2">
+                    {Object.entries(data.subs).map(([sgName, sgData]) => (
+                      <div key={sgName} className="flex justify-between text-[10px] border-l-2 border-slate-100 pl-2">
+                        <span className="text-slate-500 font-bold truncate pr-2">{sgName}</span>
+                        <span className="text-slate-800 font-black shrink-0">{formatCurrency(sgData.paid + sgData.pending)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* VALOR DA FATURA POR BANCO (MENSAL) */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <div className="border-b border-slate-100 pb-3 mb-4 flex justify-between items-center">
+            <div>
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Faturas Mensais por Banco</h3>
+              <p className="text-xs font-bold text-slate-400">Total acumulado de cartões</p>
+            </div>
+            <Briefcase className="text-slate-300" size={24}/>
+          </div>
+          <div className="space-y-6 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            {Object.entries(bankStats).sort((a,b) => b[0].localeCompare(a[0])).map(([month, banks]) => (
+              <div key={month} className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                <h4 className="text-[10px] font-black text-[#1e5aa0] uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <CalendarDays size={14}/> {new Date(month + '-02').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {Object.entries(banks).map(([bank, value]) => (
+                    <div key={bank} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
+                      <p className="text-[10px] font-black text-slate-400 uppercase truncate mb-0.5">{bank}</p>
+                      <p className="font-black text-slate-800">{formatCurrency(value)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

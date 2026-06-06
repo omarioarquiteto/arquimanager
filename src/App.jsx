@@ -451,7 +451,7 @@ const allowedProjects = useMemo(() => {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} contasPagar={contasPagar} docTypes={docTypes} suppliers={suppliers} canEdit={canEdit} appUser={appUser} /> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} contasPagar={contasPagar} docTypes={docTypes} suppliers={suppliers} canEdit={canEdit} appUser={appUser} groups={payGroups} subgroups={paySubgroups} /> : <NoAccess />;
       case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;
@@ -2017,12 +2017,15 @@ function ProjectModal({ appUser, clients, companyUsers, project, onClose }) {
 }
 
 // --- RECEBIMENTOS COM RELATÓRIO E CALENDÁRIO DUPLO ---
-function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit, appUser }) {
+function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit, appUser, groups, subgroups }) {
   const [baseDate, setBaseDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [dayModalItems, setDayModalItems] = useState(null); // Itens do dia selecionado
   const [payReceiptData, setPayReceiptData] = useState(null); 
   const [payAPData, setPayAPData] = useState(null);
   const [payBillData, setPayBillData] = useState(null);
+  const [viewingBillDetails, setViewingBillDetails] = useState(null);
+  const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [confirmData, setConfirmData] = useState(null);
 
@@ -2130,7 +2133,53 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
       {dayModalItems && !payReceiptData && !payAPData && !payBillData && (
         <div className="fixed inset-0 bg-slate-900/70 flex items-center justify-center p-4 z-[80] backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-lg flex flex-col shadow-2xl overflow-hidden max-h-[90vh]">
-            <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase">Lançamentos do Dia <button onClick={()=>setDayModalItems(null)}><X size={20}/></button></div>
+            {viewingBillDetails ? (
+              <>
+                <div className="p-4 bg-slate-800 text-white font-bold flex justify-between items-center uppercase text-sm">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setViewingBillDetails(null)} className="p-1 hover:bg-slate-700 rounded transition-colors"><ChevronLeft size={20}/></button>
+                    <span>Fatura: {viewingBillDetails.key}</span>
+                  </div>
+                  <button onClick={() => { setDayModalItems(null); setViewingBillDetails(null); }}><X size={20}/></button>
+                </div>
+                <div className="p-6 overflow-y-auto space-y-3 bg-slate-50">
+                  {viewingBillDetails.items.map((item, idx) => {
+                    const originalDoc = (contasPagar || []).find(d => d.id === item.docId);
+                    const supplier = (suppliers || []).find(s => s.id === originalDoc?.fornecedorId);
+                    const totalParc = originalDoc?.numParcelas || 1;
+                    return (
+                      <div key={idx} className="p-3 bg-white border border-slate-200 rounded-xl flex justify-between items-center shadow-sm group">
+                        <div className="flex-1 min-w-0 pr-4">
+                          <div className="flex items-center gap-2">
+                            <p className="font-bold text-slate-800 text-xs uppercase truncate">{supplier?.nome || 'Fornecedor N/A'}</p>
+                            {totalParc > 1 && (
+                              <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold">
+                                {String(item.numero).padStart(2, '0')} de {String(totalParc).padStart(2, '0')}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 font-bold uppercase truncate">{originalDoc?.descricao || 'Sem descrição'}</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {canEdit && (
+                            <button onClick={() => { setEditingEntry(originalDoc); setIsEntryModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-[#1e5aa0] hover:bg-slate-100 rounded-lg opacity-0 group-hover:opacity-100 transition-all" title="Editar Lançamento">
+                              <Edit size={14} />
+                            </button>
+                          )}
+                          <p className="font-black text-slate-700 text-sm whitespace-nowrap">{formatCurrency(item.valor)}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="pt-4 border-t border-slate-200 flex justify-between items-center mt-2">
+                    <span className="font-black text-slate-400 uppercase text-[10px] tracking-widest">Total Consolidado</span>
+                    <span className="font-black text-blue-600 text-lg">{formatCurrency(viewingBillDetails.total)}</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="p-4 bg-[#1e5aa0] text-white font-bold flex justify-between items-center uppercase text-sm">Lançamentos do Dia <button onClick={() => { setDayModalItems(null); setViewingBillDetails(null); }}><X size={20}/></button></div>
             <div className="p-6 overflow-y-auto space-y-3">
               {dayModalItems.receipts.length > 0 && <h4 className="text-[10px] font-black text-slate-400 uppercase border-b pb-1">Recebimentos</h4>}
               {dayModalItems.receipts.map((item, idx) => (
@@ -2144,9 +2193,11 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
 
               {dayModalItems.bills.length > 0 && <h4 className="text-[10px] font-black text-slate-400 uppercase border-b pb-1 mt-4">Faturas de Cartão</h4>}
               {dayModalItems.bills.map((bill, idx) => (
-                <DayItemRow key={`bill-${idx}`} title={bill.key} subtitle="Fatura Consolidada" value={bill.total} isPaid={bill.isPaid} paidInfo={bill.isPaid ? 'Fatura Liquidada' : null} colorClass={bill.isPaid ? 'bg-blue-50 border-blue-200' : 'bg-slate-50 border-slate-200'} valueColor="text-blue-600" onPay={()=>setPayBillData(bill)} onUndo={() => setConfirmData({ message: 'Desfazer o pagamento desta fatura?', onConfirm: async () => { await handleUndoBill(bill); setConfirmData(null); }})} canEdit={canEdit} />
+                <DayItemRow key={`bill-${idx}`} title={bill.key} subtitle="Fatura Consolidada" value={bill.total} isPaid={bill.isPaid} paidInfo={bill.isPaid ? 'Fatura Liquidada' : null} colorClass={bill.isPaid ? 'bg-blue-50 border-blue-200' : 'bg-slate-50 border-slate-200'} valueColor="text-blue-600" onPay={()=>setPayBillData(bill)} onUndo={() => setConfirmData({ message: 'Desfazer o pagamento desta fatura?', onConfirm: async () => { await handleUndoBill(bill); setConfirmData(null); }})} canEdit={canEdit} onView={() => setViewingBillDetails(bill)} />
               ))}
             </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -2188,17 +2239,37 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
       )}
 
       {showReportModal && <FinancialReportModal projects={projects} onClose={()=>setShowReportModal(false)} />}
+      {isEntryModalOpen && (
+        <EntryModal 
+          onClose={() => { setIsEntryModalOpen(false); setEditingEntry(null); }} 
+          suppliers={suppliers} 
+          docTypes={docTypes} 
+          groups={groups} 
+          subgroups={subgroups} 
+          appUser={appUser} 
+          editingEntry={editingEntry}
+        />
+      )}
       {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
     </div>
   );
 }
 
-function DayItemRow({ title, subtitle, value, isPaid, paidInfo, colorClass, valueColor, onPay, onUndo, canEdit }) {
+function DayItemRow({ title, subtitle, value, isPaid, paidInfo, colorClass, valueColor, onPay, onUndo, canEdit, onView }) {
   return (
     <div className={`p-4 rounded-xl border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 ${colorClass}`}>
       <div className="flex-1 min-w-0">
-        <p className="font-black text-slate-800 text-sm uppercase truncate">{title}</p>
-        <p className="text-xs text-slate-500 uppercase truncate">{subtitle}</p>
+        <div className="flex justify-between items-start">
+          <div className="flex-1 min-w-0">
+            <p className="font-black text-slate-800 text-sm uppercase truncate">{title}</p>
+            <p className="text-xs text-slate-500 uppercase truncate">{subtitle}</p>
+          </div>
+          {onView && (
+            <button onClick={onView} className="p-1.5 text-slate-400 hover:text-[#1e5aa0] hover:bg-slate-100 rounded-lg transition-colors ml-2" title="Ver Detalhes">
+              <Eye size={18} />
+            </button>
+          )}
+        </div>
         <p className={`font-black text-lg mt-1 ${isPaid ? valueColor : 'text-slate-600'}`}>{formatCurrency(value)}</p>
         {isPaid && <p className="text-[10px] text-slate-500 font-bold mt-1 uppercase flex items-center gap-1"><CheckCircle2 size={12}/> {paidInfo}</p>}
       </div>

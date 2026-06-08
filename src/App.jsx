@@ -497,15 +497,78 @@ const allowedProjects = useMemo(() => {
 
 // --- NOVO MÓDULO: CONTAS A PAGAR ---
 function PagamentosView({ suppliers, docTypes, groups, subgroups, contasPagar, appUser, canEdit, canDelete }) {
-  const [subTab, setSubTab] = useState('lancamentos');
+  const [subTab, setSubTab] = useState('pendentes');
   const [isEntryModalOpen, setIsEntryModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
   const [alertMsg, setAlertMsg] = useState('');
   const [confirmData, setConfirmData] = useState(null);
 
+  // Estados dos Filtros
+  const [filterFornecedor, setFilterFornecedor] = useState('');
+  const [filterBanco, setFilterBanco] = useState('');
+  const [filterData, setFilterData] = useState('');
+  const [appliedFilters, setAppliedFilters] = useState({ fornecedor: '', banco: '', data: '' });
+
+  const handleApplyFilters = () => {
+    setAppliedFilters({ fornecedor: filterFornecedor, banco: filterBanco, data: filterData });
+  };
+
+  const handleClearFilters = () => {
+    setFilterFornecedor('');
+    setFilterBanco('');
+    setFilterData('');
+    setAppliedFilters({ fornecedor: '', banco: '', data: '' });
+  };
+
+  // Sincronização automática de status baseado nas parcelas (Análise de integridade)
+  useEffect(() => {
+    if (!contasPagar) return;
+    contasPagar.forEach(async (c) => {
+      if (!c.parcelas || c.parcelas.length === 0) return;
+      const todasPagas = c.parcelas.every(p => p.status === 'pago');
+      const targetStatus = todasPagas ? 'pago' : 'pendente';
+      
+      // Só atualiza se o status atual estiver divergente da realidade das parcelas
+      if (c.status !== targetStatus) {
+        try {
+          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', c.id), { status: targetStatus });
+        } catch (err) { console.error("Erro ao sincronizar status do documento:", err); }
+      }
+    });
+  }, [contasPagar]);
+
+  // Lógica de Filtragem e Ordenação
+  const filteredAndSorted = useMemo(() => {
+    if (subTab !== 'pendentes' && subTab !== 'pagos') return [];
+
+    let list = (contasPagar || []).filter(c => 
+      subTab === 'pagos' ? c.status === 'pago' : c.status !== 'pago'
+    );
+
+    if (appliedFilters.fornecedor) {
+      list = list.filter(c => {
+        const s = suppliers.find(sup => sup.id === c.fornecedorId);
+        return s?.nome?.toLowerCase().includes(appliedFilters.fornecedor.toLowerCase());
+      });
+    }
+    if (appliedFilters.banco) {
+      list = list.filter(c => c.banco?.toLowerCase().includes(appliedFilters.banco.toLowerCase()));
+    }
+    if (appliedFilters.data) {
+      list = list.filter(c => c.dataVencimento === appliedFilters.data);
+    }
+
+    // Ordenação por Data de Vencimento
+    list.sort((a, b) => (a.dataVencimento || '').localeCompare(b.dataVencimento || ''));
+    return list;
+  }, [contasPagar, subTab, appliedFilters, suppliers]);
+
   const handleDelete = (c) => {
-    if (c.status === 'pago') {
-      return setAlertMsg('Não é possível excluir um lançamento que já foi pago.');
+    // Verifica se alguma parcela individual já foi paga
+    const temParcelasPagas = (c.parcelas || []).some(p => p.status === 'pago');
+
+    if (temParcelasPagas) {
+      return setAlertMsg('Não é possível excluir este lançamento, pois ele possui parcelas que já foram pagas.');
     }
     setConfirmData({
       message: 'Excluir este lançamento permanentemente?',
@@ -529,7 +592,8 @@ function PagamentosView({ suppliers, docTypes, groups, subgroups, contasPagar, a
 
       <div className="flex space-x-2 bg-white p-1.5 rounded-xl shadow-sm mb-6 border border-slate-200 shrink-0">
         {[
-          { id: 'lancamentos', label: 'Lançamentos', icon: <DollarSign size={16}/> },
+          { id: 'pendentes', label: 'Pendentes', icon: <Clock size={16}/> },
+          { id: 'pagos', label: 'Pagos', icon: <CheckCircle2 size={16}/> },
           { id: 'fornecedores', label: 'Fornecedores', icon: <Users size={16}/> },
           { id: 'config', label: 'Configurações', icon: <Settings size={16}/> }
         ].map(tab => (
@@ -540,10 +604,10 @@ function PagamentosView({ suppliers, docTypes, groups, subgroups, contasPagar, a
       </div>
 
       <div className="flex-1 overflow-auto bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-        {subTab === 'lancamentos' && (
+        {(subTab === 'pendentes' || subTab === 'pagos') && (
           <div className="space-y-6">
             <div className="flex justify-between items-center border-b pb-4">
-              <h4 className="font-black text-slate-700 uppercase text-sm">Contas em Aberto</h4>
+              <h4 className="font-black text-slate-700 uppercase text-sm">{subTab === 'pendentes' ? 'Contas em Aberto' : 'Histórico de Pagamentos'}</h4>
               <button 
                 onClick={() => setIsEntryModalOpen(true)}
                 className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 hover:bg-emerald-700 transition-colors"
@@ -551,16 +615,48 @@ function PagamentosView({ suppliers, docTypes, groups, subgroups, contasPagar, a
                 <Plus size={16}/> Novo Lançamento
               </button>
             </div>
+
+            {/* Área de Filtros */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100 items-end">
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">Filtrar Fornecedor</label>
+                <input value={filterFornecedor} onChange={e => setFilterFornecedor(e.target.value)} placeholder="Nome do fornecedor..." className="w-full p-2 border rounded-lg text-xs outline-none focus:ring-1 focus:ring-[#1e5aa0]" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">Filtrar Banco</label>
+                <input value={filterBanco} onChange={e => setFilterBanco(e.target.value)} placeholder="Instituição bancária..." className="w-full p-2 border rounded-lg text-xs outline-none focus:ring-1 focus:ring-[#1e5aa0]" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">Data de Vencimento</label>
+                <input type="date" value={filterData} onChange={e => setFilterData(e.target.value)} className="w-full p-2 border rounded-lg text-xs outline-none focus:ring-1 focus:ring-[#1e5aa0]" />
+              </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleApplyFilters}
+                  className="flex-1 bg-[#1e5aa0] text-white py-2 px-3 rounded-lg font-bold text-[10px] uppercase hover:bg-[#154278] transition-colors shadow-sm h-[38px]"
+                >
+                  Aplicar
+                </button>
+                <button 
+                  onClick={handleClearFilters}
+                  className="flex-1 bg-slate-200 text-slate-600 py-2 px-3 rounded-lg font-bold text-[10px] uppercase hover:bg-slate-300 transition-colors h-[38px]"
+                >
+                  Limpar
+                </button>
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="text-xs text-slate-400 uppercase font-black border-b">
-                  <tr><th className="pb-3">Vencimento</th><th className="pb-3">Fornecedor</th><th className="pb-3">Descrição</th><th className="pb-3 text-right">Valor</th><th className="pb-3 text-center">Status</th><th className="pb-3 text-center">Ações</th></tr>
+                  <tr><th className="pb-3">Vencimento</th><th className="pb-3">Fornecedor</th><th className="pb-3">Banco</th><th className="pb-3">Descrição</th><th className="pb-3 text-right">Valor</th><th className="pb-3 text-center">Status</th><th className="pb-3 text-center">Ações</th></tr>
                 </thead>
                 <tbody className="divide-y">
-                  {contasPagar.map(c => (
+                  {filteredAndSorted.map(c => (
                     <tr key={c.id} className="hover:bg-slate-50">
                       <td className="py-4 font-bold">{formatDate(c.dataVencimento)}</td>
                       <td className="py-4 font-bold text-slate-800">{suppliers.find(s=>s.id===c.fornecedorId)?.nome || 'N/A'}</td>
+                      <td className="py-4 text-xs font-bold text-slate-500 uppercase">{c.banco || '-'}</td>
                       <td className="py-4 text-slate-500">{c.descricao}</td>
                       <td className="py-4 text-right font-black text-red-600">{formatCurrency(c.valor)}</td>
                       <td className="py-4 text-center">
@@ -582,14 +678,14 @@ function PagamentosView({ suppliers, docTypes, groups, subgroups, contasPagar, a
                       </td>
                     </tr>
                   ))}
-                  {contasPagar.length === 0 && <tr><td colSpan="6" className="py-10 text-center text-slate-400 font-bold uppercase text-xs">Nenhum lançamento encontrado.</td></tr>}
+                  {filteredAndSorted.length === 0 && <tr><td colSpan="7" className="py-10 text-center text-slate-400 font-bold uppercase text-xs">Nenhum lançamento encontrado.</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
 
-        {subTab === 'fornecedores' && <SuppliersManager suppliers={suppliers} appUser={appUser} />}
+        {subTab === 'fornecedores' && <SuppliersManager suppliers={suppliers} appUser={appUser} contasPagar={contasPagar} />}
         {subTab === 'config' && <AuxiliarySettings docTypes={docTypes} groups={groups} subgroups={subgroups} appUser={appUser} />}
       </div>
 
@@ -656,10 +752,16 @@ function EntryModal({ onClose, suppliers, docTypes, groups, subgroups, appUser, 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.fornecedorId) return alert("Por favor, selecione um fornecedor usando a pesquisa.");
+    // Garante que o valor total é a soma exata das parcelas e define o status
+    const totalCalculado = (formData.parcelas || []).reduce((acc, p) => acc + (parseFloat(p.valor) || 0), 0);
+    const isTotalmentePago = (formData.parcelas || []).length > 0 && formData.parcelas.every(p => p.status === 'pago');
+
     try {
       const data = {
         ...formData,
-        valor: parseFloat(formData.valorTotal || 0),
+        valor: totalCalculado,
+        valorTotal: totalCalculado,
+        status: isTotalmentePago ? 'pago' : 'pendente',
         companyId: appUser.companyId,
         dataAtualizacao: new Date().toISOString()
       };
@@ -725,8 +827,11 @@ function EntryModal({ onClose, suppliers, docTypes, groups, subgroups, appUser, 
                     }} className="text-[10px] font-bold border rounded p-1 outline-none" />
                     <input type="number" step="0.01" value={p.valor} onChange={e => {
                       const newP = [...formData.parcelas];
-                      newP[idx].valor = parseFloat(e.target.value || 0);
-                      setFormData({...formData, parcelas: newP});
+                      const newVal = parseFloat(e.target.value || 0);
+                      newP[idx].valor = newVal;
+                      // Recalcula o total do cabeçalho ao editar uma parcela manual
+                      const novoTotalHeader = newP.reduce((acc, cur) => acc + (parseFloat(cur.valor) || 0), 0);
+                      setFormData({...formData, parcelas: newP, valorTotal: novoTotalHeader.toString()});
                     }} className="text-[10px] font-black text-red-600 border rounded p-1 outline-none text-right" />
                   </div>
                 ))}
@@ -755,10 +860,12 @@ function EntryModal({ onClose, suppliers, docTypes, groups, subgroups, appUser, 
   );
 }
 
-function SuppliersManager({ suppliers, appUser }) {
+function SuppliersManager({ suppliers, appUser, contasPagar }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [formData, setFormData] = useState({ nome: '', documento: '', email: '', telefone: '', cep: '', logradouro: '', bairro: '', cidade: '', uf: '' });
   const [editingSupplier, setEditingSupplier] = useState(null);
+  const [alertMsg, setAlertMsg] = useState('');
+  const [confirmData, setConfirmData] = useState(null);
 
   // Sincroniza o formulário ao abrir para edição ou resetar para novo
   useEffect(() => {
@@ -804,6 +911,25 @@ function SuppliersManager({ suppliers, appUser }) {
     setIsModalOpen(false);
   };
 
+  const handleDelete = (s) => {
+    // Verifica se o fornecedor está vinculado a algum lançamento em "contas_pagar"
+    const temVinculo = (contasPagar || []).some(c => c.fornecedorId === s.id);
+    
+    if (temVinculo) {
+      return setAlertMsg('Não é possível excluir este fornecedor, pois ele está vinculado a um ou mais lançamentos de documentos.');
+    }
+
+    setConfirmData({
+      message: `Excluir fornecedor "${s.nome}" permanentemente?`,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'fornecedores', s.id));
+          setConfirmData(null);
+        } catch (err) { console.error("Erro ao eliminar fornecedor:", err); }
+      }
+    });
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center border-b pb-4">
@@ -817,7 +943,7 @@ function SuppliersManager({ suppliers, appUser }) {
           <div key={s.id} className="border rounded-xl p-4 bg-slate-50 relative group hover:border-[#1e5aa0] transition-colors">
             <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
               <button onClick={(e) => { e.stopPropagation(); setEditingSupplier(s); setIsModalOpen(true); }} className="text-slate-300 hover:text-[#1e5aa0]"><Edit size={16}/></button>
-              <button onClick={(e) => { e.stopPropagation(); deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'fornecedores', s.id)); }} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
+              <button onClick={(e) => { e.stopPropagation(); handleDelete(s); }} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
             </div>
             <p className="font-black text-slate-800 uppercase text-xs mb-1">{s.nome}</p>
             <p className="text-[10px] text-slate-500 font-bold mb-3">{s.documento ? maskCPFCNPJ(s.documento) : 'Sem documento'}</p>
@@ -856,6 +982,9 @@ function SuppliersManager({ suppliers, appUser }) {
           </div>
         </div>
       )}
+
+      {alertMsg && <AlertModal message={alertMsg} onClose={() => setAlertMsg('')} />}
+      {confirmData && <ConfirmModal message={confirmData.message} onConfirm={confirmData.onConfirm} onCancel={() => setConfirmData(null)} />}
     </div>
   );
 }
@@ -1137,38 +1266,55 @@ function DashboardView({ projects, checklists, companyUsers, appUser, contasPaga
   const hours = new Date().getHours();
   const greeting = hours < 12 ? 'Bom dia' : hours < 18 ? 'Boa tarde' : 'Boa noite';
 
+  // --- NOVOS ESTADOS PARA FILTRO DE DESPESAS ---
+  const [expenseViewType, setExpenseViewType] = useState('mensal');
+  const [expenseFilterMonth, setExpenseFilterMonth] = useState(new Date().getMonth() + 1); // 1-12
+  const [expenseFilterYear, setExpenseFilterYear] = useState(new Date().getFullYear());
+
   // --- RESUMO FINANCEIRO (PAGAMENTOS) PARA OS GRÁFICOS ---
   const groupStats = useMemo(() => {
     const stats = {};
     (contasPagar || []).forEach(c => {
       const g = payGroups.find(x => x.id === c.grupoId)?.nome || 'Outros';
       const sg = paySubgroups.find(x => x.id === c.subgrupoId)?.nome || 'Sem Categoria';
-      if (!stats[g]) stats[g] = { paid: 0, pending: 0, subs: {} };
-      if (!stats[g].subs[sg]) stats[g].subs[sg] = { paid: 0, pending: 0 };
       (c.parcelas || []).forEach(p => {
+        if (!p.dataVencimento) return;
+        const [pYear, pMonth] = p.dataVencimento.split('-').map(Number);
+        
+        const matchesYear = pYear === Number(expenseFilterYear);
+        const matchesMonth = pMonth === Number(expenseFilterMonth);
+
+        const match = expenseViewType === 'mensal' ? (matchesYear && matchesMonth) : matchesYear;
+        if (!match) return;
+
+        if (!stats[g]) stats[g] = { paid: 0, pending: 0, subs: {} };
+        if (!stats[g].subs[sg]) stats[g].subs[sg] = { paid: 0, pending: 0 };
+
         const val = Number(p.valor) || 0;
         if (p.status === 'pago') { stats[g].paid += val; stats[g].subs[sg].paid += val; }
         else { stats[g].pending += val; stats[g].subs[sg].pending += val; }
       });
     });
     return stats;
-  }, [contasPagar, payGroups, paySubgroups]);
+  }, [contasPagar, payGroups, paySubgroups, expenseViewType, expenseFilterMonth, expenseFilterYear]);
 
   const bankStats = useMemo(() => {
     const stats = {};
+    const currentMonthKey = getToday().substring(0, 7);
     const faturaTypeIds = (docTypes || []).filter(t => t.isFatura).map(t => t.id);
     (contasPagar || []).forEach(c => {
       if (!faturaTypeIds.includes(c.tipoDocumentoId) || !c.banco) return;
       (c.parcelas || []).forEach(p => {
         if (!p.dataVencimento) return;
-        const monthKey = p.dataVencimento.substring(0, 7); // YYYY-MM
-        if (!stats[monthKey]) stats[monthKey] = {};
-        if (!stats[monthKey][c.banco]) stats[monthKey][c.banco] = 0;
-        stats[monthKey][c.banco] += Number(p.valor) || 0;
+        if (p.dataVencimento.substring(0, 7) !== currentMonthKey) return;
+        if (!stats[c.banco]) stats[c.banco] = 0;
+        stats[c.banco] += Number(p.valor) || 0;
       });
     });
     return stats;
   }, [contasPagar, docTypes]);
+
+  const bankTotal = useMemo(() => Object.values(bankStats).reduce((sum, v) => sum + v, 0), [bankStats]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -1293,12 +1439,44 @@ function DashboardView({ projects, checklists, companyUsers, appUser, contasPaga
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* GRÁFICO RESUMO POR GRUPO E SUBGRUPO */}
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-          <div className="border-b border-slate-100 pb-3 mb-4 flex justify-between items-center">
+          <div className="border-b border-slate-100 pb-3 mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div>
               <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Despesas por Categoria</h3>
               <p className="text-xs font-bold text-slate-400">Total Pago (Verde) vs Pendente (Vermelho)</p>
             </div>
-            <DollarSign className="text-slate-300" size={24}/>
+
+            <div className="flex items-center gap-2">
+              <select 
+                value={expenseViewType} 
+                onChange={e => setExpenseViewType(e.target.value)}
+                className="text-[10px] font-black border rounded p-1 outline-none bg-slate-50 uppercase"
+              >
+                <option value="mensal">Mensal</option>
+                <option value="anual">Anual</option>
+              </select>
+              
+              {expenseViewType === 'mensal' && (
+                <select 
+                  value={expenseFilterMonth} 
+                  onChange={e => setExpenseFilterMonth(Number(e.target.value))}
+                  className="text-[10px] font-black border rounded p-1 outline-none bg-slate-50 uppercase"
+                >
+                  {Array.from({ length: 12 }, (_, i) => (
+                    <option key={i + 1} value={i + 1}>
+                      {new Date(0, i).toLocaleString('pt-BR', { month: 'long' })}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <input 
+                type="number" 
+                value={expenseFilterYear} 
+                onChange={e => setExpenseFilterYear(Number(e.target.value))}
+                className="w-16 text-[10px] font-black border rounded p-1 outline-none bg-slate-50 text-center"
+                placeholder="Ano"
+              />
+            </div>
           </div>
           <div className="space-y-6 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
             {Object.entries(groupStats).map(([gName, data]) => {
@@ -1333,26 +1511,32 @@ function DashboardView({ projects, checklists, companyUsers, appUser, contasPaga
           <div className="border-b border-slate-100 pb-3 mb-4 flex justify-between items-center">
             <div>
               <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Faturas Mensais por Banco</h3>
-              <p className="text-xs font-bold text-slate-400">Total acumulado de cartões</p>
+              <p className="text-xs font-bold text-slate-400">Mês atual: {new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</p>
             </div>
             <Briefcase className="text-slate-300" size={24}/>
           </div>
-          <div className="space-y-6 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-            {Object.entries(bankStats).sort((a,b) => b[0].localeCompare(a[0])).map(([month, banks]) => (
-              <div key={month} className="bg-slate-50 rounded-xl p-4 border border-slate-100">
-                <h4 className="text-[10px] font-black text-[#1e5aa0] uppercase tracking-widest mb-3 flex items-center gap-2">
-                  <CalendarDays size={14}/> {new Date(month + '-02').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
-                </h4>
+          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            {Object.keys(bankStats).length > 0 ? (
+              <>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {Object.entries(banks).map(([bank, value]) => (
+                  {Object.entries(bankStats).map(([bank, value]) => (
                     <div key={bank} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
                       <p className="text-[10px] font-black text-slate-400 uppercase truncate mb-0.5">{bank}</p>
                       <p className="font-black text-slate-800">{formatCurrency(value)}</p>
                     </div>
                   ))}
                 </div>
+                <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex justify-between items-center mt-2">
+                  <span className="text-xs font-black text-blue-800 uppercase">Total das Faturas</span>
+                  <span className="text-lg font-black text-blue-900">{formatCurrency(bankTotal)}</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-10 text-slate-400">
+                <Briefcase size={40} className="opacity-20 mb-2"/>
+                <p className="text-xs font-bold uppercase">Nenhuma fatura para este mês</p>
               </div>
-            ))}
+            )}
           </div>
         </div>
       </div>
@@ -2031,7 +2215,7 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
 
   const prevMonth = () => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 1));
   const nextMonth = () => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1));
-  const monthsToRender = [baseDate, new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1)];
+  const monthsToRender = [baseDate];
 
   const handlePay = async (e) => {
     e.preventDefault();
@@ -2057,15 +2241,21 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
     const date = form.date.value;
     const formaPagamento = form.formaPagamento.value;
 
-    const novas = payAPData.doc.parcelas.map((x, i) => i === payAPData.index ? {...x, status: 'pago', dataPagamento: date, formaPagamento} : x);
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', payAPData.docId), { parcelas: novas });
+    const novas = payAPData.doc.parcelas.map((x, i) => 
+      i === payAPData.index ? {...x, status: 'pago', dataPagamento: date, formaPagamento} : x
+    );
+    const todosPagos = novas.every(p => p.status === 'pago');
+    
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', payAPData.docId), { parcelas: novas, status: todosPagos ? 'pago' : 'pendente' });
     setPayAPData(null);
     setDayModalItems(null);
   };
 
   const handleUndoAP = async (item) => {
-    const novas = item.doc.parcelas.map((x, i) => i === item.index ? {...x, status: 'pendente', dataPagamento: null, formaPagamento: null} : x);
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId), { parcelas: novas });
+    const novas = item.doc.parcelas.map((x, i) => 
+      i === item.index ? {...x, status: 'pendente', dataPagamento: null, formaPagamento: null} : x
+    );
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId), { parcelas: novas, status: 'pendente' });
     setDayModalItems(null);
   };
 
@@ -2075,13 +2265,25 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
     const date = form.date.value;
     const formaPagamento = form.formaPagamento.value;
 
+    // Agrupa atualizações por documento para evitar estados inconsistentes
+    const docsToUpdate = {};
+
     // Paga todas as parcelas que compõem essa fatura agrupada
     for (const item of payBillData.items) {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId);
-      const docSnap = (contasPagar || []).find(d => d.id === item.docId);
-      if (docSnap) {
-        const novas = docSnap.parcelas.map((x, i) => i === item.index ? {...x, status: 'pago', dataPagamento: date, formaPagamento} : x);
-        await updateDoc(docRef, { parcelas: novas });
+      const currentDoc = docsToUpdate[item.docId] || (contasPagar || []).find(d => d.id === item.docId);
+      if (currentDoc) {
+        const novas = currentDoc.parcelas.map((x, i) => 
+          i === item.index ? {...x, status: 'pago', dataPagamento: date, formaPagamento} : x
+        );
+        docsToUpdate[item.docId] = { ...currentDoc, parcelas: novas };
+      }
+    }
+
+    for (const docId in docsToUpdate) {
+      const docData = docsToUpdate[docId];
+      const todosPagos = docData.parcelas.every(p => p.status === 'pago');
+      if (docData) {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', docId), { parcelas: docData.parcelas, status: todosPagos ? 'pago' : 'pendente' });
       }
     }
     setPayBillData(null);
@@ -2090,13 +2292,24 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
 
   const handleUndoBill = async (bill) => {
     // Reverte o status de todas as parcelas que compõem essa fatura agrupada
+    const docsToUpdate = {};
+
     for (const item of bill.items) {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', item.docId);
-      const docSnap = (contasPagar || []).find(d => d.id === item.docId);
-      if (docSnap) {
-        const novas = docSnap.parcelas.map((x, i) => i === item.index ? { ...x, status: 'pendente', dataPagamento: null, formaPagamento: null } : x);
-        await updateDoc(docRef, { parcelas: novas });
+      const currentDoc = docsToUpdate[item.docId] || (contasPagar || []).find(d => d.id === item.docId);
+      if (currentDoc) {
+        const novas = currentDoc.parcelas.map((x, i) => 
+          i === item.index ? { ...x, status: 'pendente', dataPagamento: null, formaPagamento: null } : x
+        );
+        docsToUpdate[item.docId] = { ...currentDoc, parcelas: novas };
       }
+    }
+
+    for (const docId in docsToUpdate) {
+      const docData = docsToUpdate[docId];
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'contas_pagar', docId), { 
+        parcelas: docData.parcelas, 
+        status: 'pendente' 
+      });
     }
     setPayBillData(null);
     setDayModalItems(null);
@@ -2114,7 +2327,7 @@ function RecebimentosView({ projects, contasPagar, docTypes, suppliers, canEdit,
       </div>
       
       <div className="flex-1 min-h-0 pb-2">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch h-full">
+        <div className="grid grid-cols-1 gap-4 items-stretch h-full">
           {monthsToRender.map((monthDate) => (
             <CompactCalendar 
               key={monthDate.toISOString()} 
@@ -2328,6 +2541,7 @@ function CompactCalendar({ currentDate, projects, contasPagar, suppliers, docTyp
   const apThisMonth = {}; // Contas a Pagar individuais
   const creditCardBills = {}; // Agrupador de faturas por dia
   let monthTotalPaid = 0, monthTotalPending = 0;
+  let monthTotalPaidAP = 0, monthTotalPendingAP = 0;
   
   projects.forEach(project => {
     (project.parcelas || []).forEach((parc, index) => {
@@ -2350,18 +2564,21 @@ function CompactCalendar({ currentDate, projects, contasPagar, suppliers, docTyp
       const [pYear, pMonth, pDay] = parc.dataVencimento.split('-');
       if (parseInt(pYear) === year && parseInt(pMonth) - 1 === month) {
         const dayNum = parseInt(pDay);
+        const valor = Number(parc.valor) || 0;
         
         if (type?.isFatura && docPay.banco) {
           const displayKey = `${type.nome} - ${docPay.banco}`;
           if (!creditCardBills[dayNum]) creditCardBills[dayNum] = {};
           if (!creditCardBills[dayNum][displayKey]) creditCardBills[dayNum][displayKey] = { total: 0, items: [], isPaid: true };
           
-          creditCardBills[dayNum][displayKey].total += Number(parc.valor);
+          creditCardBills[dayNum][displayKey].total += valor;
           creditCardBills[dayNum][displayKey].items.push({ ...parc, docId: docPay.id, index });
           if (parc.status !== 'pago') creditCardBills[dayNum][displayKey].isPaid = false;
+          if (parc.status === 'pago') monthTotalPaidAP += valor; else monthTotalPendingAP += valor;
         } else {
           if (!apThisMonth[dayNum]) apThisMonth[dayNum] = [];
           apThisMonth[dayNum].push({ ...parc, docId: docPay.id, index, doc: docPay });
+          if (parc.status === 'pago') monthTotalPaidAP += valor; else monthTotalPendingAP += valor;
         }
       }
     });
@@ -2381,8 +2598,8 @@ function CompactCalendar({ currentDate, projects, contasPagar, suppliers, docTyp
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-md border border-slate-200 flex flex-col h-full overflow-hidden">
-      <div className="bg-[#5a82b5] text-white p-1.5 sm:p-2 text-center font-bold uppercase text-xs sm:text-sm tracking-widest shrink-0">{currentDate.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</div>
+    <div className="bg-white rounded-2xl shadow-xl border border-slate-200 flex flex-col h-full overflow-hidden">
+      <div className="bg-slate-900 text-white p-4 text-center font-black uppercase text-sm tracking-[0.2em] shrink-0">{currentDate.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</div>
       <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 shrink-0">{weekDays.map((d, i) => <div key={i} className="text-center py-1 sm:py-1.5 text-[9px] sm:text-[10px] font-bold text-slate-500 border-r border-slate-200 last:border-r-0 uppercase">{d}</div>)}</div>
       <div className="grid grid-cols-7 auto-rows-fr bg-white flex-1 min-h-0">
         {days.map((day, idx) => {
@@ -2393,15 +2610,25 @@ function CompactCalendar({ currentDate, projects, contasPagar, suppliers, docTyp
           if (meta.hasItems && meta.allPaid) bgClass = "bg-[#d4edd9]"; else if (meta.hasItems && !meta.allPaid) bgClass = "bg-[#fff3cd]";
           
           return (
-            <div key={day} className={`border-r border-b border-slate-200 p-1 sm:p-1.5 flex flex-col justify-between overflow-hidden ${bgClass} ${meta.hasItems ? 'cursor-pointer hover:brightness-95 transition-all' : ''}`} onClick={() => meta.hasItems && onOpenDayDetails(meta)}>
-              <div className="flex justify-between items-start mb-0.5 shrink-0">
+            <div key={day} className={`border-r border-b border-slate-100 p-2 flex flex-col justify-between overflow-hidden min-h-[80px] sm:min-h-[100px] ${bgClass} ${meta.hasItems ? 'cursor-pointer hover:bg-slate-50 transition-all' : ''}`} onClick={() => meta.hasItems && onOpenDayDetails(meta)}>
+              <div className="flex justify-between items-start mb-1 shrink-0">
                 <span className="font-bold text-[10px] sm:text-xs text-slate-800 leading-none">{day}</span>
                 {meta.hasItems && <div className={`w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors ${meta.allPaid ? 'bg-[#73c87f] border-[#73c87f]' : 'bg-white border-[#73c87f]'}`}>{meta.allPaid && <Check size={10} className="text-white font-bold" />}</div>}
               </div>
-              <div className="flex-1 flex flex-col justify-end overflow-hidden min-h-0">
+              <div className="flex-1 flex flex-col justify-start overflow-hidden min-h-0 space-y-1">
                 <div className="flex flex-col gap-px overflow-hidden">
-                  {meta.receipts.slice(0, 1).map((inst, i) => <div key={`r-${i}`} className={`text-[8px] sm:text-[9px] truncate font-semibold leading-tight ${inst.paga ? 'text-green-800 opacity-60 line-through' : 'text-slate-700'}`}>💰 {inst.p.clientName.split(' ')[0]}</div>)}
-                  {meta.apIndividual.slice(0, 1).map((inst, i) => <div key={`a-${i}`} className={`text-[8px] sm:text-[9px] truncate font-semibold leading-tight ${inst.status === 'pago' ? 'text-red-800 opacity-60 line-through' : 'text-slate-700'}`}>💸 {suppliers.find(s=>s.id===inst.doc.fornecedorId)?.nome.split(' ')[0] || 'Despesa'}</div>)}
+                  {meta.receipts.slice(0, 2).map((inst, i) => (
+                    <div key={`r-${i}`} className={`text-[8px] sm:text-[9px] truncate font-bold leading-tight flex justify-between ${inst.paga ? 'text-emerald-700/50 line-through' : 'text-emerald-700'}`}>
+                      <span>In: {inst.p.clientName.split(' ')[0]}</span>
+                      <span className="hidden sm:inline">{formatCurrency(inst.valor)}</span>
+                    </div>
+                  ))}
+                  {meta.apIndividual.slice(0, 2).map((inst, i) => (
+                    <div key={`a-${i}`} className={`text-[8px] sm:text-[9px] truncate font-bold leading-tight flex justify-between ${inst.status === 'pago' ? 'text-red-700/50 line-through' : 'text-red-700'}`}>
+                      <span>Out: {suppliers.find(s=>s.id===inst.doc.fornecedorId)?.nome.split(' ')[0] || 'Desp.'}</span>
+                      <span className="hidden sm:inline">{formatCurrency(inst.valor)}</span>
+                    </div>
+                  ))}
                 </div>
                 
                 {/* Consolidado de Faturas */}
@@ -2410,14 +2637,23 @@ function CompactCalendar({ currentDate, projects, contasPagar, suppliers, docTyp
                     <div key={`b-${i}`} className={`text-[7px] font-black px-1 rounded truncate flex-1 min-w-[30px] ${bill.isPaid ? 'bg-emerald-600 text-white' : 'bg-blue-600 text-white'}`}>💳 {bill.key.split(' - ')[1]}</div>
                   ))}
                 </div>
+
+                {/* Indicador de mais itens */}
+                {(meta.receipts.length + meta.apIndividual.length > 4) && (
+                  <div className="text-[7px] font-black text-slate-400 uppercase text-right">
+                    + {meta.receipts.length + meta.apIndividual.length - 4} lançamentos
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
       </div>
-      <div className="bg-slate-50 border-t border-slate-200 p-2 sm:p-2.5 grid grid-cols-2 gap-2 shrink-0">
+      <div className="bg-slate-50 border-t border-slate-200 p-2 sm:p-2.5 grid grid-cols-4 gap-2 shrink-0">
         <div className="flex flex-col"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex items-center gap-1 truncate"><Check size={10} className="text-green-600 shrink-0" /> Recebidos</span><span className="text-green-700 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPaid)}>{formatCurrency(monthTotalPaid)}</span></div>
-        <div className="flex flex-col text-right border-l border-slate-200 pl-2"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex justify-end items-center gap-1 truncate">A Receber <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block shrink-0"></span></span><span className="text-amber-600 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPending)}>{formatCurrency(monthTotalPending)}</span></div>
+        <div className="flex flex-col border-l border-slate-200 pl-2"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex items-center gap-1 truncate">A Receber <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block shrink-0"></span></span><span className="text-amber-600 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPending)}>{formatCurrency(monthTotalPending)}</span></div>
+        <div className="flex flex-col border-l border-slate-200 pl-2"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex items-center gap-1 truncate"><Check size={10} className="text-red-600 shrink-0" /> Pagos</span><span className="text-red-700 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPaidAP)}>{formatCurrency(monthTotalPaidAP)}</span></div>
+        <div className="flex flex-col border-l border-slate-200 pl-2"><span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex items-center gap-1 truncate">A Pagar <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block shrink-0"></span></span><span className="text-red-600 font-black text-xs sm:text-sm truncate" title={formatCurrency(monthTotalPendingAP)}>{formatCurrency(monthTotalPendingAP)}</span></div>
       </div>
     </div>
   );

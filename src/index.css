@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* === App Background Container === */
+.app-container {
+  position: relative;
+  z-index: 1;
+}

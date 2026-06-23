@@ -1,0 +1,598 @@
+/* =====================================================
+   App Background + Liquid Theme
+   Minimal frosted interface tuned for laptop readability.
+   ===================================================== */
+
+.app-bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--app-background, #f1f5f9);
+  background-size: var(--app-bg-size, cover);
+  background-position: var(--app-bg-position, center);
+  background-attachment: var(--app-bg-attachment, fixed);
+  transition: background 0.45s ease;
+}
+
+.app-bg-layer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--app-bg-overlay, transparent);
+  pointer-events: none;
+  transition: background 0.45s ease;
+}
+
+.theme-classic {
+  --app-bg-overlay: rgba(241, 245, 249, 0.92);
+}
+
+/* =====================================================
+   Liquid Tokens
+   ===================================================== */
+
+.theme-liquid {
+  color-scheme: dark;
+  --app-bg-overlay:
+    linear-gradient(135deg, rgba(2, 6, 23, 0.82), rgba(15, 23, 42, 0.7)),
+    radial-gradient(circle at 12% 10%, rgba(14, 165, 233, 0.2), transparent 32%),
+    radial-gradient(circle at 86% 18%, rgba(20, 184, 166, 0.14), transparent 34%);
+
+  --liquid-surface-1: rgba(15, 23, 42, 0.88);
+  --liquid-surface-2: rgba(30, 41, 59, 0.82);
+  --liquid-surface-3: rgba(51, 65, 85, 0.72);
+  --liquid-surface-hover: rgba(51, 65, 85, 0.86);
+  --liquid-surface-strong: rgba(8, 13, 24, 0.94);
+  --liquid-input: rgba(8, 13, 24, 0.9);
+
+  --liquid-border: rgba(226, 232, 240, 0.16);
+  --liquid-border-strong: rgba(226, 232, 240, 0.26);
+  --liquid-focus: rgba(125, 211, 252, 0.32);
+
+  --liquid-text: #f8fafc;
+  --liquid-text-2: #e2e8f0;
+  --liquid-text-3: #cbd5e1;
+  --liquid-text-muted: #a8b3c2;
+
+  --liquid-accent: #7dd3fc;
+  --liquid-accent-strong: #38bdf8;
+  --liquid-success: #bbf7d0;
+  --liquid-danger: #fecaca;
+  --liquid-warning: #fef3c7;
+  --liquid-indigo: #ddd6fe;
+
+  --liquid-radius-sm: 10px;
+  --liquid-radius: 14px;
+  --liquid-radius-lg: 18px;
+  --liquid-shadow: 0 18px 46px rgba(2, 6, 23, 0.36);
+  --liquid-shadow-sm: 0 8px 22px rgba(2, 6, 23, 0.22);
+
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, Segoe UI, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+.liquid-shell {
+  background: #020617;
+}
+
+.theme-liquid *,
+.theme-liquid *::before,
+.theme-liquid *::after {
+  letter-spacing: 0 !important;
+}
+
+/* =====================================================
+   Core Surfaces
+   ===================================================== */
+
+.liquid-glass,
+.liquid-card,
+.liquid-table,
+.liquid-tabs,
+.theme-liquid .bg-white {
+  background: var(--liquid-surface-1) !important;
+  border: 1px solid var(--liquid-border) !important;
+  color: var(--liquid-text) !important;
+  box-shadow: var(--liquid-shadow-sm);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.liquid-glass-shine,
+.liquid-glass-strong {
+  background: var(--liquid-surface-strong) !important;
+  border: 1px solid var(--liquid-border-strong) !important;
+  color: var(--liquid-text) !important;
+  box-shadow: var(--liquid-shadow);
+  backdrop-filter: blur(22px) saturate(145%);
+  -webkit-backdrop-filter: blur(22px) saturate(145%);
+}
+
+.liquid-glass-shine::before {
+  display: none;
+}
+
+.liquid-glass:hover,
+.liquid-card:hover {
+  background: var(--liquid-surface-hover) !important;
+  border-color: var(--liquid-border-strong) !important;
+  box-shadow: var(--liquid-shadow-sm);
+  transform: none;
+}
+
+.liquid-content {
+  background: transparent !important;
+}
+
+/* =====================================================
+   Navigation
+   ===================================================== */
+
+.liquid-sidebar {
+  background: rgba(2, 6, 23, 0.92) !important;
+  border-right: 1px solid var(--liquid-border) !important;
+  box-shadow: 10px 0 34px rgba(2, 6, 23, 0.22);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+}
+
+.liquid-sidebar .sidebar-header {
+  border-color: var(--liquid-border) !important;
+}
+
+.liquid-sidebar .sidebar-user-area {
+  background: rgba(15, 23, 42, 0.72) !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.08);
+}
+
+.liquid-sidebar-item {
+  color: var(--liquid-text-3) !important;
+  border: 1px solid transparent;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.liquid-sidebar-item:hover {
+  background: rgba(226, 232, 240, 0.08) !important;
+  color: var(--liquid-text) !important;
+}
+
+.liquid-sidebar-item.active {
+  background: rgba(14, 165, 233, 0.16) !important;
+  color: #e0f2fe !important;
+  border-color: rgba(125, 211, 252, 0.2);
+  box-shadow: none;
+}
+
+.liquid-mobile-header {
+  background: rgba(2, 6, 23, 0.92) !important;
+  border-bottom: 1px solid var(--liquid-border) !important;
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* =====================================================
+   Text + Semantic Color Overrides
+   ===================================================== */
+
+.theme-liquid .text-slate-900,
+.theme-liquid .text-slate-800,
+.theme-liquid .text-slate-700 {
+  color: var(--liquid-text) !important;
+}
+
+.theme-liquid .text-slate-600 {
+  color: var(--liquid-text-2) !important;
+}
+
+.theme-liquid .text-slate-500,
+.theme-liquid .text-slate-400,
+.theme-liquid .text-slate-300 {
+  color: var(--liquid-text-muted) !important;
+}
+
+.theme-liquid .text-white {
+  color: var(--liquid-text) !important;
+}
+
+.theme-liquid .text-blue-300,
+.theme-liquid .text-blue-400,
+.theme-liquid .text-blue-500,
+.theme-liquid .text-blue-600,
+.theme-liquid .text-blue-700,
+.theme-liquid .text-green-600,
+.theme-liquid .text-green-700,
+.theme-liquid .text-\[\#1e5aa0\],
+.theme-liquid .text-\[\#5a82b5\] {
+  color: var(--liquid-accent) !important;
+}
+
+.theme-liquid .text-emerald-500,
+.theme-liquid .text-emerald-600,
+.theme-liquid .text-emerald-700 {
+  color: var(--liquid-success) !important;
+}
+
+.theme-liquid .text-red-400,
+.theme-liquid .text-red-500,
+.theme-liquid .text-red-600,
+.theme-liquid .text-red-700 {
+  color: var(--liquid-danger) !important;
+}
+
+.theme-liquid .text-amber-400,
+.theme-liquid .text-amber-500,
+.theme-liquid .text-amber-600,
+.theme-liquid .text-amber-700,
+.theme-liquid .text-amber-800 {
+  color: var(--liquid-warning) !important;
+}
+
+.theme-liquid .text-indigo-600,
+.theme-liquid .text-indigo-700 {
+  color: var(--liquid-indigo) !important;
+}
+
+.theme-liquid .line-through {
+  opacity: 0.78;
+}
+
+/* =====================================================
+   Background + Border Overrides
+   ===================================================== */
+
+.theme-liquid .bg-slate-50,
+.theme-liquid .bg-slate-100,
+.theme-liquid .bg-slate-200,
+.theme-liquid .bg-slate-800\/40 {
+  background-color: var(--liquid-surface-2) !important;
+}
+
+.theme-liquid .bg-blue-50,
+.theme-liquid .bg-blue-100 {
+  background-color: rgba(14, 165, 233, 0.15) !important;
+}
+
+.theme-liquid .bg-emerald-50,
+.theme-liquid .bg-emerald-100 {
+  background-color: rgba(16, 185, 129, 0.15) !important;
+}
+
+.theme-liquid .bg-red-50,
+.theme-liquid .bg-red-100 {
+  background-color: rgba(248, 113, 113, 0.15) !important;
+}
+
+.theme-liquid .bg-amber-50,
+.theme-liquid .bg-amber-100 {
+  background-color: rgba(251, 191, 36, 0.15) !important;
+}
+
+.theme-liquid .bg-indigo-50,
+.theme-liquid .bg-indigo-100 {
+  background-color: rgba(129, 140, 248, 0.15) !important;
+}
+
+.theme-liquid .hover\:bg-slate-50:hover,
+.theme-liquid .hover\:bg-slate-100:hover,
+.theme-liquid .hover\:bg-slate-200:hover,
+.theme-liquid tr.hover\:bg-slate-50:hover {
+  background-color: var(--liquid-surface-hover) !important;
+}
+
+.theme-liquid .border,
+.theme-liquid .border-t,
+.theme-liquid .border-b,
+.theme-liquid .border-l,
+.theme-liquid .border-r,
+.theme-liquid .border-slate-100,
+.theme-liquid .border-slate-200,
+.theme-liquid .border-slate-300,
+.theme-liquid .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--liquid-border) !important;
+}
+
+.theme-liquid .border-blue-100,
+.theme-liquid .border-blue-200 {
+  border-color: rgba(125, 211, 252, 0.28) !important;
+}
+
+.theme-liquid .border-emerald-100,
+.theme-liquid .border-emerald-200 {
+  border-color: rgba(110, 231, 183, 0.28) !important;
+}
+
+.theme-liquid .border-red-100,
+.theme-liquid .border-red-200 {
+  border-color: rgba(252, 165, 165, 0.28) !important;
+}
+
+.theme-liquid .border-amber-100,
+.theme-liquid .border-amber-200,
+.theme-liquid .border-amber-400 {
+  border-color: rgba(252, 211, 77, 0.3) !important;
+}
+
+/* =====================================================
+   Inputs, Buttons, Tabs, Tables
+   ===================================================== */
+
+.liquid-input,
+.theme-liquid input,
+.theme-liquid textarea,
+.theme-liquid select {
+  background: var(--liquid-input) !important;
+  border: 1px solid var(--liquid-border) !important;
+  color: var(--liquid-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.theme-liquid input::placeholder,
+.theme-liquid textarea::placeholder,
+.liquid-input::placeholder {
+  color: var(--liquid-text-muted) !important;
+}
+
+.theme-liquid input:focus,
+.theme-liquid textarea:focus,
+.theme-liquid select:focus,
+.liquid-input:focus {
+  border-color: rgba(125, 211, 252, 0.58) !important;
+  box-shadow: 0 0 0 3px var(--liquid-focus);
+  outline: none !important;
+}
+
+.theme-liquid select option {
+  background: #0f172a;
+  color: var(--liquid-text);
+}
+
+.liquid-btn-primary,
+.theme-liquid .bg-\[\#1e5aa0\],
+.theme-liquid .bg-blue-500\/20 {
+  background: rgba(14, 165, 233, 0.88) !important;
+  border: 1px solid rgba(125, 211, 252, 0.28) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 8px 20px rgba(14, 165, 233, 0.18);
+}
+
+.liquid-btn-primary:hover,
+.theme-liquid .hover\:bg-\[\#154278\]:hover,
+.theme-liquid .hover\:bg-blue-500\/30:hover {
+  background: rgba(2, 132, 199, 0.94) !important;
+  color: #f8fafc !important;
+}
+
+.liquid-tabs {
+  padding: 6px;
+}
+
+.liquid-tab {
+  color: var(--liquid-text-muted) !important;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.liquid-tab:hover {
+  background: rgba(226, 232, 240, 0.08) !important;
+  color: var(--liquid-text) !important;
+}
+
+.liquid-tab.active {
+  background: rgba(14, 165, 233, 0.16) !important;
+  color: #e0f2fe !important;
+  box-shadow: none;
+}
+
+.liquid-table thead,
+.theme-liquid thead {
+  background: rgba(15, 23, 42, 0.92) !important;
+}
+
+.liquid-table thead th,
+.theme-liquid th {
+  color: var(--liquid-text-2) !important;
+  border-color: var(--liquid-border) !important;
+}
+
+.liquid-table tbody td,
+.theme-liquid td {
+  color: var(--liquid-text-3) !important;
+  border-color: var(--liquid-border) !important;
+}
+
+.theme-liquid tbody tr:hover {
+  background: rgba(51, 65, 85, 0.46) !important;
+}
+
+/* =====================================================
+   Modals + Settings
+   ===================================================== */
+
+.liquid-modal-backdrop {
+  background: rgba(2, 6, 23, 0.72) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.liquid-modal {
+  background: rgba(8, 13, 24, 0.96) !important;
+  border: 1px solid var(--liquid-border-strong) !important;
+  color: var(--liquid-text) !important;
+  box-shadow: var(--liquid-shadow);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+}
+
+.liquid-modal-header {
+  background: rgba(15, 23, 42, 0.9) !important;
+  border-bottom: 1px solid var(--liquid-border) !important;
+}
+
+/* =====================================================
+   Badges + Status
+   ===================================================== */
+
+.liquid-badge,
+.theme-liquid .bg-slate-100.text-slate-600 {
+  background: rgba(226, 232, 240, 0.08) !important;
+  color: var(--liquid-text-2) !important;
+  border: 1px solid var(--liquid-border) !important;
+}
+
+.liquid-badge-success {
+  background: rgba(16, 185, 129, 0.16) !important;
+  color: var(--liquid-success) !important;
+  border: 1px solid rgba(110, 231, 183, 0.28) !important;
+}
+
+.liquid-badge-danger {
+  background: rgba(248, 113, 113, 0.16) !important;
+  color: var(--liquid-danger) !important;
+  border: 1px solid rgba(252, 165, 165, 0.28) !important;
+}
+
+.liquid-badge-warning {
+  background: rgba(251, 191, 36, 0.16) !important;
+  color: var(--liquid-warning) !important;
+  border: 1px solid rgba(252, 211, 77, 0.28) !important;
+}
+
+.liquid-stat-blue,
+.liquid-stat-emerald,
+.liquid-stat-amber,
+.liquid-stat-indigo,
+.liquid-hero {
+  background: var(--liquid-surface-1) !important;
+  border: 1px solid var(--liquid-border) !important;
+  box-shadow: var(--liquid-shadow-sm);
+}
+
+.liquid-hero::before {
+  display: none;
+}
+
+/* =====================================================
+   Finance Calendar
+   ===================================================== */
+
+.liquid-calendar {
+  background: var(--liquid-surface-1) !important;
+  border: 1px solid var(--liquid-border) !important;
+  border-radius: var(--liquid-radius-lg);
+  box-shadow: var(--liquid-shadow);
+  color: var(--liquid-text) !important;
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+.liquid-calendar-header {
+  background: rgba(8, 13, 24, 0.88) !important;
+  border-bottom: 1px solid var(--liquid-border) !important;
+  color: var(--liquid-text) !important;
+  text-shadow: none;
+}
+
+.liquid-calendar-weekdays {
+  background: rgba(15, 23, 42, 0.66) !important;
+  border-bottom: 1px solid var(--liquid-border) !important;
+  gap: 6px;
+  padding: 6px;
+}
+
+.liquid-calendar-weekdays > div {
+  background: rgba(226, 232, 240, 0.07);
+  border: 0 !important;
+  border-radius: 999px;
+  color: var(--liquid-text-3) !important;
+}
+
+.liquid-calendar-grid {
+  background: rgba(2, 6, 23, 0.16) !important;
+  gap: 6px;
+  padding: 6px;
+}
+
+.liquid-calendar-empty,
+.liquid-calendar-day {
+  border-radius: var(--liquid-radius);
+  min-width: 0;
+}
+
+.liquid-calendar-empty {
+  background: rgba(15, 23, 42, 0.42);
+  border: 1px solid rgba(226, 232, 240, 0.06);
+}
+
+.liquid-calendar-day {
+  background: rgba(30, 41, 59, 0.72) !important;
+  border: 1px solid rgba(226, 232, 240, 0.13) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.liquid-calendar-day:hover {
+  background: rgba(51, 65, 85, 0.84) !important;
+  border-color: rgba(125, 211, 252, 0.3) !important;
+  transform: none;
+}
+
+.liquid-calendar-day-paid {
+  background: rgba(6, 78, 59, 0.64) !important;
+  border-color: rgba(110, 231, 183, 0.32) !important;
+}
+
+.liquid-calendar-day-pending {
+  background: rgba(120, 53, 15, 0.58) !important;
+  border-color: rgba(252, 211, 77, 0.32) !important;
+}
+
+.theme-liquid .liquid-calendar-day .text-slate-800 {
+  color: var(--liquid-text) !important;
+}
+
+.theme-liquid .liquid-calendar-day .text-emerald-700,
+.theme-liquid .liquid-calendar-day .text-emerald-700\/50 {
+  color: var(--liquid-success) !important;
+  opacity: 1;
+}
+
+.theme-liquid .liquid-calendar-day .text-red-700,
+.theme-liquid .liquid-calendar-day .text-red-700\/50 {
+  color: var(--liquid-danger) !important;
+  opacity: 1;
+}
+
+.theme-liquid .liquid-calendar > div:last-child {
+  background: rgba(8, 13, 24, 0.82) !important;
+  border-top: 1px solid var(--liquid-border) !important;
+}
+
+/* =====================================================
+   Scrollbar + Motion
+   ===================================================== */
+
+.theme-liquid ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.theme-liquid ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.theme-liquid ::-webkit-scrollbar-thumb {
+  background: rgba(226, 232, 240, 0.18);
+  border-radius: 999px;
+}
+
+.theme-liquid ::-webkit-scrollbar-thumb:hover {
+  background: rgba(226, 232, 240, 0.28);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-liquid *,
+  .theme-liquid *::before,
+  .theme-liquid *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -2511,7 +2511,7 @@ function DayItemRow({ title, subtitle, value, isPaid, paidInfo, colorClass, valu
   );
 }
 
-function BaixaFormContent({ label, value, color, options }) {
+function BaixaFormContent({ label, value, color, options, nameSuffix }) {
   const btnColor = color === 'emerald' ? 'bg-emerald-600' : color === 'red' ? 'bg-red-600' : 'bg-blue-600';
   const focusRing = color === 'emerald' ? 'focus:ring-emerald-500' : color === 'red' ? 'focus:ring-red-500' : 'focus:ring-blue-500';
 
@@ -2520,7 +2520,7 @@ function BaixaFormContent({ label, value, color, options }) {
       <div><p className="text-xs text-slate-500 uppercase font-bold">Valor Total</p><p className={`font-black text-2xl ${color === 'emerald' ? 'text-emerald-600' : color === 'red' ? 'text-red-600' : 'text-blue-600'}`}>{formatCurrency(value)}</p></div>
       <div>
         <label className="text-xs text-slate-500 uppercase font-bold mb-1 block">{label} *</label>
-        <select name="formaPagamento" required className={`w-full border p-2.5 rounded-lg outline-none ${focusRing} font-medium text-sm bg-white text-slate-800`}>
+        <select name={`forma${nameSuffix || 'Pagamento'}`} required className={`w-full border p-2.5 rounded-lg outline-none ${focusRing} font-medium text-sm bg-white text-slate-800`}>
           <option value="">Selecione...</option>
           {options.map(o => <option key={o} value={o}>{o}</option>)}
         </select>

@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import ThemeSettingsModal from './ThemeSettingsModal.jsx';
 import { useTheme } from './ThemeContext.jsx';
-import FinancialHub from './financial/FinancialHub.jsx';
+const FinancialHub = React.lazy(() => import('./financial/FinancialHub.jsx'));
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
 const firebaseConfig = {
@@ -458,7 +458,7 @@ const allowedProjects = useMemo(() => {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} db={db} /> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <React.Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 font-bold">Carregando Financeiro...</div>}><FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} db={db} /></React.Suspense> : <NoAccess />;
       case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;

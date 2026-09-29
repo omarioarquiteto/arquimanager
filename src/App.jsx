@@ -166,18 +166,39 @@ export default function App() {
     }
   });
   const [loadingAuth, setLoadingAuth] = useState(true);
+  const [authError, setAuthError] = useState('');
 
   useEffect(() => {
+    let active = true;
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (!active) return;
+      setFirebaseUser(user);
+    });
+
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
-        else await signInAnonymously(auth);
-      } catch (error) { console.error("Erro Auth:", error); }
+        setAuthError('');
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Erro Auth:", error);
+        if (active) {
+          const code = error?.code || 'auth/unknown';
+          setAuthError(code);
+        }
+      } finally {
+        if (active) setLoadingAuth(false);
+      }
     };
-    initAuth();
 
-    const unsub = onAuthStateChanged(auth, (user) => { setFirebaseUser(user); setLoadingAuth(false); });
-    return () => unsub();
+    initAuth();
+    return () => {
+      active = false;
+      unsub();
+    };
   }, []);
 
 // Lógica de Login: Atualiza estado e guarda na memória do navegador
@@ -193,13 +214,13 @@ export default function App() {
   };
 
   if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">Conectando ao ArquiManager...</div>;
-  if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} onUnlock={handleLoginSuccess} />;
+  if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} authError={authError} onUnlock={handleLoginSuccess} />;
 
   return <MainLayout firebaseUser={firebaseUser} appUser={appUser} onLogout={handleLogout} />;
 }
 
 // --- TELA DE LOGIN E CADASTRO DA EMPRESA ---
-function LoginScreen({ firebaseUser, onUnlock }) {
+function LoginScreen({ firebaseUser, authError, onUnlock }) {
   const [view, setView] = useState('login');
   const [error, setError] = useState('');
   
@@ -261,6 +282,15 @@ function LoginScreen({ firebaseUser, onUnlock }) {
           <p className="text-slate-500 text-sm text-center font-medium">Gestão Inteligente para Escritórios</p>
         </div>
 
+        {authError && (
+          <div className="bg-amber-50 text-amber-800 p-3 rounded-lg text-xs mb-4 font-medium border border-amber-200">
+            <div className="font-black uppercase flex items-center gap-2"><AlertCircle size={16}/> Falha na conexão com o Firebase</div>
+            <p className="mt-1 break-words">
+              Código: <strong>{authError}</strong>. Verifique se <strong>arksuper.netlify.app</strong> está em
+              <strong> Authentication → Settings → Authorized domains</strong> e se o provedor <strong>Anonymous</strong> está habilitado.
+            </p>
+          </div>
+        )}
         {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 font-medium border border-red-100 flex items-center"><AlertCircle size={16} className="mr-2 shrink-0"/> {error}</div>}
 
         {view === 'login' ? (

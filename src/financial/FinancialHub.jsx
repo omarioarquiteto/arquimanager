@@ -13,7 +13,7 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnections from './PluggyConnections.jsx';
-import { pluggyTransactionToFinancial } from './pluggyAdapter.js';
+import { isPluggyCardBillPayment, isPluggyTransfer, pluggyTransactionToFinancial } from './pluggyAdapter.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -977,9 +977,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Não foi possível sincronizar o banco.');
 
+      // 1) Atualiza/insere as contas bancárias vindas do Pluggy.
       const accountBatch = writeBatch(db);
-      const pendingTransactions = [];
-
       (data.bankAccounts || []).forEach(account => {
         const financialId = `${companyId}_pluggy_account_${account.id}`;
         accountBatch.set(docPath(db, 'financial_accounts', financialId), {
@@ -998,16 +997,39 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           updatedAt: serverTimestamp(),
         }, { merge: true });
       });
+      await accountBatch.commit();
 
-      const existingExternalIds = new Set(
-        transactions.map(existingTx => existingTx.externalId).filter(Boolean)
+      // 2) Descobre novas movimentações e também permite reprocessar
+      // lançamentos Pluggy antigos que ainda estavam sem identificação.
+      const existingByExternalId = new Map(
+        transactions
+          .filter(tx => tx.companyId === companyId && tx.externalId)
+          .map(tx => [tx.externalId, tx])
       );
+      const importedItems = [];
+      const newTransactionsBatch = writeBatch(db);
+      let newImported = 0;
+      let alreadyPresent = 0;
 
       (data.transactions || []).forEach(rawTransaction => {
-        const externalId = `pluggy:${rawTransaction.id}`;
-        if (!rawTransaction?.id || existingExternalIds.has(externalId)) return;
+        if (!rawTransaction?.id) return;
 
+        const externalId = `pluggy:${rawTransaction.id}`;
+        const existing = existingByExternalId.get(externalId);
         const financialAccountId = `${companyId}_pluggy_account_${rawTransaction.accountId}`;
+
+        if (existing) {
+          alreadyPresent += 1;
+          importedItems.push({
+            ref: docPath(db, 'financial_transactions', existing.id),
+            id: existing.id,
+            data: existing,
+            rawTransaction,
+            isNew: false,
+          });
+          return;
+        }
+
         try {
           const normalized = pluggyTransactionToFinancial({
             transaction: rawTransaction,
@@ -1015,40 +1037,298 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             financialAccountId,
           });
 
-          const remembered = findRememberedRule(normalized.merchant || normalized.description);
-          const categoryId = remembered.status === 'MATCH' && normalized.type === 'EXPENSE'
-            ? remembered.rule.categoryId || null
-            : null;
-          const projectId = remembered.status === 'MATCH'
-            ? remembered.rule.projectId || null
-            : null;
-          const status = categoryId || projectId
-            ? 'CLASSIFIED'
-            : 'IDENTIFICATION_REQUIRED';
-
-          pendingTransactions.push({
-            ref: doc(collectionPath(db, 'financial_transactions')),
+          const ref = doc(collectionPath(db, 'financial_transactions'));
+          const item = {
+            ref,
+            id: ref.id,
             data: {
               ...normalized,
-              categoryId,
-              projectId,
-              status,
-              syncId: data.syncedAt || null,
+              importedAt: serverTimestamp(),
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             },
+            rawTransaction,
+            isNew: true,
+          };
+
+          newTransactionsBatch.set(ref, item.data);
+          importedItems.push(item);
+          existingByExternalId.set(externalId, {
+            ...item.data,
+            id: ref.id,
           });
-          existingExternalIds.add(externalId);
+          newImported += 1;
         } catch (err) {
           console.error('Transação Pluggy ignorada:', err);
         }
       });
 
-      await accountBatch.commit();
+      if (newImported > 0) {
+        await newTransactionsBatch.commit();
+      }
 
-      for (let start = 0; start < pendingTransactions.length; start += 400) {
+      // O pool local já contém os lançamentos novos, mesmo antes do onSnapshot
+      // do Firestore chegar ao React. Isso permite parear uma transferência
+      // importada nas duas pontas no mesmo ciclo de sincronização.
+      const pool = transactions
+        .filter(tx => tx.companyId === companyId)
+        .concat(importedItems.map(item => ({
+          ...item.data,
+          id: item.id,
+        })));
+
+      const openInboxByTransaction = new Map();
+      inbox
+        .filter(item => item.companyId === companyId && item.status !== 'RESOLVED')
+        .forEach(item => {
+          if (!openInboxByTransaction.has(item.transactionId)) {
+            openInboxByTransaction.set(item.transactionId, []);
+          }
+          openInboxByTransaction.get(item.transactionId).push(item);
+        });
+
+      const pendingInbox = [];
+      const resolvedInbox = [];
+      let classifiedAutomatically = 0;
+      let reconciledAutomatically = 0;
+      let transferMatches = 0;
+      let cardMatches = 0;
+      let payableMatches = 0;
+      let receivableMatches = 0;
+      let attentionQueued = 0;
+
+      const processPluggyTransaction = async ({ item, rawTransaction }) => {
+        const tx = {
+          ...item.data,
+          id: item.id,
+        };
+        const description = tx.description || rawTransaction?.description || 'Movimentação bancária';
+        const merchant = tx.merchant || description;
+        const transferLike = isPluggyTransfer(rawTransaction) || isTransferDescription(description);
+        const cardLike = isPluggyCardBillPayment(rawTransaction) || isCardPaymentDescription(description);
+        const remembered = findRememberedRule(merchant);
+        const rememberedRule = remembered.status === 'MATCH' ? remembered.rule : null;
+
+        const shouldPreserveReconciled =
+          tx.status === 'RECONCILED'
+          || tx.reconciliationType === 'TRANSFER'
+          || !!tx.billId
+          || !!tx.payableId
+          || !!tx.receivableId;
+
+        // Reclassifica automaticamente apenas fatos que ainda não foram
+        // conciliados. Transferências nunca recebem categoria/projeto.
+        let nextCategoryId = tx.categoryId || null;
+        let nextProjectId = tx.projectId || null;
+        let nextStatus = tx.status || 'IDENTIFICATION_REQUIRED';
+
+        if (!shouldPreserveReconciled) {
+          if (transferLike) {
+            nextCategoryId = null;
+            nextProjectId = null;
+            nextStatus = 'IDENTIFICATION_REQUIRED';
+          } else if (rememberedRule) {
+            nextCategoryId = rememberedRule.categoryId || null;
+            nextProjectId = rememberedRule.projectId || null;
+            nextStatus = (nextCategoryId || nextProjectId) ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED';
+            if (nextStatus === 'CLASSIFIED' && tx.status !== 'CLASSIFIED') {
+              classifiedAutomatically += 1;
+            }
+          } else {
+            nextCategoryId = null;
+            nextProjectId = null;
+            nextStatus = 'IDENTIFICATION_REQUIRED';
+          }
+
+          const classificationChanged =
+            nextCategoryId !== (tx.categoryId || null)
+            || nextProjectId !== (tx.projectId || null)
+            || nextStatus !== (tx.status || 'IDENTIFICATION_REQUIRED');
+
+          if (classificationChanged) {
+            await updateDoc(docPath(db, 'financial_transactions', item.id), {
+              categoryId: nextCategoryId,
+              projectId: nextProjectId,
+              status: nextStatus,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+
+        let reconciliationResult = { status: 'NO_MATCH' };
+
+        if (!shouldPreserveReconciled) {
+          if (transferLike) {
+            reconciliationResult = await reconcileTransfer({
+              transactionId: item.id,
+              amountCents: Number(tx.amountCents || 0),
+              date: tx.date,
+              description,
+              accountId: tx.accountId,
+              type: tx.type,
+              pool,
+            });
+
+            if (reconciliationResult.status === 'MATCHED') {
+              transferMatches += 1;
+            }
+          }
+
+          if (reconciliationResult.status !== 'MATCHED' && !transferLike && tx.type === 'EXPENSE') {
+            if (cardLike) {
+              reconciliationResult = await reconcileCardPayment({
+                transactionId: item.id,
+                amountCents: Number(tx.amountCents || 0),
+                date: tx.date,
+                description,
+                accountId: tx.accountId,
+              });
+
+              if (reconciliationResult.status === 'MATCHED') {
+                cardMatches += 1;
+              }
+            }
+
+            if (reconciliationResult.status !== 'MATCHED') {
+              const plannedResult = await reconcilePlannedPayment({
+                transactionId: item.id,
+                amountCents: Number(tx.amountCents || 0),
+                date: tx.date,
+                description,
+                type: 'PAYABLE',
+              });
+              reconciliationResult = plannedResult;
+
+              if (plannedResult.status === 'MATCHED') {
+                payableMatches += 1;
+              }
+            }
+          }
+
+          if (reconciliationResult.status !== 'MATCHED' && !transferLike && tx.type === 'INCOME') {
+            reconciliationResult = await reconcilePlannedPayment({
+              transactionId: item.id,
+              amountCents: Number(tx.amountCents || 0),
+              date: tx.date,
+              description,
+              type: 'RECEIVABLE',
+            });
+
+            if (reconciliationResult.status === 'MATCHED') {
+              receivableMatches += 1;
+            }
+          }
+        }
+
+        if (reconciliationResult.status === 'MATCHED') {
+          reconciledAutomatically += 1;
+          const existingAttention = openInboxByTransaction.get(item.id) || [];
+          existingAttention.forEach(attention => resolvedInbox.push(attention));
+
+          // O objeto local é atualizado para impedir que a outra ponta de uma
+          // transferência tente reutilizar este lançamento no mesmo ciclo.
+          tx.status = 'RECONCILED';
+          tx.reconciliationType =
+            reconciliationResult.transferId ? 'TRANSFER'
+            : reconciliationResult.item?.status === 'PAID' || reconciliationResult.item?.status === 'PARTIALLY_PAID'
+              ? 'PAYABLE_PAYMENT'
+              : reconciliationResult.item?.status === 'RECEIVED' || reconciliationResult.item?.status === 'PARTIALLY_RECEIVED'
+                ? 'RECEIVABLE_RECEIPT'
+                : 'CARD_BILL_PAYMENT';
+
+          const poolIndex = pool.findIndex(candidate => candidate.id === item.id);
+          if (poolIndex >= 0) {
+            pool[poolIndex] = { ...pool[poolIndex], ...tx, status: 'RECONCILED', reconciliationType: tx.reconciliationType };
+          }
+          return;
+        }
+
+        const classificationNeedsAttention =
+          transferLike
+          || cardLike
+          || remembered.status === 'AMBIGUOUS'
+          || reconciliationResult.status === 'AMBIGUOUS'
+          || nextStatus === 'IDENTIFICATION_REQUIRED';
+
+        if (!classificationNeedsAttention) return;
+
+        let kind = 'CLASSIFICATION';
+        let reason = tx.type === 'INCOME'
+          ? 'Identificar entrada importada'
+          : 'Classificar movimentação importada';
+        let confidence = 0;
+
+        if (cardLike) {
+          kind = 'CARD_BILL_PAYMENT';
+          reason = 'Conciliar pagamento de cartão';
+          confidence = 50;
+        } else if (reconciliationResult.status === 'AMBIGUOUS' && tx.type === 'EXPENSE') {
+          kind = 'PAYABLE_PAYMENT';
+          reason = 'Conciliar conta a pagar';
+          confidence = 60;
+        } else if (reconciliationResult.status === 'AMBIGUOUS' && tx.type === 'INCOME') {
+          kind = 'RECEIVABLE_RECEIPT';
+          reason = 'Conciliar conta a receber';
+          confidence = 60;
+        } else if (transferLike) {
+          reason = 'Verificar possível transferência entre contas';
+          confidence = 40;
+        } else if (remembered.status === 'AMBIGUOUS') {
+          confidence = 65;
+        }
+
+        const existingAttention = openInboxByTransaction.get(item.id) || [];
+        if (!existingAttention.length) {
+          const attentionRef = doc(collectionPath(db, 'financial_inbox'));
+          pendingInbox.push({
+            ref: attentionRef,
+            data: {
+              companyId,
+              transactionId: item.id,
+              kind,
+              reason,
+              confidence,
+              source: 'PLUGGY',
+              status: 'OPEN',
+              createdAt: serverTimestamp(),
+            },
+          });
+          openInboxByTransaction.set(item.id, [{
+            id: attentionRef.id,
+            transactionId: item.id,
+            status: 'OPEN',
+          }]);
+          attentionQueued += 1;
+        }
+      };
+
+      // Processa em ordem. As duas pontas de uma transferência ficam no pool
+      // e podem se reconciliar automaticamente sem depender de um novo snapshot.
+      for (const item of importedItems) {
+        await processPluggyTransaction(item);
+      }
+
+      // Fecha automaticamente itens antigos de Atenção quando uma sincronização
+      // posterior conseguiu resolver o fato.
+      for (const start = 0; start < resolvedInbox.length; start += 400) {
         const batch = writeBatch(db);
-        pendingTransactions
+        resolvedInbox
+          .slice(start, start + 400)
+          .forEach(item => {
+            if (item?.id) {
+              batch.update(docPath(db, 'financial_inbox', item.id), {
+                status: 'RESOLVED',
+                resolvedAt: serverTimestamp(),
+                resolvedBy: 'SYSTEM_PLUGGY_SYNC',
+              });
+            }
+          });
+        await batch.commit();
+      }
+
+      for (let start = 0; start < pendingInbox.length; start += 400) {
+        const batch = writeBatch(db);
+        pendingInbox
           .slice(start, start + 400)
           .forEach(item => batch.set(item.ref, item.data));
         await batch.commit();
@@ -1067,10 +1347,23 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         lastSyncAccounts: (data.bankAccounts || []).length,
         lastSyncCreditAccounts: (data.creditAccounts || []).length,
         syncTruncated: Boolean(data.truncated),
+        autoClassified: classifiedAutomatically,
+        autoReconciled: reconciledAutomatically,
+        attentionQueued,
         updatedAt: serverTimestamp(),
       }, { merge: true });
 
-      setNotice(`${data.bankAccounts?.length || 0} conta(s) bancária(s) sincronizada(s) e ${pendingTransactions.length} movimentação(ões) nova(s) importada(s).${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`);
+      const detail = [
+        `${data.bankAccounts?.length || 0} conta(s) sincronizada(s)`,
+        `${newImported} movimentação(ões) nova(s)`,
+        `${reconciledAutomatically} conciliação(ões) automática(s)`,
+        `${classifiedAutomatically} classificação(ões) automática(s)`,
+        attentionQueued ? `${attentionQueued} item(ns) enviado(s) para Atenção` : 'nenhum novo item de Atenção',
+      ].join(' · ');
+
+      setNotice(
+        `Pluggy sincronizado: ${detail}.${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`
+      );
     } catch (err) {
       setNotice(err.message || 'Falha ao sincronizar a conexão Pluggy.');
     } finally {
@@ -2236,4 +2529,3 @@ function Modal({title,onClose,children}) {
 const inputCls = 'w-full p-2.5 border border-slate-300 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-100';
 function Field({label,children}) { return <div><label className="block text-[10px] font-black uppercase tracking-wide text-slate-500 mb-1">{label}</label>{children}</div>; }
 function EmptyState({text}) { return <div className="p-8 text-center text-slate-400 font-bold text-xs border border-dashed rounded-xl">{text}</div>; }
-

@@ -501,8 +501,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }
 
       const reconciled = reconciliationResult.status === 'MATCHED';
-      if (status === 'IDENTIFICATION_REQUIRED' && !reconciled) {
-        const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(data.description);
+      const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(data.description);
+      if (!reconciled && (status === 'IDENTIFICATION_REQUIRED' || reconciliationResult.status === 'AMBIGUOUS' || cardPayment)) {
         const plannedKind = !cardPayment && type === 'EXPENSE' && reconciliationResult.status === 'AMBIGUOUS' ? 'PAYABLE_PAYMENT' : (
           type === 'INCOME' && reconciliationResult.status === 'AMBIGUOUS' ? 'RECEIVABLE_RECEIPT' : 'CLASSIFICATION'
         );
@@ -531,6 +531,62 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!tx) return;
     setBusy(true);
     try {
+      if (item.kind === 'PAYABLE_PAYMENT' && data.payableId) {
+        const payable = payables.find(p => p.id === data.payableId);
+        if (!payable) throw new Error('Conta a pagar selecionada não foi encontrada.');
+        const remaining = Number(payable.amountCents || 0) - Number(payable.paidCents || 0);
+        if (tx.type !== 'EXPENSE' || Number(tx.amountCents || 0) <= 0 || Number(tx.amountCents || 0) > remaining) {
+          throw new Error('O valor do pagamento não pode ser maior que o saldo da conta.');
+        }
+        const paidCents = Number(payable.paidCents || 0) + Number(tx.amountCents || 0);
+        await updateDoc(docPath(db, 'financial_payables', payable.id), {
+          paidCents,
+          status: paidCents >= Number(payable.amountCents || 0) ? 'PAID' : 'PARTIALLY_PAID',
+          paymentTransactionId: tx.id,
+          actualDate: tx.date,
+          updatedAt: serverTimestamp(),
+        });
+        await updateDoc(docPath(db, 'financial_transactions', tx.id), {
+          status: 'RECONCILED',
+          reconciliationType: 'PAYABLE_PAYMENT',
+          payableId: payable.id,
+          updatedAt: serverTimestamp(),
+        });
+        await updateDoc(docPath(db, 'financial_inbox', item.id), {
+          status: 'RESOLVED', resolvedAt: serverTimestamp(), resolvedBy: appUser?.id || null,
+        });
+        setNotice(paidCents >= Number(payable.amountCents || 0) ? 'Conta a pagar conciliada e marcada como paga.' : 'Pagamento parcial conciliado.');
+        return;
+      }
+
+      if (item.kind === 'RECEIVABLE_RECEIPT' && data.receivableId) {
+        const receivable = receivables.find(r => r.id === data.receivableId);
+        if (!receivable) throw new Error('Conta a receber selecionada não foi encontrada.');
+        const remaining = Number(receivable.amountCents || 0) - Number(receivable.receivedCents || 0);
+        if (tx.type !== 'INCOME' || Number(tx.amountCents || 0) <= 0 || Number(tx.amountCents || 0) > remaining) {
+          throw new Error('O valor do recebimento não pode ser maior que o saldo previsto.');
+        }
+        const receivedCents = Number(receivable.receivedCents || 0) + Number(tx.amountCents || 0);
+        await updateDoc(docPath(db, 'financial_receivables', receivable.id), {
+          receivedCents,
+          status: receivedCents >= Number(receivable.amountCents || 0) ? 'RECEIVED' : 'PARTIALLY_RECEIVED',
+          receiptTransactionId: tx.id,
+          actualDate: tx.date,
+          updatedAt: serverTimestamp(),
+        });
+        await updateDoc(docPath(db, 'financial_transactions', tx.id), {
+          status: 'RECONCILED',
+          reconciliationType: 'RECEIVABLE_RECEIPT',
+          receivableId: receivable.id,
+          updatedAt: serverTimestamp(),
+        });
+        await updateDoc(docPath(db, 'financial_inbox', item.id), {
+          status: 'RESOLVED', resolvedAt: serverTimestamp(), resolvedBy: appUser?.id || null,
+        });
+        setNotice(receivedCents >= Number(receivable.amountCents || 0) ? 'Conta a receber conciliada e marcada como recebida.' : 'Recebimento parcial conciliado.');
+        return;
+      }
+
       if (item.kind === 'CARD_BILL_PAYMENT' && data.billId) {
         const bill = bills.find(b => b.id === data.billId);
         if (!bill) throw new Error('Fatura selecionada não foi encontrada.');
@@ -641,8 +697,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }
 
         const reconciled = reconciliationResult.status === 'MATCHED';
-        if (!(type === 'EXPENSE' && rememberedRule?.categoryId) && !reconciled) {
-          const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(description);
+        const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(description);
+        if (!reconciled && (!(type === 'EXPENSE' && rememberedRule?.categoryId) || reconciliationResult.status === 'AMBIGUOUS' || cardPayment)) {
           const plannedKind = !cardPayment && type === 'EXPENSE' && reconciliationResult.status === 'AMBIGUOUS' ? 'PAYABLE_PAYMENT' : (
             type === 'INCOME' && reconciliationResult.status === 'AMBIGUOUS' ? 'RECEIVABLE_RECEIPT' : 'CLASSIFICATION'
           );
@@ -1049,6 +1105,8 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
   const [clientId, setClientId] = useState(transaction?.clientId || '');
   const [rememberMerchant, setRememberMerchant] = useState(true);
   const [billId, setBillId] = useState('');
+  const [payableId, setPayableId] = useState('');
+  const [receivableId, setReceivableId] = useState('');
   if (!transaction) return null;
   return (
     <div className="border border-amber-200 bg-amber-50/60 rounded-2xl p-4">
@@ -1061,7 +1119,7 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
           <p className="text-xs text-slate-500 mt-1">{dateLabel(transaction.date)} · {transaction.type === 'INCOME' ? 'Entrada' : 'Saída'} · {formatBRL(transaction.amountCents)}</p>
           <p className="text-[10px] uppercase font-black text-amber-700 mt-2">{item.reason}</p>
         </div>
-        <div className={`grid gap-2 lg:w-[52%] ${item.kind === 'CARD_BILL_PAYMENT' ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
+        <div className={`grid gap-2 lg:w-[52%] ${['CARD_BILL_PAYMENT','PAYABLE_PAYMENT','RECEIVABLE_RECEIPT'].includes(item.kind) ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
           {item.kind === 'CARD_BILL_PAYMENT' ? (
             <select value={billId} onChange={e=>setBillId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
               <option value="">Escolha a fatura...</option>
@@ -1072,6 +1130,28 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
                   const card = cards.find(c=>c.id===b.cardId);
                   const remaining = Number(b.totalCents || 0) - Number(b.paidCents || 0);
                   return <option key={b.id} value={b.id}>{card?.name || 'Cartão'} · {b.referenceMonth} · {formatBRL(remaining)} restante</option>;
+                })}
+            </select>
+          ) : item.kind === 'PAYABLE_PAYMENT' ? (
+            <select value={payableId} onChange={e=>setPayableId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
+              <option value="">Escolha a conta...</option>
+              {[...payables]
+                .filter(p => p.status !== 'PAID' && Number(p.amountCents || 0) > Number(p.paidCents || 0))
+                .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
+                .map(p => {
+                  const remaining = Number(p.amountCents || 0) - Number(p.paidCents || 0);
+                  return <option key={p.id} value={p.id}>{p.description} · {formatBRL(remaining)} restante</option>;
+                })}
+            </select>
+          ) : item.kind === 'RECEIVABLE_RECEIPT' ? (
+            <select value={receivableId} onChange={e=>setReceivableId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
+              <option value="">Escolha o recebível...</option>
+              {[...receivables]
+                .filter(r => r.status !== 'RECEIVED' && Number(r.amountCents || 0) > Number(r.receivedCents || 0))
+                .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
+                .map(r => {
+                  const remaining = Number(r.amountCents || 0) - Number(r.receivedCents || 0);
+                  return <option key={r.id} value={r.id}>{r.description} · {formatBRL(remaining)} restante</option>;
                 })}
             </select>
           ) : null}
@@ -1089,11 +1169,17 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
           </select>}
         </div>
         <div className="flex lg:flex-col gap-2">
-          <label className="flex items-center gap-2 text-[10px] font-bold text-slate-600">
+          {item.kind === 'CLASSIFICATION' && <label className="flex items-center gap-2 text-[10px] font-bold text-slate-600">
             <input type="checkbox" checked={rememberMerchant} onChange={e=>setRememberMerchant(e.target.checked)}/>
             lembrar regra
-          </label>
-          <button disabled={item.kind === 'CARD_BILL_PAYMENT' && !billId} onClick={()=>onResolve(item,{categoryId,projectId,clientId,billId,rememberMerchant})} className="bg-emerald-600 text-white px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1"><Check size={14}/> Resolver</button>
+          </label>}
+          <button
+            disabled={
+              (item.kind === 'CARD_BILL_PAYMENT' && !billId) ||
+              (item.kind === 'PAYABLE_PAYMENT' && !payableId) ||
+              (item.kind === 'RECEIVABLE_RECEIPT' && !receivableId)
+            }
+            onClick={()=>onResolve(item,{categoryId,projectId,clientId,billId,payableId,receivableId,rememberMerchant})} className="bg-emerald-600 text-white px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1"><Check size={14}/> Resolver</button>
         </div>
       </div>
     </div>

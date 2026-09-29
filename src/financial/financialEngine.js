@@ -64,7 +64,7 @@ export const STATUS_LABELS = {
   CANCELLED: 'Cancelado',
 };
 
-export const parseCsvLine = (line) => {
+export const parseCsvLine = (line, separator = ',') => {
   const cells = [];
   let current = '';
   let quoted = false;
@@ -77,11 +77,7 @@ export const parseCsvLine = (line) => {
       } else {
         quoted = !quoted;
       }
-    } else if (ch === ',' && !quoted) {
-      cells.push(current.trim());
-      current = '';
-    } else if (ch === ';' && !quoted) {
-      // Compatibilidade com exportações brasileiras que usam ponto-e-vírgula.
+    } else if (ch === separator && !quoted) {
       cells.push(current.trim());
       current = '';
     } else {
@@ -107,12 +103,13 @@ export const detectCsvHeader = (header = '') => {
     description: ['descricao', 'descrição', 'historico', 'histórico', 'description', 'lancamento', 'lançamento'],
     amount: ['valor', 'amount', 'quantia', 'value'],
   };
-  const parts = parseCsvLine(header).map(normalizeText);
+  const separator = h.includes(';') ? ';' : ',';
+  const parts = parseCsvLine(header, separator).map(normalizeText);
   const find = (names) => parts.findIndex((p) => names.some((name) => normalizeText(name) === p));
   return {
     date: find(aliases.date),
     description: find(aliases.description),
     amount: find(aliases.amount),
-    separator: h.includes(';') ? ';' : ',',
+    separator,
   };
 };

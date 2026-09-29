@@ -58,6 +58,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [accounts, setAccounts] = useState([]);
   const [cards, setCards] = useState([]);
   const [bills, setBills] = useState([]);
+  const [payables, setPayables] = useState([]);
+  const [receivables, setReceivables] = useState([]);
   const [categories, setCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [inbox, setInbox] = useState([]);
@@ -82,6 +84,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       attach('financial_accounts', setAccounts),
       attach('financial_cards', setCards),
       attach('financial_bills', setBills),
+      attach('financial_payables', setPayables),
+      attach('financial_receivables', setReceivables),
       attach('financial_categories', setCategories),
       attach('financial_transactions', setTransactions),
       attach('financial_inbox', setInbox),
@@ -200,6 +204,86 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
     return { ...match, paidCents, status: 'MATCHED' };
   };
+  const createPayable = async (data) => {
+    if (!data.description.trim() || !data.amount || !data.dueDate) return;
+    setBusy(true);
+    try {
+      await addDoc(collectionPath(db, 'financial_payables'), {
+        companyId,
+        description: data.description.trim(),
+        amountCents: Math.abs(toCents(data.amount)),
+        dueDate: data.dueDate,
+        expectedDate: data.dueDate,
+        status: 'OPEN',
+        supplierName: data.supplierName?.trim() || '',
+        categoryId: data.categoryId || null,
+        projectId: data.projectId || null,
+        notes: data.notes?.trim() || '',
+        source: 'MANUAL',
+        paymentTransactionId: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setModal(null);
+      setNotice('Conta a pagar cadastrada como obrigação prevista.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createReceivable = async (data) => {
+    if (!data.description.trim() || !data.amount || !data.dueDate) return;
+    setBusy(true);
+    try {
+      await addDoc(collectionPath(db, 'financial_receivables'), {
+        companyId,
+        description: data.description.trim(),
+        amountCents: Math.abs(toCents(data.amount)),
+        dueDate: data.dueDate,
+        expectedDate: data.dueDate,
+        status: 'OPEN',
+        clientId: data.clientId || null,
+        projectId: data.projectId || null,
+        notes: data.notes?.trim() || '',
+        source: 'MANUAL',
+        receiptTransactionId: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setModal(null);
+      setNotice('Conta a receber cadastrada como entrada prevista.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const payableOpenTotal = useMemo(
+    () => payables.filter(p => p.status !== 'PAID').reduce((sum, p) => sum + Number(p.amountCents || 0), 0),
+    [payables]
+  );
+
+  const receivableOpenTotal = useMemo(
+    () => receivables.filter(r => r.status !== 'RECEIVED').reduce((sum, r) => sum + Number(r.amountCents || 0), 0),
+    [receivables]
+  );
+
+  const plannedEvents = useMemo(() => [
+    ...payables.filter(p => p.status !== 'PAID').map(p => ({
+      id: 'payable_' + p.id,
+      date: p.expectedDate || p.dueDate,
+      type: 'PAYABLE',
+      description: p.description,
+      amountCents: Number(p.amountCents || 0),
+    })),
+    ...receivables.filter(r => r.status !== 'RECEIVED').map(r => ({
+      id: 'receivable_' + r.id,
+      date: r.expectedDate || r.dueDate,
+      type: 'RECEIVABLE',
+      description: r.description,
+      amountCents: Number(r.amountCents || 0),
+    })),
+  ], [payables, receivables]);
+
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
 

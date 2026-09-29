@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Landmark, Link2, RefreshCw, ShieldCheck, Unplug, XCircle } from 'lucide-react';
+import { Landmark, Link2, RefreshCw, ShieldCheck, Trash2, XCircle } from 'lucide-react';
 
 const PLUGGY_SCRIPT = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
 
@@ -35,7 +35,7 @@ const loadPluggySdk = () => {
   return pluggyScriptPromise;
 };
 
-export default function PluggyConnections({ appUser, connections = [], onSaveConnection, onSyncConnection }) {
+export default function PluggyConnections({ appUser, connections = [], onSaveConnection, onSyncConnection, onClearConnection, busy = false }) {
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
   const widgetRef = useRef(null);
@@ -177,7 +177,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
                 <div className="flex gap-2">
                   <button
                     onClick={() => onSyncConnection?.(connection)}
-                    disabled={busyId !== ''}
+                    disabled={busyId !== '' || busy}
                     className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
                   >
                     <RefreshCw size={14}/>
@@ -185,11 +185,19 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
                   </button>
                   <button
                     onClick={() => startConnection(connection)}
-                    disabled={busyId !== ''}
+                    disabled={busyId !== '' || busy}
                     className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
                   >
                     <Link2 size={14}/>
                     Reconectar
+                  </button>
+                  <button
+                    onClick={() => onClearConnection?.(connection)}
+                    disabled={busyId !== '' || busy}
+                    className="px-2.5 py-2 rounded-xl border border-red-200 text-red-600 text-xs font-black flex items-center justify-center gap-1 hover:bg-red-50 disabled:opacity-50"
+                    title="Limpar todos os dados sincronizados deste banco"
+                  >
+                    <Trash2 size={14}/>
                   </button>
                 </div>
               </div>

@@ -167,7 +167,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           && /(cartao|credito)/.test(normalizedDescription);
         if (isTransfer || isCardPayment) return;
 
-        const merchant = tx.merchant || description;
+        const merchant = String(tx.merchant || description || 'Movimentação').trim();
         const key = normalizeText(merchant);
         if (!key || key.length < 4) return;
 
@@ -194,9 +194,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }
       });
 
-    const query = normalizeText(bulkQuery);
+    const query = normalizeText(String(bulkQuery || ''));
     return [...groups.values()]
-      .filter(group => !query || normalizeText(group.merchant).includes(query))
+      .filter(group => !query || normalizeText(String(group.merchant || '')).includes(query))
       .sort((a, b) => {
         const countDiff = b.items.length - a.items.length;
         if (countDiff) return countDiff;
@@ -2469,7 +2469,7 @@ function BulkClassificationRow({ group, categories, projects, clients, busy, onA
           </div>
           {group.sampleDescriptions.length > 0 && (
             <p className="text-[10px] text-slate-500 mt-2 truncate">
-              Exemplos: {group.sampleDescriptions.join(' · ')}
+              Exemplos: {group.sampleDescriptions.map(value => String(value || '')).join(' · ')}
             </p>
           )}
         </div>

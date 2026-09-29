@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc,
+  getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc,
   serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
-  ChevronRight, CircleAlert, FileUp, Filter, Landmark, Plus, RefreshCw, Search,
-  Sparkles, Tags, WalletCards, X
+  ChevronRight, CircleAlert, FileUp, Filter, Landmark, Pencil, Plus, RefreshCw, Search,
+  Sparkles, Tags, Trash2, WalletCards, X
 } from 'lucide-react';
 import {
   DEFAULT_CATEGORIES, detectCsvHeader, formatBRL, normalizeText, parseCsvLine,
@@ -612,6 +612,187 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
+
+  const openEditTransaction = (tx) => {
+    const lockedCore = tx.status === 'RECONCILED' || tx.reconciliationType === 'TRANSFER' || !!tx.billId || !!tx.payableId || !!tx.receivableId;
+    setModal({
+      type: 'transaction',
+      initial: {
+        editing: true,
+        transactionId: tx.id,
+        lockedCore,
+        type: tx.type,
+        date: tx.date || tx.actualDate || todayLocal(),
+        status: tx.status || 'CLASSIFIED',
+        amount: (Number(tx.amountCents || 0) / 100).toFixed(2),
+        description: tx.description || '',
+        merchant: tx.merchant || '',
+        accountId: tx.accountId || '',
+        categoryId: tx.categoryId || '',
+        projectId: tx.projectId || '',
+        clientId: tx.clientId || '',
+        notes: tx.notes || '',
+        reconciliationType: tx.reconciliationType || null,
+        transferId: tx.transferId || null,
+        billId: tx.billId || null,
+        payableId: tx.payableId || null,
+        receivableId: tx.receivableId || null,
+      }
+    });
+  };
+
+  const updateTransaction = async (data) => {
+    const tx = transactions.find(t => t.id === data.transactionId);
+    if (!tx) return;
+    if (!data.description?.trim()) return;
+
+    const lockedCore = tx.status === 'RECONCILED' || tx.reconciliationType === 'TRANSFER' || !!tx.billId || !!tx.payableId || !!tx.receivableId;
+    const description = data.description.trim();
+    const merchant = data.merchant?.trim() || description;
+    const baseChanges = {
+      description,
+      merchant,
+      normalizedMerchant: normalizeText(merchant),
+      notes: data.notes?.trim() || '',
+      updatedAt: serverTimestamp(),
+    };
+
+    if (!lockedCore) {
+      const amountCents = Math.abs(toCents(data.amount));
+      if (!amountCents || !data.accountId || !data.date) return;
+      const nextType = data.type === 'INCOME' ? 'INCOME' : 'EXPENSE';
+      const nextStatus = data.status === 'SCHEDULED'
+        ? 'SCHEDULED'
+        : (nextType === 'EXPENSE' && (data.categoryId || data.projectId) ? 'CLASSIFIED' : (data.status || 'IDENTIFICATION_REQUIRED'));
+      Object.assign(baseChanges, {
+        amountCents,
+        type: nextType,
+        accountId: data.accountId,
+        date: data.date,
+        actualDate: nextStatus === 'SCHEDULED' ? null : data.date,
+        expectedDate: nextStatus === 'SCHEDULED' ? data.date : null,
+        categoryId: data.categoryId || null,
+        projectId: data.projectId || null,
+        clientId: data.clientId || null,
+        status: nextStatus,
+      });
+    }
+
+    setBusy(true);
+    try {
+      if (tx.reconciliationType === 'TRANSFER' && tx.transferId) {
+        const transfer = transfers.find(t => t.id === tx.transferId);
+        const batch = writeBatch(db);
+        batch.update(docPath(db, 'financial_transactions', tx.id), baseChanges);
+        if (transfer?.outgoingTransactionId && transfer.outgoingTransactionId !== tx.id) {
+          batch.update(docPath(db, 'financial_transactions', transfer.outgoingTransactionId), {
+            description,
+            merchant,
+            normalizedMerchant: normalizeText(merchant),
+            notes: data.notes?.trim() || '',
+            updatedAt: serverTimestamp(),
+          });
+        }
+        if (transfer) {
+          batch.update(docPath(db, 'financial_transfers', transfer.id), {
+            description,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      } else {
+        await updateDoc(docPath(db, 'financial_transactions', tx.id), baseChanges);
+      }
+      setModal(null);
+      setNotice('Movimentação atualizada.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteTransaction = async (tx) => {
+    if (!tx?.id) return;
+    const transfer = tx.transferId ? transfers.find(t => t.id === tx.transferId) : null;
+    const linkedText = transfer
+      ? 'Esta movimentação faz parte de uma transferência. As duas pontas e o vínculo serão removidos.'
+      : tx.billId
+        ? 'O pagamento será retirado da fatura antes da movimentação ser excluída.'
+        : tx.payableId
+          ? 'O pagamento será retirado da conta a pagar antes da movimentação ser excluída.'
+          : tx.receivableId
+            ? 'O recebimento será retirado da conta a receber antes da movimentação ser excluída.'
+            : 'A movimentação será excluída definitivamente.';
+    if (!window.confirm(`${linkedText}\\n\\nDeseja continuar?`)) return;
+
+    setBusy(true);
+    try {
+      const batch = writeBatch(db);
+      const inboxItems = inbox.filter(i => i.transactionId === tx.id);
+      inboxItems.forEach(item => batch.delete(docPath(db, 'financial_inbox', item.id)));
+
+      if (transfer) {
+        const outgoingId = transfer.outgoingTransactionId;
+        const incomingId = transfer.incomingTransactionId;
+        batch.delete(docPath(db, 'financial_transfers', transfer.id));
+        if (outgoingId) batch.delete(docPath(db, 'financial_transactions', outgoingId));
+        if (incomingId && incomingId !== outgoingId) batch.delete(docPath(db, 'financial_transactions', incomingId));
+        await batch.commit();
+        setModal(null);
+        setNotice('Transferência excluída com as duas movimentações vinculadas.');
+        return;
+      }
+
+      if (tx.billId) {
+        const bill = bills.find(b => b.id === tx.billId);
+        if (bill) {
+          const nextPaid = Math.max(0, Number(bill.paidCents || 0) - Number(tx.amountCents || 0));
+          const billChange = {
+            paidCents: nextPaid,
+            status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(bill.totalCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
+            updatedAt: serverTimestamp(),
+          };
+          if (bill.lastPaymentTransactionId === tx.id) billChange.lastPaymentTransactionId = null;
+          if (bill.lastPaymentTransactionId === tx.id) billChange.lastPaidAt = null;
+          batch.update(docPath(db, 'financial_bills', bill.id), billChange);
+        }
+      }
+
+      if (tx.payableId) {
+        const payable = payables.find(p => p.id === tx.payableId);
+        if (payable) {
+          const nextPaid = Math.max(0, Number(payable.paidCents || 0) - Number(tx.amountCents || 0));
+          const payableChange = {
+            paidCents: nextPaid,
+            status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(payable.amountCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
+            updatedAt: serverTimestamp(),
+          };
+          if (payable.paymentTransactionId === tx.id) payableChange.paymentTransactionId = null;
+          batch.update(docPath(db, 'financial_payables', payable.id), payableChange);
+        }
+      }
+
+      if (tx.receivableId) {
+        const receivable = receivables.find(r => r.id === tx.receivableId);
+        if (receivable) {
+          const nextReceived = Math.max(0, Number(receivable.receivedCents || 0) - Number(tx.amountCents || 0));
+          const receivableChange = {
+            receivedCents: nextReceived,
+            status: nextReceived <= 0 ? 'OPEN' : (nextReceived >= Number(receivable.amountCents || 0) ? 'RECEIVED' : 'PARTIALLY_RECEIVED'),
+            updatedAt: serverTimestamp(),
+          };
+          if (receivable.receiptTransactionId === tx.id) receivableChange.receiptTransactionId = null;
+          batch.update(docPath(db, 'financial_receivables', receivable.id), receivableChange);
+        }
+      }
+
+      batch.delete(docPath(db, 'financial_transactions', tx.id));
+      await batch.commit();
+      setModal(null);
+      setNotice('Movimentação excluída e vínculos financeiros revertidos.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const createCard = async (data) => {
     if (!data.name.trim() || !data.institution.trim()) return;
@@ -1237,7 +1418,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
           </div>
           <div className="divide-y divide-slate-100">
-            {filteredTransactions.map(t => <TransactionRow key={t.id} tx={t} accounts={accounts} categories={categories} detailed/> )}
+            {filteredTransactions.map(t => <TransactionRow key={t.id} tx={t} accounts={accounts} categories={categories} detailed onEdit={openEditTransaction} onDelete={deleteTransaction}/> )}
             {!filteredTransactions.length && <EmptyState text="Nenhuma movimentação encontrada."/>}
           </div>
         </Card>
@@ -1419,7 +1600,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       {modal?.type === 'transaction' && <TransactionModal
         initial={modal.initial} accounts={accounts} cards={cards} categories={categories}
-        projects={projects} clients={clients} onClose={()=>setModal(null)} onSave={createTransaction} busy={busy}
+        projects={projects} clients={clients} onClose={()=>setModal(null)}
+        onSave={modal.initial?.editing ? updateTransaction : createTransaction}
+        busy={busy}
       />}
       {modal?.type === 'account' && <AccountModal onClose={()=>setModal(null)} onSave={createAccount} busy={busy}/>}
       {modal?.type === 'card' && <CardModal accounts={accounts} onClose={()=>setModal(null)} onSave={createCard} busy={busy}/>}
@@ -1432,7 +1615,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   );
 }
 
-function TransactionRow({ tx, accounts, categories, detailed = false }) {
+function TransactionRow({ tx, accounts, categories, detailed = false, onEdit, onDelete }) {
   const category = categories.find(c=>c.id===tx.categoryId);
   const account = accounts.find(a=>a.id===tx.accountId);
   const isIncome = tx.type === 'INCOME';
@@ -1455,6 +1638,16 @@ function TransactionRow({ tx, accounts, categories, detailed = false }) {
       <div className={`font-black text-sm shrink-0 ${isIncome ? 'text-emerald-600' : 'text-red-600'}`}>
         {isIncome ? '+' : '-'}{formatBRL(tx.amountCents)}
       </div>
+      {detailed && (
+        <div className="flex items-center gap-1 shrink-0">
+          <button onClick={() => onEdit?.(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Editar">
+            <Pencil size={15}/>
+          </button>
+          <button onClick={() => onDelete?.(tx)} className="p-2 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50" title="Excluir">
+            <Trash2 size={15}/>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1548,25 +1741,75 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
 
 function TransactionModal({ initial, accounts, cards, categories, projects, clients, onClose, onSave, busy }) {
   const [data, setData] = useState(initial);
-  const [newProjectOnly, setNewProjectOnly] = useState(false);
   const update = (k,v) => setData(prev=>({...prev,[k]:v}));
+  const editing = !!data.editing;
+  const lockedCore = !!data.lockedCore;
+  const isTransfer = data.reconciliationType === 'TRANSFER';
   return (
-    <Modal title={data.type === 'INCOME' ? 'Nova entrada' : 'Nova despesa'} onClose={onClose}>
+    <Modal title={editing ? 'Editar movimentação' : (data.type === 'INCOME' ? 'Nova entrada' : 'Nova despesa')} onClose={onClose}>
       <div className="grid sm:grid-cols-2 gap-4">
+        {editing && <Field label="Tipo">
+          <select value={data.type||'EXPENSE'} onChange={e=>update('type',e.target.value)} disabled={lockedCore} className={inputCls}>
+            <option value="EXPENSE">Despesa</option>
+            <option value="INCOME">Entrada</option>
+          </select>
+        </Field>}
         <Field label="Descrição *"><input value={data.description||''} onChange={e=>update('description',e.target.value)} className={inputCls}/></Field>
-        <Field label="Valor (R$) *"><input value={data.amount||''} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
-        <Field label={data.status === 'SCHEDULED' ? 'Data prevista' : 'Data *'}><input type="date" value={data.date||todayLocal()} onChange={e=>update('date',e.target.value)} className={inputCls}/></Field>
-        <Field label="Conta"><select value={data.accountId||''} onChange={e=>update('accountId',e.target.value)} className={inputCls}><option value="">Selecione...</option>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}</select></Field>
-        <Field label="Categoria"><select value={data.categoryId||''} onChange={e=>update('categoryId',e.target.value)} className={inputCls}><option value="">A definir</option>{categories.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}</select></Field>
-        <Field label="Projeto"><select value={data.projectId||''} onChange={e=>update('projectId',e.target.value)} className={inputCls}><option value="">Sem projeto</option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}</select></Field>
-        {data.type === 'INCOME' && <Field label="Cliente / origem"><select value={data.clientId||''} onChange={e=>update('clientId',e.target.value)} className={inputCls}><option value="">Não identificado</option>{clients.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}</select></Field>}
-        <Field label="Estágio"><select value={data.status||'CLASSIFIED'} onChange={e=>update('status',e.target.value)} className={inputCls}><option value="CLASSIFIED">Realizada / classificada</option><option value="SCHEDULED">Prevista</option><option value="IDENTIFICATION_REQUIRED">Aguardando identificação</option></select></Field>
+        <Field label="Valor (R$) *">
+          <input value={data.amount||''} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" disabled={lockedCore} className={inputCls}/>
+        </Field>
+        <Field label={data.status === 'SCHEDULED' ? 'Data prevista' : 'Data *'}>
+          <input type="date" value={data.date||todayLocal()} onChange={e=>update('date',e.target.value)} disabled={lockedCore} className={inputCls}/>
+        </Field>
+        <Field label="Conta">
+          <select value={data.accountId||''} onChange={e=>update('accountId',e.target.value)} disabled={lockedCore} className={inputCls}>
+            <option value="">Selecione...</option>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}
+          </select>
+        </Field>
+        {!isTransfer && <Field label="Categoria">
+          <select value={data.categoryId||''} onChange={e=>update('categoryId',e.target.value)} disabled={false} className={inputCls}>
+            <option value="">A definir</option>{categories.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+        </Field>}
+        {!isTransfer && <Field label="Projeto">
+          <select value={data.projectId||''} onChange={e=>update('projectId',e.target.value)} className={inputCls}>
+            <option value="">Sem projeto</option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}
+          </select>
+        </Field>}
+        {data.type === 'INCOME' && !isTransfer && <Field label="Cliente / origem">
+          <select value={data.clientId||''} onChange={e=>update('clientId',e.target.value)} className={inputCls}>
+            <option value="">Não identificado</option>{clients.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+        </Field>}
+        <Field label="Estágio">
+          <select value={data.status||'CLASSIFIED'} onChange={e=>update('status',e.target.value)} disabled={lockedCore} className={inputCls}>
+            <option value="CLASSIFIED">Realizada / classificada</option>
+            <option value="SCHEDULED">Prevista</option>
+            <option value="IDENTIFICATION_REQUIRED">Aguardando identificação</option>
+            <option value="RECONCILED">Conciliada</option>
+          </select>
+        </Field>
         <div className="sm:col-span-2"><Field label="Observação"><textarea value={data.notes||''} onChange={e=>update('notes',e.target.value)} rows={3} className={inputCls}/></Field></div>
       </div>
-      <div className="mt-5 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800 font-medium">
+      {editing && lockedCore && (
+        <div className="mt-5 p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-800 font-medium">
+          Esta movimentação já está conciliada. Conta, valor, data e tipo ficam bloqueados para preservar a conciliação. Você pode corrigir descrição, categoria, projeto, cliente e observações.
+        </div>
+      )}
+      {editing && isTransfer && (
+        <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800 font-medium">
+          Como é uma transferência, a descrição e observação serão sincronizadas nas duas pontas.
+        </div>
+      )}
+      {!editing && <div className="mt-5 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800 font-medium">
         Cartões, compras parceladas e faturas terão entidades próprias nesta nova estrutura. Este lançamento registra apenas o fato financeiro informado agora.
+      </div>}
+      <div className="mt-5 flex justify-end gap-2">
+        <button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button>
+        <button disabled={busy} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black disabled:opacity-50">
+          {busy ? 'Salvando...' : (editing ? 'Salvar alterações' : 'Salvar movimentação')}
+        </button>
       </div>
-      <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black disabled:opacity-50">{busy ? 'Salvando...' : 'Salvar movimentação'}</button></div>
     </Modal>
   );
 }

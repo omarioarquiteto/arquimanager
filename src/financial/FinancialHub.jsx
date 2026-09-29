@@ -73,6 +73,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
   const [categories, setCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [inbox, setInbox] = useState([]);
+  const [rules, setRules] = useState([]);
   const [queryText, setQueryText] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(todayLocal().slice(0, 7));
   const [modal, setModal] = useState(null);
@@ -95,6 +96,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
       attach('financial_categories', setCategories),
       attach('financial_transactions', setTransactions),
       attach('financial_inbox', setInbox),
+      attach('financial_rules', setRules),
     ];
     return () => unsubs.forEach(u => u());
   }, [companyId]);
@@ -178,16 +180,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
     try {
       const amountCents = toCents(data.amount);
       const type = data.type;
-      const category = categories.find(c => c.id === data.categoryId);
       const normalizedMerchant = normalizeText(data.merchant || data.description);
-      const status = type === 'INCOME' && !data.categoryId ? 'IDENTIFICATION_REQUIRED' : (data.categoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED');
+      const rememberedRule = rules.find(r => r.merchantNormalized === normalizedMerchant);
+      const effectiveCategoryId = data.categoryId || rememberedRule?.categoryId || null;
+      const effectiveProjectId = data.projectId || rememberedRule?.projectId || null;
+      const category = categories.find(c => c.id === effectiveCategoryId);
+      const status = type === 'INCOME' ? 'IDENTIFICATION_REQUIRED' : (effectiveCategoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED');
       const ref = await addDoc(collectionPath('financial_transactions'), {
         companyId, source: 'MANUAL', externalId: null,
         accountId: data.accountId, cardId: data.cardId || null,
         date: data.date, actualDate: data.date, expectedDate: null,
         description: data.description.trim(), merchant: data.merchant?.trim() || data.description.trim(),
         normalizedMerchant, amountCents, type, status,
-        categoryId: category?.id || null, projectId: data.projectId || null,
+        categoryId: category?.id || null, projectId: effectiveProjectId || null,
         clientId: data.clientId || null, supplierId: data.supplierId || null,
         notes: data.notes?.trim() || '', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
@@ -242,7 +247,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
       const existing = new Set(transactions.map(t => transactionKey(t)));
       let imported = 0, skipped = 0;
       for (const line of lines.slice(1)) {
-        const cells = parseCsvLine(line);
+        const cells = parseCsvLine(line, header.separator);
         const date = cells[header.date];
         const description = cells[header.description] || 'Movimentação importada';
         const amountCents = parseCsvAmount(cells[header.amount]);
@@ -251,21 +256,27 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
         const isoDate = date.includes('/') ? date.split('/').reverse().join('-') : date;
         const type = amountCents >= 0 ? 'INCOME' : 'EXPENSE';
         const normalizedAmount = Math.abs(amountCents);
+        const normalizedMerchant = normalizeText(description);
+        const rememberedRule = rules.find(r => r.merchantNormalized === normalizedMerchant);
         const externalId = transactionKey({ accountId, date: isoDate, description, amountCents: normalizedAmount });
         if (existing.has(externalId)) { skipped += 1; continue; }
 
         const ref = await addDoc(collectionPath('financial_transactions'), {
           companyId, source: 'CSV', externalId, accountId, cardId: null,
           date: isoDate, actualDate: isoDate, expectedDate: null, description,
-          merchant: description, normalizedMerchant: normalizeText(description),
-          amountCents: normalizedAmount, type, status: 'IDENTIFICATION_REQUIRED',
-          categoryId: null, projectId: null, clientId: null, supplierId: null,
+          merchant: description, normalizedMerchant,
+          amountCents: normalizedAmount, type,
+          status: (type === 'EXPENSE' && rememberedRule?.categoryId) ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
+          categoryId: rememberedRule?.categoryId || null, projectId: rememberedRule?.projectId || null,
+          clientId: null, supplierId: null,
           importedAt: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         });
-        await addDoc(collectionPath('financial_inbox'), {
-          companyId, transactionId: ref.id, reason: type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada',
-          confidence: 0, status: 'OPEN', createdAt: serverTimestamp(),
-        });
+        if (!(type === 'EXPENSE' && rememberedRule?.categoryId)) {
+          await addDoc(collectionPath('financial_inbox'), {
+            companyId, transactionId: ref.id, reason: type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada',
+            confidence: 0, status: 'OPEN', createdAt: serverTimestamp(),
+          });
+        }
         existing.add(externalId);
         imported += 1;
       }

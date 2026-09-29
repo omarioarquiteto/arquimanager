@@ -1223,8 +1223,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       // O pool local já contém os lançamentos novos, mesmo antes do onSnapshot
       // do Firestore chegar ao React. Isso permite parear uma transferência
       // importada nas duas pontas no mesmo ciclo de sincronização.
-      const pool = transactions
-        .filter(tx => tx.companyId === companyId)
+      const cleanTransactionPool = companyTransactions.filter(tx => {
+        if (!tx.externalId) return true;
+        return transactionsByExternalId.get(String(tx.externalId))?.id === tx.id;
+      });
+
+      const pool = cleanTransactionPool
         .concat(importedItems.map(item => ({
           ...item.data,
           id: item.id,

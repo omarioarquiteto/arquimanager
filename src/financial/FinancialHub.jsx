@@ -160,7 +160,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       .forEach(item => {
         const tx = item.transaction;
         const description = tx.description || '';
-        if (isTransferDescription(description) || isCardPaymentDescription(description)) return;
+        const normalizedDescription = normalizeText(description);
+        const isTransfer = /(transferencia|transfer|ted|doc)/.test(normalizedDescription)
+          && !/(compra|pagamento|fatura|boleto|fornecedor|loja|restaurante)/.test(normalizedDescription);
+        const isCardPayment = /(pagamento|pagto|fatura)/.test(normalizedDescription)
+          && /(cartao|credito)/.test(normalizedDescription);
+        if (isTransfer || isCardPayment) return;
 
         const merchant = tx.merchant || description;
         const key = normalizeText(merchant);

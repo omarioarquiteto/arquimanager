@@ -1119,7 +1119,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {tab === 'calendar' && (
         <div className="space-y-5 flex-1 overflow-auto pb-4">
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            <Metric label="Saldo hoje" value={formatBRL(projection.balanceToday)} icon={<Landmark size={18}/>} tone="blue"/>
+            <Metric label="Saldo projetado hoje" value={formatBRL(projection.balanceToday)} icon={<Landmark size={18}/>} tone="blue"/>
             <Metric label="Entradas 30 dias" value={formatBRL(projection.totalIncome30)} icon={<ArrowUpCircle size={18}/>} tone="green"/>
             <Metric label="Saídas 30 dias" value={formatBRL(projection.totalExpense30)} icon={<ArrowDownCircle size={18}/>} tone="red"/>
             <Metric label="Mínimo projetado · 90d" value={formatBRL(projection.minimumBalance90)} icon={<CircleAlert size={18}/>} tone={projection.minimumBalance90 >= 0 ? 'amber' : 'red'}/>

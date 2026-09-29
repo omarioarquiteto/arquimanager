@@ -12,6 +12,7 @@ import {
   DEFAULT_CATEGORIES, detectCsvHeader, formatBRL, normalizeText, parseCsvLine,
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
+import PluggyConnections from './PluggyConnections.jsx';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -61,6 +62,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [payables, setPayables] = useState([]);
   const [receivables, setReceivables] = useState([]);
   const [transfers, setTransfers] = useState([]);
+  const [connections, setConnections] = useState([]);
   const [categories, setCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [inbox, setInbox] = useState([]);
@@ -88,6 +90,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       attach('financial_payables', setPayables),
       attach('financial_receivables', setReceivables),
       attach('financial_transfers', setTransfers),
+      attach('financial_connections', setConnections),
       attach('financial_categories', setCategories),
       attach('financial_transactions', setTransactions),
       attach('financial_inbox', setInbox),
@@ -938,6 +941,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       setNotice('Compra registrada em ' + installmentsCount + ' parcela(s).');
     } finally { setBusy(false); }
   };
+  const savePluggyConnection = async (connection) => {
+    if (!connection?.itemId) return;
+
+    const connectionId = `${companyId}_${connection.itemId}`;
+    await setDoc(docPath(db, 'financial_connections', connectionId), {
+      companyId,
+      itemId: connection.itemId,
+      connectorId: connection.connectorId || null,
+      connectorName: connection.connectorName || 'Instituição financeira',
+      status: connection.status || 'CONNECTED',
+      clientUserId: connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : null),
+      lastConnectedAt: connection.lastConnectedAt || new Date().toISOString(),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    setNotice(`Banco conectado: ${connection.connectorName || 'instituição financeira'}.`);
+  };
+
   const createAccount = async (data) => {
     const name = data.name.trim();
     if (!name) return;
@@ -1654,6 +1675,16 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       {tab === 'accounts' && (
         <div className="space-y-5 flex-1 overflow-auto pb-4">
+          <Card className="p-5">
+            <PluggyConnections
+              appUser={appUser}
+              connections={connections}
+              db={db}
+              onSaveConnection={savePluggyConnection}
+              collectionPath={collectionPath}
+            />
+          </Card>
+
           <Card className="p-5">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
               <div>

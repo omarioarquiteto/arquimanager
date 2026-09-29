@@ -35,7 +35,7 @@ const loadPluggySdk = () => {
   return pluggyScriptPromise;
 };
 
-export default function PluggyConnections({ appUser, connections = [], db, onSaveConnection, collectionPath, notice }) {
+export default function PluggyConnections({ appUser, connections = [], onSaveConnection }) {
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
   const widgetRef = useRef(null);

@@ -145,6 +145,56 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return values;
   }, [selectedMonth]);
 
+  const findCardBillForPayment = ({ amountCents, date, description, accountId }) => {
+    const normalizedDescription = normalizeText(description);
+    const paymentHint = /(pagamento|pagto|pagamento de fatura|fatura|cartao|cartão)/.test(normalizedDescription);
+    if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
+
+    const scored = bills
+      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > Number(b.paidCents || 0))
+      .map(b => {
+        const card = cards.find(c => c.id === b.cardId);
+        if (!card) return null;
+        const remaining = Number(b.totalCents || 0) - Number(b.paidCents || 0);
+        const cardName = normalizeText(card.name || '');
+        const cardInstitution = normalizeText(card.institution || '');
+        const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
+        let score = 0;
+        if (amountCents === remaining) score += 100;
+        else if (amountCents < remaining) score += 40;
+        if (card.paymentAccountId && card.paymentAccountId === accountId) score += 40;
+        if (cardName && normalizedDescription.includes(cardName)) score += 30;
+        if (cardInstitution && normalizedDescription.includes(cardInstitution)) score += 10;
+        if (dateDiff <= 10) score += 15;
+        return { bill: b, card, remaining, score, exact: amountCents === remaining, dateDiff };
+      })
+      .filter(Boolean)
+      .filter(x => x.score >= 115)
+      .sort((a,b) => b.score - a.score);
+
+    if (!scored.length) return { status: 'NO_MATCH' };
+    const top = scored[0];
+    const second = scored[1];
+    if (!top.exact) return { status: 'AMBIGUOUS', candidates: scored.slice(0, 5) };
+    if (second && second.score === top.score) return { status: 'AMBIGUOUS', candidates: scored.slice(0, 5) };
+    return { status: 'MATCH', ...top };
+  };
+
+  const reconcileCardPayment = async ({ transactionId, amountCents, date, description, accountId }) => {
+    const match = findCardBillForPayment({ amountCents, date, description, accountId });
+    if (match.status !== 'MATCH') return match;
+    const paidCents = Number(match.bill.paidCents || 0) + amountCents;
+    const totalCents = Number(match.bill.totalCents || 0);
+    await updateDoc(docPath(db, 'financial_bills', match.bill.id), {
+      paidCents, status: paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID',
+      lastPaymentTransactionId: transactionId, lastPaidAt: date, updatedAt: serverTimestamp(),
+    });
+    await updateDoc(docPath(db, 'financial_transactions', transactionId), {
+      status: 'RECONCILED', reconciliationType: 'CARD_BILL_PAYMENT',
+      billId: match.bill.id, cardId: match.bill.cardId, updatedAt: serverTimestamp(),
+    });
+    return { ...match, paidCents, status: 'MATCHED' };
+  };
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
 
@@ -258,14 +308,25 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         clientId: data.clientId || null, supplierId: data.supplierId || null,
         notes: data.notes?.trim() || '', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
-      if (status === 'IDENTIFICATION_REQUIRED') {
+
+      let reconciled = false;
+      if (type === 'EXPENSE') {
+        const result = await reconcileCardPayment({
+          transactionId: ref.id, amountCents, date: data.date,
+          description: data.description.trim(), accountId: data.accountId
+        });
+        reconciled = result.status === 'MATCHED';
+      }
+
+      if (status === 'IDENTIFICATION_REQUIRED' && !reconciled) {
         await addDoc(collectionPath(db, 'financial_inbox'), {
-          companyId, transactionId: ref.id, reason: type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação',
+          companyId, transactionId: ref.id,
+          reason: type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação',
           confidence: 0, status: 'OPEN', createdAt: serverTimestamp(),
         });
       }
       setModal(null);
-      setNotice('Movimentação registrada.');
+      setNotice(reconciled ? 'Pagamento de fatura identificado e conciliado automaticamente.' : 'Movimentação registrada.');
     } finally { setBusy(false); }
   };
 
@@ -333,7 +394,16 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           clientId: null, supplierId: null,
           importedAt: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         });
-        if (!(type === 'EXPENSE' && rememberedRule?.categoryId)) {
+        let reconciled = false;
+        if (type === 'EXPENSE') {
+          const result = await reconcileCardPayment({
+            transactionId: ref.id, amountCents: normalizedAmount, date: isoDate,
+            description, accountId
+          });
+          reconciled = result.status === 'MATCHED';
+        }
+
+        if (!(type === 'EXPENSE' && rememberedRule?.categoryId) && !reconciled) {
           await addDoc(collectionPath(db, 'financial_inbox'), {
             companyId, transactionId: ref.id, reason: type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada',
             confidence: 0, status: 'OPEN', createdAt: serverTimestamp(),
@@ -648,6 +718,7 @@ function TransactionRow({ tx, accounts, categories, detailed = false }) {
         <div className="flex flex-wrap gap-x-2 items-center">
           <p className="font-bold text-slate-800 truncate">{tx.description}</p>
           {tx.status === 'IDENTIFICATION_REQUIRED' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">atenção</span>}
+          {tx.status === 'RECONCILED' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliado</span>}
         </div>
         <p className="text-[10px] text-slate-400">{dateLabel(tx.date)} · {account?.name || 'Conta não informada'} {category ? `· ${category.nome}` : ''}</p>
         {detailed && tx.projectId && <p className="text-[10px] text-indigo-500 font-bold mt-0.5">Projeto vinculado</p>}

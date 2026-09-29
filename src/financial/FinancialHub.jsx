@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc,
-  serverTimestamp, increment
+  serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
@@ -60,6 +60,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bills, setBills] = useState([]);
   const [payables, setPayables] = useState([]);
   const [receivables, setReceivables] = useState([]);
+  const [transfers, setTransfers] = useState([]);
   const [categories, setCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [inbox, setInbox] = useState([]);
@@ -86,6 +87,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       attach('financial_bills', setBills),
       attach('financial_payables', setPayables),
       attach('financial_receivables', setReceivables),
+      attach('financial_transfers', setTransfers),
       attach('financial_categories', setCategories),
       attach('financial_transactions', setTransactions),
       attach('financial_inbox', setInbox),
@@ -285,6 +287,166 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return { ...match, status: 'MATCHED' };
   };
 
+  const isTransferDescription = (description = '') => {
+    const text = normalizeText(description);
+    return /(transferencia|transfer|ted|doc)/.test(text) && !/(compra|pagamento|fatura|boleto|fornecedor|loja|restaurante)/.test(text);
+  };
+
+  const findTransferCandidate = ({ amountCents, date, description, accountId, type, pool = transactions }) => {
+    if (!isTransferDescription(description) || !amountCents) return { status: 'NO_MATCH' };
+    const oppositeType = type === 'EXPENSE' ? 'INCOME' : 'EXPENSE';
+    const candidates = pool
+      .filter(tx => tx.companyId === companyId)
+      .filter(tx => tx.id && tx.accountId && tx.accountId !== accountId)
+      .filter(tx => tx.type === oppositeType && tx.status !== 'CANCELLED')
+      .filter(tx => tx.reconciliationType !== 'TRANSFER' && !tx.transferId)
+      .map(tx => {
+        const sameAmount = Number(tx.amountCents || 0) === Number(amountCents);
+        const dayDiff = Math.abs(parseDate(date).getTime() - parseDate(tx.date).getTime()) / 86400000;
+        const descHit = isTransferDescription(tx.description);
+        let score = 0;
+        if (sameAmount) score += 100;
+        if (dayDiff === 0) score += 30;
+        else if (dayDiff <= 1) score += 20;
+        if (descHit) score += 40;
+        return { tx, score, sameAmount, dayDiff };
+      })
+      .filter(x => x.sameAmount && x.dayDiff <= 1)
+      .sort((a,b) => b.score - a.score);
+
+    if (!candidates.length) return { status: 'NO_MATCH' };
+    if (candidates[1] && candidates[1].score === candidates[0].score) {
+      return { status: 'AMBIGUOUS', candidates: candidates.slice(0, 5) };
+    }
+    if (candidates[0].score < 150) return { status: 'NO_MATCH' };
+    return { status: 'MATCH', ...candidates[0] };
+  };
+
+  const reconcileTransfer = async ({ transactionId, amountCents, date, description, accountId, type, pool }) => {
+    const match = findTransferCandidate({ amountCents, date, description, accountId, type, pool });
+    if (match.status !== 'MATCH') return match;
+    const currentRef = docPath(db, 'financial_transactions', transactionId);
+    const candidateRef = docPath(db, 'financial_transactions', match.tx.id);
+    const transferRef = doc(collectionPath(db, 'financial_transfers'));
+
+    const fromAccountId = type === 'EXPENSE' ? accountId : match.tx.accountId;
+    const toAccountId = type === 'EXPENSE' ? match.tx.accountId : accountId;
+    const batch = writeBatch(db);
+    batch.set(transferRef, {
+      companyId,
+      fromAccountId,
+      toAccountId,
+      amountCents,
+      date,
+      description: description.trim(),
+      source: 'AUTO_RECONCILIATION',
+      outgoingTransactionId: type === 'EXPENSE' ? transactionId : match.tx.id,
+      incomingTransactionId: type === 'EXPENSE' ? match.tx.id : transactionId,
+      status: 'RECONCILED',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    batch.update(currentRef, {
+      status: 'RECONCILED',
+      reconciliationType: 'TRANSFER',
+      transferId: transferRef.id,
+      categoryId: null,
+      projectId: null,
+      updatedAt: serverTimestamp(),
+    });
+    batch.update(candidateRef, {
+      status: 'RECONCILED',
+      reconciliationType: 'TRANSFER',
+      transferId: transferRef.id,
+      categoryId: null,
+      projectId: null,
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
+    return { ...match, status: 'MATCHED', transferId: transferRef.id };
+  };
+
+  const createTransfer = async (data) => {
+    const amountCents = Math.abs(toCents(data.amount));
+    if (!data.fromAccountId || !data.toAccountId || data.fromAccountId === data.toAccountId || !amountCents || !data.date) return;
+    const description = data.description?.trim() || 'Transferência entre contas';
+    setBusy(true);
+    try {
+      const transferRef = doc(collectionPath(db, 'financial_transfers'));
+      const outgoingRef = doc(collectionPath(db, 'financial_transactions'));
+      const incomingRef = doc(collectionPath(db, 'financial_transactions'));
+      const batch = writeBatch(db);
+
+      batch.set(transferRef, {
+        companyId,
+        fromAccountId: data.fromAccountId,
+        toAccountId: data.toAccountId,
+        amountCents,
+        date: data.date,
+        description,
+        source: 'MANUAL',
+        outgoingTransactionId: outgoingRef.id,
+        incomingTransactionId: incomingRef.id,
+        status: 'RECONCILED',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(outgoingRef, {
+        companyId, source: 'MANUAL',
+        externalId: null,
+        accountId: data.fromAccountId,
+        cardId: null,
+        date: data.date,
+        actualDate: data.date,
+        expectedDate: null,
+        description,
+        merchant: description,
+        normalizedMerchant: normalizeText(description),
+        amountCents,
+        type: 'EXPENSE',
+        status: 'RECONCILED',
+        reconciliationType: 'TRANSFER',
+        transferId: transferRef.id,
+        categoryId: null,
+        projectId: null,
+        clientId: null,
+        supplierId: null,
+        notes: '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(incomingRef, {
+        companyId, source: 'MANUAL',
+        externalId: null,
+        accountId: data.toAccountId,
+        cardId: null,
+        date: data.date,
+        actualDate: data.date,
+        expectedDate: null,
+        description,
+        merchant: description,
+        normalizedMerchant: normalizeText(description),
+        amountCents,
+        type: 'INCOME',
+        status: 'RECONCILED',
+        reconciliationType: 'TRANSFER',
+        transferId: transferRef.id,
+        categoryId: null,
+        projectId: null,
+        clientId: null,
+        supplierId: null,
+        notes: '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      setModal(null);
+      setNotice('Transferência registrada entre as contas.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createPayable = async (data) => {
     if (!data.description.trim() || !data.amount || !data.dueDate) return;
     setBusy(true);
@@ -482,10 +644,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       });
 
       let reconciliationResult = { status: 'NO_MATCH' };
-      if (type === 'EXPENSE') {
+      if (isTransferDescription(data.description)) {
+        reconciliationResult = await reconcileTransfer({
+          transactionId: ref.id, amountCents, date: data.date,
+          description: data.description.trim(), accountId, type,
+          pool: transactions
+        });
+      }
+      if (reconciliationResult.status !== 'MATCHED' && type === 'EXPENSE') {
         reconciliationResult = await reconcileCardPayment({
           transactionId: ref.id, amountCents, date: data.date,
-          description: data.description.trim(), accountId: data.accountId
+          description: data.description.trim(), accountId
         });
         if (reconciliationResult.status !== 'MATCHED') {
           reconciliationResult = await reconcilePlannedPayment({
@@ -493,7 +662,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             description: data.description.trim(), type: 'PAYABLE'
           });
         }
-      } else if (type === 'INCOME') {
+      } else if (reconciliationResult.status !== 'MATCHED' && type === 'INCOME') {
         reconciliationResult = await reconcilePlannedPayment({
           transactionId: ref.id, amountCents, date: data.date,
           description: data.description.trim(), type: 'RECEIVABLE'
@@ -510,6 +679,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           companyId, transactionId: ref.id,
           kind: cardPayment ? 'CARD_BILL_PAYMENT' : plannedKind,
           reason: cardPayment ? 'Conciliar pagamento de cartão' : (
+            isTransferDescription(data.description) ? 'Verificar possível transferência' :
             plannedKind === 'PAYABLE_PAYMENT' ? 'Conciliar conta a pagar' :
             plannedKind === 'RECEIVABLE_RECEIPT' ? 'Conciliar conta a receber' :
             (type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação')
@@ -747,6 +917,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           <button onClick={() => openNewTransaction('INCOME')} className="px-3 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-xs flex items-center gap-2 hover:bg-emerald-700">
             <Plus size={16}/> Entrada
           </button>
+          <button onClick={() => setModal({type:'transfer'})} className="px-3 py-2.5 bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center gap-2 hover:bg-slate-900">
+            <ArrowLeftRight size={16}/> Transferência
+          </button>
           <button onClick={() => openNewTransaction('EXPENSE')} className="px-3 py-2.5 bg-[#1e5aa0] text-white rounded-xl font-bold text-xs flex items-center gap-2 hover:bg-[#154278]">
             <Plus size={16}/> Despesa
           </button>
@@ -766,6 +939,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           ['transactions', 'Movimentações'],
           ['attention', `Atenção ${attentionCount ? `(${attentionCount})` : ''}`],
           ['planning', 'A pagar / A receber'],
+          ['transfers', 'Transferências'],
           ['accounts', 'Contas e cartões'],
         ].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wide border transition-colors ${tab === id ? 'bg-[#1e5aa0] text-white border-[#1e5aa0]' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}>
@@ -985,6 +1159,33 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         </div>
       )}
 
+      {tab === 'transfers' && (
+        <Card className="p-5 flex-1 overflow-auto">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+            <div>
+              <h4 className="font-black text-xl text-slate-800">Transferências</h4>
+              <p className="text-xs text-slate-400">Movimentações entre suas próprias contas. Não entram como receita ou despesa.</p>
+            </div>
+            <button onClick={() => setModal({type:'transfer'})} className="bg-slate-800 text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"><ArrowLeftRight size={16}/> Nova transferência</button>
+          </div>
+          <div className="space-y-2">
+            {[...transfers].sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))).map(t => {
+              const from = accounts.find(a=>a.id===t.fromAccountId);
+              const to = accounts.find(a=>a.id===t.toAccountId);
+              return <div key={t.id} className="p-3 border border-slate-100 rounded-xl bg-slate-50 flex flex-col md:flex-row md:items-center gap-3">
+                <ArrowLeftRight size={19} className="text-blue-600 shrink-0"/>
+                <div className="flex-1">
+                  <p className="font-black text-slate-800">{t.description}</p>
+                  <p className="text-[10px] text-slate-400">{dateLabel(t.date)} · {from?.name || 'Conta origem'} → {to?.name || 'Conta destino'}</p>
+                </div>
+                <span className="font-black text-blue-700">{formatBRL(t.amountCents)}</span>
+              </div>;
+            })}
+            {!transfers.length && <EmptyState text="Nenhuma transferência registrada."/>}
+          </div>
+        </Card>
+      )}
+
       {tab === 'accounts' && (
         <div className="space-y-5 flex-1 overflow-auto pb-4">
           <Card className="p-5">
@@ -1069,6 +1270,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {modal?.type === 'cardPurchase' && <CardPurchaseModal cards={cards} categories={categories} projects={projects} onClose={()=>setModal(null)} onSave={createCardPurchase} busy={busy}/>}
       {modal?.type === 'payable' && <PayableModal categories={categories} projects={projects} onClose={()=>setModal(null)} onSave={createPayable} busy={busy}/>}
       {modal?.type === 'receivable' && <ReceivableModal clients={clients} projects={projects} onClose={()=>setModal(null)} onSave={createReceivable} busy={busy}/>}
+      {modal?.type === 'transfer' && <TransferModal accounts={accounts} onClose={()=>setModal(null)} onSave={createTransfer} busy={busy}/>}
       {modal?.type === 'csv' && <CsvModal accounts={accounts} onClose={()=>setModal(null)} onImport={importCsv} busy={busy}/>}
     </div>
   );
@@ -1078,16 +1280,18 @@ function TransactionRow({ tx, accounts, categories, detailed = false }) {
   const category = categories.find(c=>c.id===tx.categoryId);
   const account = accounts.find(a=>a.id===tx.accountId);
   const isIncome = tx.type === 'INCOME';
+  const isTransfer = tx.reconciliationType === 'TRANSFER';
   return (
     <div className="py-3 flex items-center gap-3">
-      <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isIncome ? 'bg-emerald-50 text-emerald-600' : tx.type === 'TRANSFER' ? 'bg-blue-50 text-blue-600' : 'bg-red-50 text-red-600'}`}>
-        {isIncome ? <ArrowUpCircle size={18}/> : tx.type === 'TRANSFER' ? <ArrowLeftRight size={18}/> : <ArrowDownCircle size={18}/>}
+      <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isTransfer ? 'bg-blue-50 text-blue-600' : isIncome ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
+        {isTransfer ? <ArrowLeftRight size={18}/> : isIncome ? <ArrowUpCircle size={18}/> : <ArrowDownCircle size={18}/>}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap gap-x-2 items-center">
           <p className="font-bold text-slate-800 truncate">{tx.description}</p>
           {tx.status === 'IDENTIFICATION_REQUIRED' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">atenção</span>}
-          {tx.status === 'RECONCILED' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliado</span>}
+          {isTransfer && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">transferência</span>}
+          {tx.status === 'RECONCILED' && !isTransfer && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliado</span>}
         </div>
         <p className="text-[10px] text-slate-400">{dateLabel(tx.date)} · {account?.name || 'Conta não informada'} {category ? `· ${category.nome}` : ''}</p>
         {detailed && tx.projectId && <p className="text-[10px] text-indigo-500 font-bold mt-0.5">Projeto vinculado</p>}
@@ -1295,6 +1499,23 @@ function CardPurchaseModal({ cards, categories, projects, onClose, onSave, busy 
     <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy||!cards.length} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black">{busy?'Gerando...':'Registrar compra'}</button></div>
   </Modal>;
 }
+function TransferModal({ accounts, onClose, onSave, busy }) {
+  const [data,setData]=useState({fromAccountId:'',toAccountId:'',amount:'',date:todayLocal(),description:'Transferência entre contas'});
+  const update=(k,v)=>setData(p=>({...p,[k]:v}));
+  const destinationAccounts = accounts.filter(a=>a.id !== data.fromAccountId);
+  return <Modal title="Nova transferência" onClose={onClose}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Field label="Conta de origem *"><select value={data.fromAccountId} onChange={e=>update('fromAccountId',e.target.value)} className={inputCls}><option value="">Selecione...</option>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}</select></Field>
+      <Field label="Conta de destino *"><select value={data.toAccountId} onChange={e=>update('toAccountId',e.target.value)} className={inputCls}><option value="">Selecione...</option>{destinationAccounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}</select></Field>
+      <Field label="Valor (R$) *"><input value={data.amount} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
+      <Field label="Data *"><input value={data.date} onChange={e=>update('date',e.target.value)} type="date" className={inputCls}/></Field>
+      <div className="sm:col-span-2"><Field label="Descrição"><input value={data.description} onChange={e=>update('description',e.target.value)} className={inputCls}/></Field></div>
+    </div>
+    <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800">A transferência gera automaticamente uma saída na origem e uma entrada no destino, ambas vinculadas. O resultado financeiro da empresa permanece neutro.</div>
+    <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy||accounts.length<2} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-black">{busy?'Salvando...':'Registrar transferência'}</button></div>
+  </Modal>;
+}
+
 function CsvModal({ accounts, onClose, onImport, busy }) {
   const [accountId,setAccountId]=useState(accounts[0]?.id||'');
   const [file,setFile]=useState(null);

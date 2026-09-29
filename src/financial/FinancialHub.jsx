@@ -2142,54 +2142,114 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     } finally { setBusy(false); }
   };
 
-  const clearPluggySyncedData = async () => {
-    const pluggyTransactions = transactions.filter(tx =>
-      tx.companyId === companyId
-      && (tx.source === 'PLUGGY' || tx.providerTransactionId || String(tx.externalId || '').startsWith('pluggy:'))
-    );
+  const getPluggyCleanupScope = (connection) => {
+    if (!connection?.itemId) return null;
 
     const pluggyAccounts = accounts.filter(account =>
       account.companyId === companyId
-      && (account.provider === 'PLUGGY' || account.providerAccountId)
+      && account.provider === 'PLUGGY'
+      && account.providerItemId === connection.itemId
     );
+
+    const bankAccountIds = new Set(
+      pluggyAccounts.map(account => account.providerAccountId).filter(Boolean)
+    );
+    const financialAccountIds = new Set(pluggyAccounts.map(account => account.id));
+
+    const pluggyTransactions = transactions.filter(tx =>
+      tx.companyId === companyId
+      && (
+        tx.providerItemId === connection.itemId
+        || (tx.providerAccountId && bankAccountIds.has(tx.providerAccountId))
+        || (tx.accountId && financialAccountIds.has(tx.accountId))
+      )
+    );
+
+    const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
 
     const pluggyInbox = inbox.filter(item =>
       item.companyId === companyId
-      && (item.source === 'PLUGGY' || pluggyTransactions.some(tx => tx.id === item.transactionId))
+      && pluggyTransactionIds.has(item.transactionId)
     );
 
-    if (!pluggyTransactions.length && !pluggyAccounts.length && !pluggyInbox.length) {
-      setNotice('Não há dados sincronizados da Pluggy para limpar.');
+    const autoPluggyTransfers = transfers.filter(transfer =>
+      transfer.companyId === companyId
+      && transfer.source === 'AUTO_RECONCILIATION'
+      && (
+        pluggyTransactionIds.has(transfer.outgoingTransactionId)
+        || pluggyTransactionIds.has(transfer.incomingTransactionId)
+      )
+    );
+
+    return {
+      connection,
+      pluggyTransactions,
+      pluggyAccounts,
+      pluggyInbox,
+      autoPluggyTransfers,
+      pluggyTransactionIds,
+    };
+  };
+
+  const requestClearPluggyConnection = (connection) => {
+    const scope = getPluggyCleanupScope(connection);
+    if (!scope) {
+      setNotice('Não foi possível identificar o banco selecionado.');
       return;
     }
 
-    const affectedBillAmounts = new Map();
-    const affectedPayableAmounts = new Map();
-    const affectedReceivableAmounts = new Map();
-    const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
+    if (
+      !scope.pluggyTransactions.length
+      && !scope.pluggyAccounts.length
+      && !scope.pluggyInbox.length
+      && !scope.autoPluggyTransfers.length
+    ) {
+      setNotice(`Não há dados sincronizados da Pluggy para ${connection.connectorName || 'este banco'}.`);
+      return;
+    }
 
-    pluggyTransactions.forEach(tx => {
-      const amount = Number(tx.amountCents || 0);
-      if (!amount) return;
-      if (tx.billId) affectedBillAmounts.set(tx.billId, (affectedBillAmounts.get(tx.billId) || 0) + amount);
-      if (tx.payableId) affectedPayableAmounts.set(tx.payableId, (affectedPayableAmounts.get(tx.payableId) || 0) + amount);
-      if (tx.receivableId) affectedReceivableAmounts.set(tx.receivableId, (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount);
+    setModal({
+      type: 'pluggyClearConfirm',
+      scope,
     });
+  };
 
-    if (!window.confirm(
-      'ATENÇÃO: esta operação apagará todas as movimentações importadas pela Pluggy, itens da Atenção ligados a elas e contas bancárias sincronizadas. ' +
-      'Também desfará as baixas de faturas/contas a pagar/receber feitas por essas movimentações. ' +
-      'Seus cadastros manuais serão preservados. Deseja continuar?'
-    )) return;
+  const confirmClearPluggyConnection = (scope) => {
+    setModal({
+      type: 'pluggyClearFinal',
+      scope,
+    });
+  };
+
+  const executeClearPluggyConnection = async (scope) => {
+    if (!scope?.connection?.itemId) return;
 
     setBusy(true);
     try {
-      // Reverte os valores conciliados antes de excluir as movimentações.
-      const reversalBatch = writeBatch(db);
+      const {
+        connection,
+        pluggyTransactions,
+        pluggyAccounts,
+        pluggyInbox,
+        autoPluggyTransfers,
+        pluggyTransactionIds,
+      } = scope;
 
-      affectedBillAmounts.forEach((amount, billId) => {
+      const affectedBillAmounts = new Map();
+      const affectedPayableAmounts = new Map();
+      const affectedReceivableAmounts = new Map();
+
+      pluggyTransactions.forEach(tx => {
+        const amount = Number(tx.amountCents || 0);
+        if (!amount) return;
+        if (tx.billId) affectedBillAmounts.set(tx.billId, (affectedBillAmounts.get(tx.billId) || 0) + amount);
+        if (tx.payableId) affectedPayableAmounts.set(tx.payableId, (affectedPayableAmounts.get(tx.payableId) || 0) + amount);
+        if (tx.receivableId) affectedReceivableAmounts.set(tx.receivableId, (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount);
+      });
+
+      for (const [amount, billId] of affectedBillAmounts.entries()) {
         const bill = bills.find(item => item.id === billId);
-        if (!bill) return;
+        if (!bill) continue;
         const nextPaid = Math.max(0, Number(bill.paidCents || 0) - amount);
         const billChange = {
           paidCents: nextPaid,
@@ -2200,12 +2260,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           billChange.lastPaymentTransactionId = null;
           billChange.lastPaidAt = null;
         }
-        reversalBatch.update(docPath(db, 'financial_bills', billId), billChange);
-      });
+        await updateDoc(docPath(db, 'financial_bills', billId), billChange);
+      }
 
-      affectedPayableAmounts.forEach((amount, payableId) => {
+      for (const [amount, payableId] of affectedPayableAmounts.entries()) {
         const payable = payables.find(item => item.id === payableId);
-        if (!payable) return;
+        if (!payable) continue;
         const nextPaid = Math.max(0, Number(payable.paidCents || 0) - amount);
         const payableChange = {
           paidCents: nextPaid,
@@ -2216,12 +2276,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           payableChange.paymentTransactionId = null;
           payableChange.actualDate = null;
         }
-        reversalBatch.update(docPath(db, 'financial_payables', payableId), payableChange);
-      });
+        await updateDoc(docPath(db, 'financial_payables', payableId), payableChange);
+      }
 
-      affectedReceivableAmounts.forEach((amount, receivableId) => {
+      for (const [amount, receivableId] of affectedReceivableAmounts.entries()) {
         const receivable = receivables.find(item => item.id === receivableId);
-        if (!receivable) return;
+        if (!receivable) continue;
         const nextReceived = Math.max(0, Number(receivable.receivedCents || 0) - amount);
         const receivableChange = {
           receivedCents: nextReceived,
@@ -2232,23 +2292,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           receivableChange.receiptTransactionId = null;
           receivableChange.actualDate = null;
         }
-        reversalBatch.update(docPath(db, 'financial_receivables', receivableId), receivableChange);
-      });
-
-      if (affectedBillAmounts.size || affectedPayableAmounts.size || affectedReceivableAmounts.size) {
-        await reversalBatch.commit();
+        await updateDoc(docPath(db, 'financial_receivables', receivableId), receivableChange);
       }
-
-      // Remove transfers criadas automaticamente a partir das movimentações Pluggy.
-      const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
-      const autoPluggyTransfers = transfers.filter(transfer =>
-        transfer.companyId === companyId
-        && transfer.source === 'AUTO_RECONCILIATION'
-        && (
-          pluggyTransactionIds.has(transfer.outgoingTransactionId)
-          || pluggyTransactionIds.has(transfer.incomingTransactionId)
-        )
-      );
 
       for (let start = 0; start < autoPluggyTransfers.length; start += 400) {
         const batch = writeBatch(db);
@@ -2285,11 +2330,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         await batch.commit();
       }
 
+      setModal(null);
       setNotice(
-        `Base sincronizada da Pluggy limpa: ${pluggyTransactions.length} movimentação(ões), ${pluggyAccounts.length} conta(s) e ${pluggyInbox.length} item(ns) de Atenção removido(s). Seus cadastros manuais foram preservados. Agora faça uma nova sincronização.`
+        `Dados sincronizados de ${connection.connectorName || 'este banco'} excluídos: ` +
+        `${pluggyTransactions.length} movimentação(ões), ` +
+        `${pluggyAccounts.length} conta(s), ` +
+        `${pluggyInbox.length} item(ns) de Atenção e ` +
+        `${autoPluggyTransfers.length} transferência(s) automática(s). ` +
+        `Cadastros manuais foram preservados.`
       );
     } catch (err) {
-      setNotice(err.message || 'Não foi possível limpar os dados sincronizados da Pluggy.');
+      setNotice(err.message || 'Não foi possível excluir os dados sincronizados deste banco.');
     } finally {
       setBusy(false);
     }
@@ -2895,22 +2946,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               connections={connections}
               onSaveConnection={savePluggyConnection}
               onSyncConnection={syncPluggyConnection}
+              onClearConnection={requestClearPluggyConnection}
+              busy={busy}
             />
-            <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 rounded-xl border border-red-100 bg-red-50">
-              <div>
-                <p className="text-xs font-black text-red-800">Recomeçar sincronização</p>
-                <p className="text-[10px] text-red-700 mt-1">
-                  Apaga apenas os dados importados pela Pluggy e desfaz conciliações feitas por eles. Cadastros manuais são preservados.
-                </p>
-              </div>
-              <button
-                onClick={clearPluggySyncedData}
-                disabled={busy}
-                className="shrink-0 px-3 py-2.5 rounded-xl border border-red-200 bg-white text-red-700 text-xs font-black hover:bg-red-100 disabled:opacity-50"
-              >
-                <Trash2 size={15} className="inline mr-1.5"/> Limpar dados sincronizados
-              </button>
-            </div>
           </Card>
 
           <Card className="p-5">
@@ -3051,6 +3089,22 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         </div>
       )}
 
+      {modal?.type === 'pluggyClearConfirm' && modal.scope && (
+        <PluggyClearConfirmModal
+          scope={modal.scope}
+          onClose={() => setModal(null)}
+          onContinue={() => confirmClearPluggyConnection(modal.scope)}
+          busy={busy}
+        />
+      )}
+      {modal?.type === 'pluggyClearFinal' && modal.scope && (
+        <PluggyClearFinalModal
+          scope={modal.scope}
+          onClose={() => setModal(null)}
+          onConfirm={() => executeClearPluggyConnection(modal.scope)}
+          busy={busy}
+        />
+      )}
       {modal?.type === 'category' && <CategoryModal
         initial={modal.initial}
         onClose={()=>setModal(null)}
@@ -3074,6 +3128,89 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   );
 }
 
+function PluggyClearConfirmModal({ scope, onClose, onContinue, busy }) {
+  const bankName = scope?.connection?.connectorName || 'este banco';
+  return (
+    <Modal title="Limpar dados sincronizados" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200">
+          <p className="text-xs font-black uppercase tracking-wide text-amber-800">Banco selecionado</p>
+          <p className="text-lg font-black text-slate-800 mt-1">{bankName}</p>
+          <p className="text-xs text-slate-500 mt-1">Somente os dados sincronizados desta conexão serão afetados.</p>
+        </div>
+
+        <div className="grid sm:grid-cols-3 gap-3">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <p className="text-[10px] font-black uppercase text-slate-400">Movimentações</p>
+            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyTransactions.length}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <p className="text-[10px] font-black uppercase text-slate-400">Contas</p>
+            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyAccounts.length}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+            <p className="text-[10px] font-black uppercase text-slate-400">Atenção</p>
+            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyInbox.length}</p>
+          </div>
+        </div>
+
+        <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800 font-medium">
+          As movimentações, contas bancárias sincronizadas e vínculos automáticos deste banco serão removidos.
+          Cadastros manuais permanecem intactos.
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} disabled={busy} className="px-4 py-2.5 border rounded-xl text-xs font-bold">
+            Cancelar
+          </button>
+          <button onClick={onContinue} disabled={busy} className="px-4 py-2.5 bg-amber-500 text-white rounded-xl text-xs font-black hover:bg-amber-600">
+            Continuar
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function PluggyClearFinalModal({ scope, onClose, onConfirm, busy }) {
+  const bankName = scope?.connection?.connectorName || 'este banco';
+  return (
+    <Modal title="Confirmação final" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="p-5 rounded-2xl bg-red-50 border-2 border-red-200">
+          <p className="text-sm font-black text-red-800 uppercase leading-relaxed">
+            TEM CERTEZA QUE DESEJA EXCLUIR TUDO QUE FOI SINCRONIZADO DESTE BANCO?
+          </p>
+          <p className="text-sm font-black text-red-700 uppercase mt-2">
+            ESSA AÇÃO NÃO PODERÁ SER DESFEITA.
+          </p>
+        </div>
+
+        <div className="text-sm text-slate-700">
+          Banco: <strong>{bankName}</strong>
+        </div>
+
+        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
+          Serão removidos {scope.pluggyTransactions.length} movimentação(ões), {scope.pluggyAccounts.length} conta(s) e {scope.pluggyInbox.length} item(ns) de Atenção sincronizados por este banco.
+          Transferências automáticas vinculadas também serão removidas. Cadastros manuais não serão excluídos.
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} disabled={busy} className="px-4 py-2.5 border rounded-xl text-xs font-bold">
+            NÃO, CANCELAR
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="px-4 py-2.5 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 disabled:opacity-50"
+          >
+            {busy ? 'EXCLUINDO...' : 'SIM, EXCLUIR TUDO DESTE BANCO'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 function CategoryModal({ initial, onClose, onSave, busy }) {
   const [name, setName] = useState(initial?.name || '');
 

@@ -54,6 +54,58 @@ function Metric({ label, value, icon, tone = 'slate' }) {
   );
 }
 
+const buildBulkClassificationGroups = (attentionItems = [], bulkQuery = '') => {
+  const groups = new Map();
+
+  (Array.isArray(attentionItems) ? attentionItems : [])
+    .filter(item => item?.kind === 'CLASSIFICATION' && item?.transaction && item.transaction.type === 'EXPENSE')
+    .forEach(item => {
+      const tx = item.transaction || {};
+      const description = String(tx.description || '');
+      const normalizedDescription = normalizeText(description);
+      const isTransfer = /(transferencia|transfer|ted|doc)/.test(normalizedDescription)
+        && !/(compra|pagamento|fatura|boleto|fornecedor|loja|restaurante)/.test(normalizedDescription);
+      const isCardPayment = /(pagamento|pagto|fatura)/.test(normalizedDescription)
+        && /(cartao|credito)/.test(normalizedDescription);
+      if (isTransfer || isCardPayment) return;
+
+      const merchant = String(tx.merchant || description || 'Movimentação').trim();
+      const key = normalizeText(merchant);
+      if (!key || key.length < 4) return;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          merchant,
+          items: [],
+          totalCents: 0,
+          expenseCount: 0,
+          incomeCount: 0,
+          sampleDescriptions: [],
+        });
+      }
+
+      const group = groups.get(key);
+      group.items.push(item);
+      group.totalCents += Number(tx.amountCents || 0);
+      if (tx.type === 'INCOME') group.incomeCount += 1;
+      else group.expenseCount += 1;
+
+      if (group.sampleDescriptions.length < 3 && description && !group.sampleDescriptions.includes(description)) {
+        group.sampleDescriptions.push(description);
+      }
+    });
+
+  const query = normalizeText(String(bulkQuery || ''));
+  return [...groups.values()]
+    .filter(group => !query || normalizeText(String(group.merchant || '')).includes(query))
+    .sort((a, b) => {
+      const countDiff = b.items.length - a.items.length;
+      if (countDiff) return countDiff;
+      return b.totalCents - a.totalCents;
+    });
+};
+
 export default function FinancialHub({ appUser, projects = [], clients = [], db }) {
   const companyId = appUser?.companyId || 'legado';
   const [tab, setTab] = useState('overview');
@@ -152,62 +204,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       });
   }, [inbox, transactions]);
 
-  const bulkClassificationGroups = useMemo(() => {
-    try {
-      const groups = new Map();
-
-      attentionItems
-        .filter(item => item?.kind === 'CLASSIFICATION' && item?.transaction && item.transaction.type === 'EXPENSE')
-        .forEach(item => {
-          const tx = item.transaction || {};
-          const description = String(tx.description || '');
-          const normalizedDescription = normalizeText(description);
-          const isTransfer = /(transferencia|transfer|ted|doc)/.test(normalizedDescription)
-            && !/(compra|pagamento|fatura|boleto|fornecedor|loja|restaurante)/.test(normalizedDescription);
-          const isCardPayment = /(pagamento|pagto|fatura)/.test(normalizedDescription)
-            && /(cartao|credito)/.test(normalizedDescription);
-          if (isTransfer || isCardPayment) return;
-
-          const merchant = String(tx.merchant || description || 'Movimentação').trim();
-          const key = normalizeText(merchant);
-          if (!key || key.length < 4) return;
-
-          if (!groups.has(key)) {
-            groups.set(key, {
-              key,
-              merchant,
-              items: [],
-              totalCents: 0,
-              expenseCount: 0,
-              incomeCount: 0,
-              sampleDescriptions: [],
-            });
-          }
-
-          const group = groups.get(key);
-          group.items.push(item);
-          group.totalCents += Number(tx.amountCents || 0);
-          if (tx.type === 'INCOME') group.incomeCount += 1;
-          else group.expenseCount += 1;
-
-          if (group.sampleDescriptions.length < 3 && description && !group.sampleDescriptions.includes(description)) {
-            group.sampleDescriptions.push(description);
-          }
-        });
-
-      const query = normalizeText(String(bulkQuery || ''));
-      return [...groups.values()]
-        .filter(group => !query || normalizeText(String(group.merchant || '')).includes(query))
-        .sort((a, b) => {
-          const countDiff = b.items.length - a.items.length;
-          if (countDiff) return countDiff;
-          return b.totalCents - a.totalCents;
-        });
-    } catch (error) {
-      console.error('Falha ao montar classificação em massa:', error);
-      return [];
-    }
-  }, [attentionItems, bulkQuery]);
+  const bulkClassificationGroups = tab === 'attention'
+    ? buildBulkClassificationGroups(attentionItems, bulkQuery)
+    : [];
 
   const visibleBulkGroups = bulkClassificationGroups.slice(0, bulkLimit);
 

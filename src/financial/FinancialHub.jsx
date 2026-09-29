@@ -1190,7 +1190,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             financialAccountId,
           });
 
-          const ref = doc(collectionPath(db, 'financial_transactions'));
+          // Para novos lançamentos, o id do documento também é determinístico.
+          // Assim duas sincronizações concorrentes apontam para o mesmo documento.
+          const safeExternalId = String(rawTransaction.id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
+          const ref = docPath(db, 'financial_transactions', `${companyId}_pluggy_${safeExternalId}`);
           const item = {
             ref,
             id: ref.id,
@@ -1471,7 +1474,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
         const existingAttention = openInboxByTransaction.get(item.id) || [];
         if (!existingAttention.length) {
-          const attentionRef = doc(collectionPath(db, 'financial_inbox'));
+          const attentionRef = docPath(db, 'financial_inbox', `${companyId}_attention_${item.id}`);
           pendingInbox.push({
             ref: attentionRef,
             data: {
@@ -1504,7 +1507,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           // das demais movimentações do banco.
           console.error('Falha ao processar transação Pluggy', item?.id, transactionError);
           if (item?.id) {
-            const attentionRef = doc(collectionPath(db, 'financial_inbox'));
+            const attentionRef = docPath(db, 'financial_inbox', `${companyId}_attention_${item.id}`);
             pendingInbox.push({
               ref: attentionRef,
               data: {

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import ThemeSettingsModal from './ThemeSettingsModal.jsx';
 import { useTheme } from './ThemeContext.jsx';
+import FinancialHub from './financial/FinancialHub.jsx';
 
 // --- CONFIGURAÇÃO DO FIREBASE ---
 const firebaseConfig = {
@@ -392,7 +393,7 @@ function ClientsView({ clients, projects, canCreate, canEdit, canDelete, appUser
 
 // --- LAYOUT PRINCIPAL E GESTÃO DE ESTADO GLOBAL ---
 function MainLayout({ firebaseUser, appUser, onLogout }) {
-  const [currentView, setCurrentView] = useState('dashboard');
+  const [currentView, setCurrentView] = useState('recebimentos');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isThemeSettingsOpen, setIsThemeSettingsOpen] = useState(false);
   const [targetProjectToEdit, setTargetProjectToEdit] = useState(null);
@@ -457,7 +458,7 @@ const allowedProjects = useMemo(() => {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <RecebimentosView projects={allowedProjects} contasPagar={contasPagar} docTypes={docTypes} suppliers={suppliers} canEdit={canEdit} appUser={appUser} groups={payGroups} subgroups={paySubgroups} /> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} /> : <NoAccess />;
       case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;

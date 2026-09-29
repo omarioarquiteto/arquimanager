@@ -1098,41 +1098,89 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         return null;
       };
 
+      // Chave de segurança para o caso de a API devolver um id externo
+      // diferente para o mesmo fato bancário.
+      const transactionFingerprint = (tx) => {
+        const account = tx?.providerAccountId || tx?.accountId || '';
+        const date = tx?.date || '';
+        const amount = Number(tx?.amountCents || 0);
+        const description = normalizeText(tx?.description || tx?.merchant || '');
+        if (!account || !date || !amount || !description) return null;
+        return [
+          String(account),
+          String(date),
+          String(amount),
+          String(description),
+        ].join('|');
+      };
+
       // Consolida o histórico antes de qualquer nova importação.
       const canonicalByIdentity = new Map();
+      const canonicalByFingerprint = new Map();
       const duplicateTransactionIds = new Set();
 
       companyTransactions
         .filter(tx => tx?.source === 'PLUGGY' || tx?.providerTransactionId || String(tx?.externalId || '').startsWith('pluggy:'))
         .forEach(tx => {
           const identity = transactionIdentity(tx);
-          if (!identity) return;
+          const fingerprint = transactionFingerprint(tx);
 
-          const current = canonicalByIdentity.get(identity);
-          if (!current) {
-            canonicalByIdentity.set(identity, tx);
-            return;
+          // Primeiro consolida pelo identificador da origem.
+          if (identity) {
+            const current = canonicalByIdentity.get(identity);
+            if (!current) {
+              canonicalByIdentity.set(identity, tx);
+            } else {
+              const currentScore = transactionPriority(current);
+              const nextScore = transactionPriority(tx);
+              if (nextScore > currentScore) {
+                duplicateTransactionIds.add(current.id);
+                canonicalByIdentity.set(identity, tx);
+              } else {
+                duplicateTransactionIds.add(tx.id);
+              }
+            }
           }
 
-          const currentScore = transactionPriority(current);
-          const nextScore = transactionPriority(tx);
-
-          if (nextScore > currentScore) {
-            duplicateTransactionIds.add(current.id);
-            canonicalByIdentity.set(identity, tx);
-          } else {
-            duplicateTransactionIds.add(tx.id);
+          // Depois consolida pelo fato bancário em si. Isso captura duplicações
+          // históricas mesmo quando a resposta da Pluggy trouxe ids diferentes.
+          if (fingerprint && !duplicateTransactionIds.has(tx.id)) {
+            const current = canonicalByFingerprint.get(fingerprint);
+            if (!current) {
+              canonicalByFingerprint.set(fingerprint, tx);
+            } else if (current.id !== tx.id) {
+              const currentScore = transactionPriority(current);
+              const nextScore = transactionPriority(tx);
+              if (nextScore > currentScore) {
+                duplicateTransactionIds.add(current.id);
+                canonicalByFingerprint.set(fingerprint, tx);
+              } else {
+                duplicateTransactionIds.add(tx.id);
+              }
+            }
           }
         });
 
-      // Mapa usado pela importação. O lançamento canônico é localizado pelo
-      // providerTransactionId e pelo externalId.
+      // Mapa usado pela importação. Procura primeiro o id externo e depois
+      // o fingerprint, evitando recriar lançamentos já existentes.
       const existingByExternalId = new Map();
+      const existingByFingerprint = new Map();
+
       [...canonicalByIdentity.values()].forEach(tx => {
         if (tx?.externalId) existingByExternalId.set(String(tx.externalId), tx);
         if (tx?.providerTransactionId) {
           existingByExternalId.set('pluggy:' + String(tx.providerTransactionId), tx);
         }
+        const fingerprint = transactionFingerprint(tx);
+        if (fingerprint && !duplicateTransactionIds.has(tx.id)) {
+          existingByFingerprint.set(fingerprint, tx);
+        }
+      });
+
+      [...canonicalByFingerprint.values()].forEach(tx => {
+        if (duplicateTransactionIds.has(tx.id)) return;
+        const fingerprint = transactionFingerprint(tx);
+        if (fingerprint) existingByFingerprint.set(fingerprint, tx);
       });
 
       const canonicalTransactionIds = new Set(
@@ -1191,8 +1239,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         if (!rawTransaction?.id) return;
 
         const externalId = `pluggy:${rawTransaction.id}`;
-        const existing = existingByExternalId.get(externalId);
         const financialAccountId = `${companyId}_pluggy_account_${rawTransaction.accountId}`;
+
+        const rawFingerprint = transactionFingerprint({
+          providerAccountId: rawTransaction.accountId,
+          accountId: rawTransaction.accountId,
+          date: rawTransaction.date ? String(rawTransaction.date).slice(0, 10) : '',
+          amountCents: Math.abs(toCents(
+            rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0
+          )),
+          description: rawTransaction.description || rawTransaction.descriptionRaw || '',
+          merchant: rawTransaction.merchant?.name || rawTransaction.merchant?.businessName || rawTransaction.description || '',
+        });
+
+        const existing = existingByExternalId.get(externalId)
+          || (rawFingerprint ? existingByFingerprint.get(rawFingerprint) : null);
 
         if (existing) {
           alreadyPresent += 1;
@@ -1232,10 +1293,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
           newTransactionsBatch.set(ref, item.data);
           importedItems.push(item);
-          existingByExternalId.set(externalId, {
+          const indexedItem = {
             ...item.data,
             id: ref.id,
-          });
+          };
+          existingByExternalId.set(externalId, indexedItem);
+          const indexedFingerprint = transactionFingerprint(indexedItem);
+          if (indexedFingerprint) existingByFingerprint.set(indexedFingerprint, indexedItem);
           newImported += 1;
         } catch (err) {
           console.error('Transação Pluggy ignorada:', err);

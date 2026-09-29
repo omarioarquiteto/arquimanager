@@ -5,7 +5,21 @@
 export const MONEY_SCALE = 100;
 
 export const toCents = (value) => {
-  const n = Number(String(value ?? '').replace(/\./g, '').replace(',', '.'));
+  if (value == null || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value * MONEY_SCALE) : 0;
+
+  let s = String(value).trim().replace(/R\$|\s/g, '');
+  if (!s) return 0;
+
+  // Campos do próprio sistema usam ponto como separador decimal.
+  // Textos digitados em padrão brasileiro usam vírgula.
+  if (s.includes(',') && s.includes('.')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes(',')) {
+    s = s.replace(',', '.');
+  }
+
+  const n = Number(s);
   return Number.isFinite(n) ? Math.round(n * MONEY_SCALE) : 0;
 };
 

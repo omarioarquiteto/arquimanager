@@ -204,6 +204,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       });
   }, [inbox, transactions]);
 
+  const attentionCount = inbox.filter(item => item.status !== 'RESOLVED').length;
+
   const bulkClassificationGroups = tab === 'attention'
     ? buildBulkClassificationGroups(attentionItems, bulkQuery)
     : [];

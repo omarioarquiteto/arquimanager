@@ -2892,9 +2892,8 @@ function BulkClassificationRow({ group, categories, projects, clients, busy, onA
             onClick={() => onApply({
               group,
               categoryId,
-              projectId,
-              clientId: isMixedType ? '' : clientId,
               projectId: '',
+              clientId: isMixedType ? '' : clientId,
               rememberMerchant
             })}
             className="bg-emerald-600 text-white px-3 py-2.5 rounded-xl text-xs font-black whitespace-nowrap disabled:opacity-40"

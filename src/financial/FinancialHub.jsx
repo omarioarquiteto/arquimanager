@@ -1702,6 +1702,48 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }
   };
 
+  const saveCategory = async (data) => {
+    const name = String(data?.name || '').trim();
+    if (!name) return;
+
+    const normalizedName = normalizeText(name);
+    const duplicate = categories.find(category =>
+      category.id !== data?.categoryId &&
+      normalizeText(category.nome || '') === normalizedName
+    );
+    if (duplicate) {
+      setNotice(`A categoria "${duplicate.nome}" já existe.`);
+      return;
+    }
+
+    setBusy(true);
+    try {
+      if (data?.categoryId) {
+        await updateDoc(docPath(db, 'financial_categories', data.categoryId), {
+          nome: name,
+          updatedAt: serverTimestamp(),
+        });
+        setNotice('Categoria atualizada.');
+      } else {
+        const categoryId = `${companyId}_custom_${stableHash(normalizedName)}`;
+        await setDoc(docPath(db, 'financial_categories', categoryId), {
+          companyId,
+          nome: name,
+          active: true,
+          system: false,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+        setNotice('Nova categoria criada.');
+      }
+      setModal(null);
+    } catch (err) {
+      setNotice(err.message || 'Não foi possível salvar a categoria.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createAccount = async (data) => {
     const name = data.name.trim();
     if (!name) return;
@@ -2596,6 +2638,44 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           <Card className="p-5">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
               <div>
+                <h4 className="font-black text-xl text-slate-800">Categorias</h4>
+                <p className="text-xs text-slate-400">Organize suas entradas e despesas. As categorias padrão podem ser renomeadas sem perder os lançamentos já classificados.</p>
+              </div>
+              <button
+                onClick={() => setModal({ type: 'category' })}
+                className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"
+              >
+                <Plus size={16}/> Nova categoria
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {[...categories]
+                .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
+                .map(category => (
+                  <div key={category.id} className="border border-slate-200 rounded-xl p-3 bg-slate-50 flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-[#1e5aa0]">
+                      <Tags size={17}/>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-black text-slate-800 truncate">{category.nome}</p>
+                      <p className="text-[10px] text-slate-400">{category.system ? 'Categoria padrão' : 'Categoria personalizada'}</p>
+                    </div>
+                    <button
+                      onClick={() => setModal({ type: 'category', initial: { categoryId: category.id, name: category.nome } })}
+                      className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50"
+                      title="Renomear categoria"
+                    >
+                      <Pencil size={15}/>
+                    </button>
+                  </div>
+                ))}
+              {!categories.length && <EmptyState text="Nenhuma categoria cadastrada ainda."/>}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <div>
                 <h4 className="font-black text-xl text-slate-800">Cartões</h4>
                 <p className="text-xs text-slate-400">Compra, parcela e fatura ficam separadas do pagamento.</p>
               </div>
@@ -2643,6 +2723,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         </div>
       )}
 
+      {modal?.type === 'category' && <CategoryModal
+        initial={modal.initial}
+        onClose={()=>setModal(null)}
+        onSave={saveCategory}
+        busy={busy}
+      />}
       {modal?.type === 'transaction' && <TransactionModal
         initial={modal.initial} accounts={accounts} cards={cards} categories={categories}
         projects={projects} clients={clients} onClose={()=>setModal(null)}
@@ -2657,6 +2743,40 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {modal?.type === 'transfer' && <TransferModal accounts={accounts} onClose={()=>setModal(null)} onSave={createTransfer} busy={busy}/>}
       {modal?.type === 'csv' && <CsvModal accounts={accounts} onClose={()=>setModal(null)} onImport={importCsv} busy={busy}/>}
     </div>
+  );
+}
+
+function CategoryModal({ initial, onClose, onSave, busy }) {
+  const [name, setName] = useState(initial?.name || '');
+
+  return (
+    <Modal title={initial?.categoryId ? 'Renomear categoria' : 'Nova categoria'} onClose={onClose}>
+      <Field label="Nome da categoria *">
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') onSave({ categoryId: initial?.categoryId, name });
+          }}
+          placeholder="Ex.: Combustível, Internet, Equipamentos..."
+          className={inputCls}
+          autoFocus
+        />
+      </Field>
+      <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800">
+        A categoria será usada nos lançamentos e também ficará disponível na classificação em massa da caixa de Atenção.
+      </div>
+      <div className="mt-5 flex justify-end gap-2">
+        <button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button>
+        <button
+          disabled={busy || !name.trim()}
+          onClick={() => onSave({ categoryId: initial?.categoryId, name })}
+          className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black disabled:opacity-50"
+        >
+          {busy ? 'Salvando...' : (initial?.categoryId ? 'Salvar categoria' : 'Criar categoria')}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

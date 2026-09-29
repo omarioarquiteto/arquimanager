@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { getApps, initializeApp } from 'firebase/app';
 import {
   getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc,
   serverTimestamp
@@ -14,21 +13,9 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 
-const firebaseConfig = {
-  apiKey: 'AIzaSyBrHpPQfFSGv23stqSw0P_GSn6kchrFYyU',
-  authDomain: 'arquimanager-1ee9b.firebaseapp.com',
-  projectId: 'arquimanager-1ee9b',
-  storageBucket: 'arquimanager-1ee9b.firebasestorage.app',
-  messagingSenderId: '148259023703',
-  appId: '1:148259023703:web:04a57624f1c526e4b0ac12',
-};
-
-const firebaseApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
 const root = 'artifacts/arquimanager-producao/public/data';
-
-const collectionPath = (name) => collection(db, root, name);
-const docPath = (name, id) => doc(db, root, name, id);
+const collectionPath = (db, name) => collection(db, root, name);
+const docPath = (db, name, id) => doc(db, root, name, id);
 
 const monthKey = (date) => (date || '').slice(0, 7);
 const parseDate = (s) => {
@@ -65,7 +52,7 @@ function Metric({ label, value, icon, tone = 'slate' }) {
   );
 }
 
-export default function FinancialHub({ appUser, projects = [], clients = [] }) {
+export default function FinancialHub({ appUser, projects = [], clients = [], db }) {
   const companyId = appUser?.companyId || 'legado';
   const [tab, setTab] = useState('overview');
   const [accounts, setAccounts] = useState([]);
@@ -82,7 +69,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
 
   useEffect(() => {
     if (!companyId) return;
-    const attach = (name, setter) => onSnapshot(collectionPath(name), snap => {
+    const attach = (name, setter) => onSnapshot(collectionPath(db, name), snap => {
       setter(
         snap.docs
           .map(d => ({ id: d.id, ...d.data() }))
@@ -104,7 +91,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
   useEffect(() => {
     DEFAULT_CATEGORIES.forEach(async ([id, nome]) => {
       try {
-        await setDoc(docPath('financial_categories', `${companyId}_${id}`), {
+        await setDoc(docPath(db, 'financial_categories', `${companyId}_${id}`), {
           companyId, nome, active: true, system: true, updatedAt: serverTimestamp(),
         }, { merge: true });
       } catch (err) {
@@ -164,7 +151,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
     if (!name) return;
     setBusy(true);
     try {
-      await addDoc(collectionPath('financial_accounts'), {
+      await addDoc(collectionPath(db, 'financial_accounts'), {
         companyId, name, institution: data.institution.trim(), type: data.type,
         balanceCents: toCents(data.balance), active: true,
         createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
@@ -186,7 +173,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
       const effectiveProjectId = data.projectId || rememberedRule?.projectId || null;
       const category = categories.find(c => c.id === effectiveCategoryId);
       const status = type === 'INCOME' ? 'IDENTIFICATION_REQUIRED' : (effectiveCategoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED');
-      const ref = await addDoc(collectionPath('financial_transactions'), {
+      const ref = await addDoc(collectionPath(db, 'financial_transactions'), {
         companyId, source: 'MANUAL', externalId: null,
         accountId: data.accountId, cardId: data.cardId || null,
         date: data.date, actualDate: data.date, expectedDate: null,
@@ -197,7 +184,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
         notes: data.notes?.trim() || '', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
       if (status === 'IDENTIFICATION_REQUIRED') {
-        await addDoc(collectionPath('financial_inbox'), {
+        await addDoc(collectionPath(db, 'financial_inbox'), {
           companyId, transactionId: ref.id, reason: type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação',
           confidence: 0, status: 'OPEN', createdAt: serverTimestamp(),
         });
@@ -212,18 +199,18 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
     if (!tx) return;
     setBusy(true);
     try {
-      await updateDoc(docPath('financial_transactions', tx.id), {
+      await updateDoc(docPath(db, 'financial_transactions', tx.id), {
         categoryId: data.categoryId || null,
         projectId: data.projectId || null,
         clientId: data.clientId || null,
         status: data.categoryId || data.projectId || data.clientId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
         updatedAt: serverTimestamp(),
       });
-      await updateDoc(docPath('financial_inbox', item.id), {
+      await updateDoc(docPath(db, 'financial_inbox', item.id), {
         status: 'RESOLVED', resolvedAt: serverTimestamp(), resolvedBy: appUser?.id || null,
       });
       if (data.rememberMerchant && tx.normalizedMerchant && data.categoryId) {
-        await setDoc(docPath('financial_rules', `${companyId}_${tx.normalizedMerchant}`), {
+        await setDoc(docPath(db, 'financial_rules', `${companyId}_${tx.normalizedMerchant}`), {
           companyId, merchantNormalized: tx.normalizedMerchant, categoryId: data.categoryId,
           projectId: data.projectId || null, updatedAt: serverTimestamp(),
         }, { merge: true });
@@ -261,7 +248,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
         const externalId = transactionKey({ accountId, date: isoDate, description, amountCents: normalizedAmount });
         if (existing.has(externalId)) { skipped += 1; continue; }
 
-        const ref = await addDoc(collectionPath('financial_transactions'), {
+        const ref = await addDoc(collectionPath(db, 'financial_transactions'), {
           companyId, source: 'CSV', externalId, accountId, cardId: null,
           date: isoDate, actualDate: isoDate, expectedDate: null, description,
           merchant: description, normalizedMerchant,
@@ -272,7 +259,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [] }) {
           importedAt: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         });
         if (!(type === 'EXPENSE' && rememberedRule?.categoryId)) {
-          await addDoc(collectionPath('financial_inbox'), {
+          await addDoc(collectionPath(db, 'financial_inbox'), {
             companyId, transactionId: ref.id, reason: type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada',
             confidence: 0, status: 'OPEN', createdAt: serverTimestamp(),
           });

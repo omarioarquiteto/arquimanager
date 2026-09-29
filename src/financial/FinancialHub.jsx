@@ -123,7 +123,29 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return { income, expense, result: income - expense };
   }, [monthTransactions]);
 
-  const attentionCount = inbox.filter(i => i.status !== 'RESOLVED').length;
+  const attentionItems = useMemo(() => {
+    const priority = {
+      CARD_BILL_PAYMENT: 1,
+      PAYABLE_PAYMENT: 2,
+      RECEIVABLE_RECEIPT: 2,
+      CLASSIFICATION: 3,
+    };
+    return inbox
+      .filter(item => item.status !== 'RESOLVED')
+      .map(item => ({
+        ...item,
+        transaction: transactions.find(t => t.id === item.transactionId) || null,
+      }))
+      .sort((a, b) => {
+        const priorityDiff = (priority[a.kind] || 9) - (priority[b.kind] || 9);
+        if (priorityDiff) return priorityDiff;
+        const confidenceDiff = Number(b.confidence || 0) - Number(a.confidence || 0);
+        if (confidenceDiff) return confidenceDiff;
+        return String(a.createdAt?.seconds || 0).localeCompare(String(b.createdAt?.seconds || 0));
+      });
+  }, [inbox, transactions]);
+
+  const attentionCount = attentionItems.length;
 
   const accountBalance = useMemo(
     () => accounts.reduce((sum, a) => sum + Number(a.balanceCents || 0), 0),
@@ -1522,12 +1544,27 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <CircleAlert className="text-amber-500" size={22}/>
             <div>
               <h4 className="font-black text-xl text-slate-800">Caixa de atenção</h4>
-              <p className="text-xs text-slate-400">O sistema trabalha sozinho no que sabe; você resolve só as exceções.</p>
+              <p className="text-xs text-slate-400">O sistema trabalha sozinho no que sabe; você resolve só as exceções. Os casos mais críticos aparecem primeiro.</p>
+          <div className="flex flex-wrap gap-2 mt-3 text-[10px] font-black uppercase tracking-wide">
+            <span className="px-2 py-1 rounded-lg bg-red-50 text-red-700">Pagamento de cartão</span>
+            <span className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700">Conciliação</span>
+            <span className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600">Classificação</span>
+          </div>
             </div>
           </div>
           <div className="space-y-3">
-            {inbox.filter(i=>i.status !== 'RESOLVED').map(item => (
-              <AttentionItem key={item.id} item={item} transaction={transactions.find(t=>t.id===item.transactionId)} categories={categories} projects={projects} clients={clients} bills={bills} cards={cards} onResolve={resolveInbox}/>
+            {attentionItems.map(item => (
+              <AttentionItem
+                key={item.id}
+                item={item}
+                transaction={item.transaction}
+                categories={categories}
+                projects={projects}
+                clients={clients}
+                bills={bills}
+                cards={cards}
+                onResolve={resolveInbox}
+              />
             ))}
             {!attentionCount && <div className="p-6 text-center bg-emerald-50 rounded-xl text-emerald-700 font-bold">Nenhum item aguardando tratamento.</div>}
           </div>
@@ -1762,7 +1799,24 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
             <p className="font-black text-slate-800">{transaction.description}</p>
           </div>
           <p className="text-xs text-slate-500 mt-1">{dateLabel(transaction.date)} · {transaction.type === 'INCOME' ? 'Entrada' : 'Saída'} · {formatBRL(transaction.amountCents)}</p>
-          <p className="text-[10px] uppercase font-black text-amber-700 mt-2">{item.reason}</p>
+          <div className="flex flex-wrap items-center gap-2 mt-2">
+            <p className="text-[10px] uppercase font-black text-amber-700">{item.reason}</p>
+            <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-white border border-amber-200 text-slate-500">
+              {transaction.source === 'CSV' ? 'importado' : 'manual'}
+            </span>
+            {Number(item.confidence || 0) > 0 && (
+              <span className="text-[9px] font-black text-slate-500">confiança {Number(item.confidence)}%</span>
+            )}
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1">
+            {item.kind === 'CARD_BILL_PAYMENT'
+              ? 'O sistema suspeita que esta saída seja o pagamento de uma fatura.'
+              : item.kind === 'PAYABLE_PAYMENT'
+                ? 'Existe uma conta a pagar compatível, mas a correspondência não foi suficientemente única.'
+                : item.kind === 'RECEIVABLE_RECEIPT'
+                  ? 'Existe um recebível compatível, mas a correspondência não foi suficientemente única.'
+                  : 'Nenhuma regra suficientemente confiável identificou esta movimentação.'}
+          </p>
         </div>
         <div className={`grid gap-2 lg:w-[52%] ${['CARD_BILL_PAYMENT','PAYABLE_PAYMENT','RECEIVABLE_RECEIPT'].includes(item.kind) ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
           {item.kind === 'CARD_BILL_PAYMENT' ? (

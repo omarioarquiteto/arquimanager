@@ -1100,8 +1100,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const processPluggyTransaction = async ({ item, rawTransaction }) => {
         const poolVersion = pool.find(candidate => candidate.id === item.id);
         const tx = {
-          ...(poolVersion || {}),
           ...item.data,
+          ...(poolVersion || {}),
           id: item.id,
         };
         const description = tx.description || rawTransaction?.description || 'Movimentação bancária';

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc,
-  serverTimestamp
+  serverTimestamp, increment
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
@@ -57,6 +57,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [tab, setTab] = useState('overview');
   const [accounts, setAccounts] = useState([]);
   const [cards, setCards] = useState([]);
+  const [bills, setBills] = useState([]);
   const [categories, setCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [inbox, setInbox] = useState([]);
@@ -80,6 +81,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const unsubs = [
       attach('financial_accounts', setAccounts),
       attach('financial_cards', setCards),
+      attach('financial_bills', setBills),
       attach('financial_categories', setCategories),
       attach('financial_transactions', setTransactions),
       attach('financial_inbox', setInbox),
@@ -146,6 +148,77 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
 
+  const createCard = async (data) => {
+    if (!data.name.trim() || !data.institution.trim()) return;
+    const limitCents = toCents(data.limit);
+    const closingDay = Math.min(28, Math.max(1, Number(data.closingDay || 1)));
+    const dueDay = Math.min(28, Math.max(1, Number(data.dueDay || 1)));
+    setBusy(true);
+    try {
+      await addDoc(collectionPath(db, 'financial_cards'), {
+        companyId, name: data.name.trim(), institution: data.institution.trim(),
+        limitCents, closingDay, dueDay, paymentAccountId: data.paymentAccountId || null,
+        active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      });
+      setModal(null);
+      setNotice('Cartão cadastrado.');
+    } finally { setBusy(false); }
+  };
+
+  const createCardPurchase = async (data) => {
+    if (!data.cardId || !data.description.trim() || !data.amount || !data.purchaseDate) return;
+    const totalCents = Math.abs(toCents(data.amount));
+    const installmentsCount = Math.max(1, Math.min(48, Number(data.installments || 1)));
+    const card = cards.find(c => c.id === data.cardId);
+    if (!card || !totalCents) return;
+
+    const basePart = Math.floor(totalCents / installmentsCount);
+    const remainder = totalCents - (basePart * installmentsCount);
+    const addMonths = (baseDate, amount) => {
+      const d = new Date(baseDate.getTime()); d.setDate(1); d.setMonth(d.getMonth() + amount); return d;
+    };
+    const monthString = d => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+    const dateForDay = (year, monthIndex, day) => {
+      const last = new Date(year, monthIndex + 1, 0).getDate();
+      return year + '-' + String(monthIndex + 1).padStart(2,'0') + '-' + String(Math.min(day,last)).padStart(2,'0');
+    };
+
+    setBusy(true);
+    try {
+      const purchaseRef = await addDoc(collectionPath(db, 'financial_purchases'), {
+        companyId, cardId: data.cardId, merchant: data.merchant?.trim() || data.description.trim(),
+        description: data.description.trim(), purchaseDate: data.purchaseDate, totalCents,
+        installmentsCount, categoryId: data.categoryId || null, projectId: data.projectId || null,
+        status: 'ACTIVE', source: 'MANUAL', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      });
+
+      const purchaseDate = new Date(data.purchaseDate + 'T12:00:00');
+      const firstOffset = purchaseDate.getDate() > Number(card.closingDay || 1) ? 1 : 0;
+
+      for (let index = 0; index < installmentsCount; index += 1) {
+        const billMonthDate = addMonths(purchaseDate, firstOffset + index);
+        const referenceMonth = monthString(billMonthDate);
+        const dueDate = dateForDay(billMonthDate.getFullYear(), billMonthDate.getMonth(), Number(card.dueDay || 10));
+        const closingMonthDate = addMonths(billMonthDate, -1);
+        const closingDate = dateForDay(closingMonthDate.getFullYear(), closingMonthDate.getMonth(), Number(card.closingDay || 1));
+        const amountCents = basePart + (index < remainder ? 1 : 0);
+        const billId = companyId + '_' + data.cardId + '_' + referenceMonth;
+
+        await setDoc(docPath(db, 'financial_bills', billId), {
+          companyId, cardId: data.cardId, referenceMonth, closingDate, dueDate,
+          totalCents: increment(amountCents), paidCents: 0, status: 'OPEN', updatedAt: serverTimestamp(),
+        }, { merge: true });
+
+        await setDoc(docPath(db, 'financial_installments', purchaseRef.id + '_' + (index + 1)), {
+          companyId, purchaseId: purchaseRef.id, billId, cardId: data.cardId,
+          number: index + 1, total: installmentsCount, amountCents, dueDate, status: 'OPEN',
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        });
+      }
+      setModal(null);
+      setNotice('Compra registrada em ' + installmentsCount + ' parcela(s).');
+    } finally { setBusy(false); }
+  };
   const createAccount = async (data) => {
     const name = data.name.trim();
     if (!name) return;
@@ -474,35 +547,78 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       )}
 
       {tab === 'accounts' && (
-        <Card className="p-5 flex-1 overflow-auto">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-            <div>
-              <h4 className="font-black text-xl text-slate-800">Contas e cartões</h4>
-              <p className="text-xs text-slate-400">Base preparada para contas bancárias, cartões e integração Open Finance.</p>
-            </div>
-            <button onClick={() => setModal({type:'account'})} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"><Plus size={16}/> Nova conta</button>
-          </div>
-          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {accounts.map(a => (
-              <div key={a.id} className="border border-slate-200 rounded-2xl p-4 bg-slate-50">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2"><Landmark size={19} className="text-[#1e5aa0]"/><span className="font-black text-slate-800">{a.name}</span></div>
-                  <span className="text-[9px] font-black uppercase text-slate-400">{a.type}</span>
-                </div>
-                <p className="text-xs text-slate-500 mt-1">{a.institution || 'Instituição não informada'}</p>
-                <p className="text-xl font-black text-slate-800 mt-3">{formatBRL(a.balanceCents)}</p>
+        <div className="space-y-5 flex-1 overflow-auto pb-4">
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <div>
+                <h4 className="font-black text-xl text-slate-800">Contas bancárias</h4>
+                <p className="text-xs text-slate-400">Contas, caixa e saldos.</p>
               </div>
-            ))}
-            {!accounts.length && <EmptyState text="Nenhuma conta cadastrada. Cadastre primeiro suas contas correntes e caixas."/>}
-          </div>
-          <div className="mt-5 p-4 bg-blue-50 border border-blue-100 rounded-2xl flex gap-3">
-            <Sparkles className="text-blue-600 shrink-0" size={20}/>
-            <div>
-              <p className="font-black text-blue-900 text-sm">Próximo passo do núcleo</p>
-              <p className="text-xs text-blue-800 mt-1">Esta estrutura já guarda IDs externos e origem das movimentações. A conexão Pluggy poderá alimentar as mesmas coleções sem mudar a tela.</p>
+              <button onClick={() => setModal({type:'account'})} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"><Plus size={16}/> Nova conta</button>
             </div>
-          </div>
-        </Card>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {accounts.map(a => (
+                <div key={a.id} className="border border-slate-200 rounded-2xl p-4 bg-slate-50">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2"><Landmark size={19} className="text-[#1e5aa0]"/><span className="font-black text-slate-800">{a.name}</span></div>
+                    <span className="text-[9px] font-black uppercase text-slate-400">{a.type}</span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">{a.institution || 'Instituição não informada'}</p>
+                  <p className="text-xl font-black text-slate-800 mt-3">{formatBRL(a.balanceCents)}</p>
+                </div>
+              ))}
+              {!accounts.length && <EmptyState text="Nenhuma conta cadastrada ainda."/>}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <div>
+                <h4 className="font-black text-xl text-slate-800">Cartões</h4>
+                <p className="text-xs text-slate-400">Compra, parcela e fatura ficam separadas do pagamento.</p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setModal({type:'cardPurchase'})} disabled={!cards.length} className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 disabled:opacity-40"><Plus size={16}/> Nova compra</button>
+                <button onClick={() => setModal({type:'card'})} className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"><Plus size={16}/> Novo cartão</button>
+              </div>
+            </div>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {cards.map(card => {
+                const openBills = bills.filter(b => b.cardId === card.id && b.status !== 'PAID');
+                const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
+                return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
+                  <div className="flex items-start justify-between gap-2"><div><p className="font-black text-slate-800">{card.name}</p><p className="text-xs text-slate-400">{card.institution}</p></div><WalletCards size={19} className="text-[#1e5aa0]"/></div>
+                  <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
+                    <div><span className="text-slate-400 block">Limite</span><strong>{formatBRL(card.limitCents)}</strong></div>
+                    <div><span className="text-slate-400 block">Em aberto</span><strong className="text-red-600">{formatBRL(openTotal)}</strong></div>
+                    <div><span className="text-slate-400 block">Fecha</span><strong>dia {card.closingDay}</strong></div>
+                    <div><span className="text-slate-400 block">Vence</span><strong>dia {card.dueDay}</strong></div>
+                  </div>
+                </div>;
+              })}
+              {!cards.length && <EmptyState text="Cadastre um cartão para controlar compras parceladas e faturas."/>}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div><h4 className="font-black text-xl text-slate-800">Faturas</h4><p className="text-xs text-slate-400">As parcelas entram na fatura; o caixa só muda no pagamento.</p></div>
+              <span className="text-[10px] font-black uppercase text-slate-400">{bills.length} fatura(s)</span>
+            </div>
+            <div className="space-y-2">
+              {[...bills].sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||''))).map(b => {
+                const card = cards.find(c=>c.id===b.cardId);
+                const remaining = Math.max(0, Number(b.totalCents||0) - Number(b.paidCents||0));
+                const paid = remaining === 0 && Number(b.totalCents||0) > 0;
+                return <div key={b.id} className="flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50">
+                  <div className="flex-1"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.closingDate)} · Vencimento {dateLabel(b.dueDate)}</p></div>
+                  <div className="text-right"><p className="font-black text-slate-800">{formatBRL(b.totalCents)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                </div>;
+              })}
+              {!bills.length && <EmptyState text="As faturas aparecerão aqui quando você lançar compras no cartão."/>}
+            </div>
+          </Card>
+        </div>
       )}
 
       {modal?.type === 'transaction' && <TransactionModal
@@ -510,6 +626,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         projects={projects} clients={clients} onClose={()=>setModal(null)} onSave={createTransaction} busy={busy}
       />}
       {modal?.type === 'account' && <AccountModal onClose={()=>setModal(null)} onSave={createAccount} busy={busy}/>}
+      {modal?.type === 'card' && <CardModal accounts={accounts} onClose={()=>setModal(null)} onSave={createCard} busy={busy}/>}
+      {modal?.type === 'cardPurchase' && <CardPurchaseModal cards={cards} categories={categories} projects={projects} onClose={()=>setModal(null)} onSave={createCardPurchase} busy={busy}/>}
       {modal?.type === 'csv' && <CsvModal accounts={accounts} onClose={()=>setModal(null)} onImport={importCsv} busy={busy}/>}
     </div>
   );
@@ -621,6 +739,41 @@ function AccountModal({ onClose, onSave, busy }) {
   </Modal>;
 }
 
+function CardModal({ accounts, onClose, onSave, busy }) {
+  const [data,setData]=useState({name:'',institution:'',limit:'',closingDay:1,dueDay:10,paymentAccountId:''});
+  const update=(k,v)=>setData(p=>({...p,[k]:v}));
+  return <Modal title="Novo cartão" onClose={onClose}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Field label="Nome *"><input value={data.name} onChange={e=>update('name',e.target.value)} placeholder="Ex.: Nubank Black" className={inputCls}/></Field>
+      <Field label="Instituição *"><input value={data.institution} onChange={e=>update('institution',e.target.value)} placeholder="Ex.: Nubank" className={inputCls}/></Field>
+      <Field label="Limite"><input value={data.limit} onChange={e=>update('limit',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
+      <Field label="Conta que paga a fatura"><select value={data.paymentAccountId} onChange={e=>update('paymentAccountId',e.target.value)} className={inputCls}><option value="">Selecionar depois</option>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}</select></Field>
+      <Field label="Dia de fechamento"><input value={data.closingDay} onChange={e=>update('closingDay',e.target.value)} type="number" min="1" max="28" className={inputCls}/></Field>
+      <Field label="Dia de vencimento"><input value={data.dueDay} onChange={e=>update('dueDay',e.target.value)} type="number" min="1" max="28" className={inputCls}/></Field>
+    </div>
+    <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800">O cartão é o meio da compra. O dinheiro sai da conta somente no pagamento da fatura.</div>
+    <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black">{busy?'Salvando...':'Criar cartão'}</button></div>
+  </Modal>;
+}
+
+function CardPurchaseModal({ cards, categories, projects, onClose, onSave, busy }) {
+  const [data,setData]=useState({cardId:cards[0]?.id||'',description:'',merchant:'',amount:'',purchaseDate:todayLocal(),installments:1,categoryId:'',projectId:''});
+  const update=(k,v)=>setData(p=>({...p,[k]:v}));
+  return <Modal title="Nova compra no cartão" onClose={onClose}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Field label="Cartão *"><select value={data.cardId} onChange={e=>update('cardId',e.target.value)} className={inputCls}>{cards.map(c=><option key={c.id} value={c.id}>{c.name} · {c.institution}</option>)}</select></Field>
+      <Field label="Valor total (R$) *"><input value={data.amount} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
+      <Field label="Descrição *"><input value={data.description} onChange={e=>update('description',e.target.value)} placeholder="Ex.: Notebook" className={inputCls}/></Field>
+      <Field label="Estabelecimento"><input value={data.merchant} onChange={e=>update('merchant',e.target.value)} placeholder="Ex.: Loja ABC" className={inputCls}/></Field>
+      <Field label="Data da compra"><input value={data.purchaseDate} onChange={e=>update('purchaseDate',e.target.value)} type="date" className={inputCls}/></Field>
+      <Field label="Parcelas"><select value={data.installments} onChange={e=>update('installments',e.target.value)} className={inputCls}>{Array.from({length:24},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}x</option>)}</select></Field>
+      <Field label="Categoria"><select value={data.categoryId} onChange={e=>update('categoryId',e.target.value)} className={inputCls}><option value="">A definir</option>{categories.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}</select></Field>
+      <Field label="Projeto"><select value={data.projectId} onChange={e=>update('projectId',e.target.value)} className={inputCls}><option value="">Sem projeto</option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}</select></Field>
+    </div>
+    <div className="mt-4 p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-xs text-emerald-800">Ex.: R$ 1.200 em 6x gera uma compra de R$ 1.200, seis parcelas e seis entradas nas faturas. O caixa não é reduzido pela compra.</div>
+    <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy||!cards.length} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black">{busy?'Gerando...':'Registrar compra'}</button></div>
+  </Modal>;
+}
 function CsvModal({ accounts, onClose, onImport, busy }) {
   const [accountId,setAccountId]=useState(accounts[0]?.id||'');
   const [file,setFile]=useState(null);

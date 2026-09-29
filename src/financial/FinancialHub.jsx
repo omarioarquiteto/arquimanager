@@ -512,22 +512,103 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     [receivables]
   );
 
-  const plannedEvents = useMemo(() => [
-    ...payables.filter(p => p.status !== 'PAID').map(p => ({
-      id: 'payable_' + p.id,
-      date: p.expectedDate || p.dueDate,
-      type: 'PAYABLE',
-      description: p.description,
-      amountCents: Number(p.amountCents || 0),
-    })),
-    ...receivables.filter(r => r.status !== 'RECEIVED').map(r => ({
-      id: 'receivable_' + r.id,
-      date: r.expectedDate || r.dueDate,
-      type: 'RECEIVABLE',
-      description: r.description,
-      amountCents: Number(r.amountCents || 0),
-    })),
-  ], [payables, receivables]);
+  const plannedEvents = useMemo(() => {
+    const payableEvents = payables
+      .filter(p => p.status !== 'PAID')
+      .map(p => ({
+        id: 'payable_' + p.id,
+        sourceId: p.id,
+        kind: 'PAYABLE',
+        date: p.expectedDate || p.dueDate,
+        type: 'PAYABLE',
+        description: p.description,
+        amountCents: Math.max(0, Number(p.amountCents || 0) - Number(p.paidCents || 0)),
+      }));
+
+    const receivableEvents = receivables
+      .filter(r => r.status !== 'RECEIVED')
+      .map(r => ({
+        id: 'receivable_' + r.id,
+        sourceId: r.id,
+        kind: 'RECEIVABLE',
+        date: r.expectedDate || r.dueDate,
+        type: 'RECEIVABLE',
+        description: r.description,
+        amountCents: Math.max(0, Number(r.amountCents || 0) - Number(r.receivedCents || 0)),
+      }));
+
+    const cardBillEvents = bills
+      .filter(b => b.status !== 'PAID')
+      .map(b => {
+        const card = cards.find(c => c.id === b.cardId);
+        const remainingCents = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
+        return {
+          id: 'card_bill_' + b.id,
+          sourceId: b.id,
+          kind: 'CARD_BILL',
+          date: b.dueDate,
+          type: 'CARD_BILL',
+          description: `Fatura ${card?.name || 'cartão'}`,
+          amountCents: remainingCents,
+        };
+      });
+
+    return [...payableEvents, ...receivableEvents, ...cardBillEvents]
+      .filter(event => event.date && event.amountCents > 0);
+  }, [payables, receivables, bills, cards]);
+
+  const projection = useMemo(() => {
+    const today = todayLocal();
+    const eventMap = {};
+
+    plannedEvents
+      .filter(event => event.date)
+      .forEach(event => {
+        // Obrigações vencidas continuam representando saída/entrada pendente e,
+        // na projeção, entram como um evento para hoje.
+        const date = event.date < today ? today : event.date;
+        if (!eventMap[date]) eventMap[date] = [];
+        eventMap[date].push(event);
+      });
+
+    const daily = [];
+    let balance = Number(accountBalance || 0);
+    const dayMs = 86400000;
+    const todayDate = parseDate(today);
+
+    for (let index = 0; index <= 90; index += 1) {
+      const dateObj = new Date(todayDate.getTime() + index * dayMs);
+      const date = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+      const events = eventMap[date] || [];
+      const income = events
+        .filter(event => event.type === 'RECEIVABLE')
+        .reduce((sum, event) => sum + Number(event.amountCents || 0), 0);
+      const expense = events
+        .filter(event => event.type === 'PAYABLE' || event.type === 'CARD_BILL')
+        .reduce((sum, event) => sum + Number(event.amountCents || 0), 0);
+
+      balance += income - expense;
+      daily.push({ date, events, income, expense, balance });
+    }
+
+    const next30 = daily.slice(0, 31);
+    const next90 = daily.slice(0, 91);
+    const totalIncome30 = next30.reduce((sum, day) => sum + day.income, 0);
+    const totalExpense30 = next30.reduce((sum, day) => sum + day.expense, 0);
+    const minimumDay = next90.reduce((min, day) => day.balance < min.balance ? day : min, next90[0]);
+
+    return {
+      today,
+      daily,
+      byDate: Object.fromEntries(daily.map(day => [day.date, day])),
+      balanceToday: daily[0]?.balance ?? Number(accountBalance || 0),
+      totalIncome30,
+      totalExpense30,
+      net30: totalIncome30 - totalExpense30,
+      minimumBalance90: minimumDay?.balance ?? Number(accountBalance || 0),
+      minimumBalance90Date: minimumDay?.date || today,
+    };
+  }, [plannedEvents, accountBalance]);
 
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
@@ -1020,7 +1101,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const income = dayTx.filter(t => t.type === 'INCOME').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const expense = dayTx.filter(t => t.type === 'EXPENSE').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const plannedIncome = dayPlanned.filter(t => t.type === 'RECEIVABLE').reduce((s,t)=>s+Number(t.amountCents||0),0);
-                const plannedExpense = dayPlanned.filter(t => t.type === 'PAYABLE').reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const plannedExpense = dayPlanned.filter(t => t.type === 'PAYABLE' || t.type === 'CARD_BILL').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 return <div key={`${day || 'blank'}-${idx}`} className="min-h-[76px] bg-slate-50 border border-slate-100 rounded-lg p-2">
                   {day && <div className="text-xs font-black text-slate-700">{Number(day.slice(8))}</div>}
                   {income > 0 && <div className="mt-2 text-[10px] font-bold text-emerald-600">+{formatBRL(income)}</div>}
@@ -1036,36 +1117,110 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       )}
 
       {tab === 'calendar' && (
-        <Card className="p-5 flex-1 overflow-auto">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-            <div>
-              <h4 className="font-black text-xl text-slate-800">Calendário financeiro</h4>
-              <p className="text-xs text-slate-400">Entradas e saídas reais; o modelo já separa data prevista de data realizada.</p>
-            </div>
-            <div className="flex items-center gap-1">
-              <button onClick={() => shiftMonth(-1)} className="p-2 border rounded-lg"><ChevronLeft size={16}/></button>
-              <span className="px-3 text-sm font-black text-slate-700">{selectedMonth}</span>
-              <button onClick={() => shiftMonth(1)} className="p-2 border rounded-lg"><ChevronRight size={16}/></button>
-            </div>
+        <div className="space-y-5 flex-1 overflow-auto pb-4">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+            <Metric label="Saldo hoje" value={formatBRL(projection.balanceToday)} icon={<Landmark size={18}/>} tone="blue"/>
+            <Metric label="Entradas 30 dias" value={formatBRL(projection.totalIncome30)} icon={<ArrowUpCircle size={18}/>} tone="green"/>
+            <Metric label="Saídas 30 dias" value={formatBRL(projection.totalExpense30)} icon={<ArrowDownCircle size={18}/>} tone="red"/>
+            <Metric label="Mínimo projetado · 90d" value={formatBRL(projection.minimumBalance90)} icon={<CircleAlert size={18}/>} tone={projection.minimumBalance90 >= 0 ? 'amber' : 'red'}/>
           </div>
-          <div className="grid grid-cols-7 gap-1 text-[10px] font-black uppercase text-slate-400 mb-2">{['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].map(d => <div key={d} className="p-2 text-center">{d}</div>)}</div>
-          <div className="grid grid-cols-7 gap-1">
-            {days.map((day, idx) => {
-              const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
-              return <div key={`${day || 'blank2'}-${idx}`} className="min-h-[120px] border border-slate-100 rounded-lg p-2 bg-white">
-                {day && <div className="font-black text-slate-700 text-xs mb-2">{Number(day.slice(8))}</div>}
-                <div className="space-y-1">
-                  {dayTx.slice(0,4).map(t => <div key={t.id} className={`text-[10px] px-2 py-1 rounded-lg font-bold ${t.type === 'INCOME' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
-                    {t.type === 'INCOME' ? '+' : '-'} {formatBRL(t.amountCents)} · {t.description}
-                  </div>)}
-                  {dayTx.length > 4 && <div className="text-[9px] text-slate-400">+{dayTx.length-4} outros</div>}
-                </div>
-              </div>;
-            })}
-          </div>
-        </Card>
-      )}
 
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div>
+                <h4 className="font-black text-xl text-slate-800">Calendário financeiro</h4>
+                <p className="text-xs text-slate-400">Eventos reais e previstos, com saldo projetado a partir do saldo cadastrado das contas.</p>
+              </div>
+              <div className="flex items-center gap-3 text-[10px] font-bold text-slate-500">
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500"></span>entrada real</span>
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span>saída real</span>
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500"></span>previsto</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => shiftMonth(-1)} className="p-2 border rounded-lg hover:bg-slate-50"><ChevronLeft size={16}/></button>
+                <button onClick={() => setSelectedMonth(todayLocal().slice(0, 7))} className="px-3 py-2 border rounded-lg text-xs font-bold hover:bg-slate-50">Hoje</button>
+                <span className="px-3 text-sm font-black text-slate-700">{selectedMonth}</span>
+                <button onClick={() => shiftMonth(1)} className="p-2 border rounded-lg hover:bg-slate-50"><ChevronRight size={16}/></button>
+              </div>
+            </div>
+
+            <div className="mb-4 p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs font-medium text-slate-600">
+              <strong className="text-slate-800">Projeção de 30 dias:</strong> {projection.net30 >= 0 ? 'saldo previsto para crescer' : 'saldo previsto para cair'} em <strong>{formatBRL(Math.abs(projection.net30))}</strong>, considerando apenas contas a pagar, contas a receber e faturas ainda em aberto. Transferências entre contas não alteram o resultado da empresa.
+            </div>
+
+            <div className="grid grid-cols-7 gap-1 text-[10px] font-black uppercase text-slate-400 mb-2">
+              {['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].map(d => <div key={d} className="p-2 text-center">{d}</div>)}
+            </div>
+
+            <div className="grid grid-cols-7 gap-1">
+              {days.map((day, idx) => {
+                const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
+                const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day) : [];
+                const dayProjection = day ? projection.byDate[day] : null;
+                const actualIncome = dayTx.filter(t => t.type === 'INCOME').reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const actualExpense = dayTx.filter(t => t.type === 'EXPENSE').reduce((s,t)=>s+Number(t.amountCents||0),0);
+
+                return <div key={`${day || 'blank2'}-${idx}`} className="min-h-[142px] border border-slate-100 rounded-lg p-2 bg-white">
+                  {day && (
+                    <div className="flex items-center justify-between">
+                      <div className="font-black text-slate-700 text-xs">{Number(day.slice(8))}</div>
+                      {dayProjection && <div className={`text-[9px] font-black ${dayProjection.balance < 0 ? 'text-red-600' : 'text-slate-400'}`}>saldo {formatBRL(dayProjection.balance)}</div>}
+                    </div>
+                  )}
+
+                  <div className="space-y-1 mt-2">
+                    {actualIncome > 0 && <div className="text-[9px] px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-bold">+ real {formatBRL(actualIncome)}</div>}
+                    {actualExpense > 0 && <div className="text-[9px] px-2 py-1 rounded-lg bg-red-50 text-red-700 font-bold">− real {formatBRL(actualExpense)}</div>}
+
+                    {dayPlanned.slice(0, 4).map(event => {
+                      const isIncome = event.type === 'RECEIVABLE';
+                      const label = event.type === 'CARD_BILL' ? 'fatura' : event.type === 'PAYABLE' ? 'a pagar' : 'a receber';
+                      return <div key={event.id} className="text-[9px] px-2 py-1 rounded-lg border border-dashed border-slate-200 bg-blue-50 text-blue-700 font-bold">
+                        {isIncome ? '↗' : '↘'} {label} {formatBRL(event.amountCents)} · {event.description}
+                      </div>;
+                    })}
+                    {dayPlanned.length > 4 && <div className="text-[9px] text-slate-400">+{dayPlanned.length - 4} previstos</div>}
+                  </div>
+                </div>;
+              })}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div>
+                <h4 className="font-black text-slate-800">Próximos compromissos de caixa</h4>
+                <p className="text-xs text-slate-400">Vencimentos e recebimentos que ainda podem alterar o caixa.</p>
+              </div>
+              <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">90 dias</span>
+            </div>
+            <div className="space-y-2">
+              {projection.daily
+                .filter(day => day.events.length)
+                .slice(0, 12)
+                .map(day => (
+                  <div key={day.date} className="border border-slate-100 rounded-xl p-3 flex flex-col md:flex-row md:items-center gap-3">
+                    <div className="w-20 shrink-0">
+                      <div className="text-[10px] font-black uppercase text-slate-400">{dateLabel(day.date)}</div>
+                      <div className={`text-xs font-black ${day.balance < 0 ? 'text-red-600' : 'text-slate-700'}`}>{formatBRL(day.balance)}</div>
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      {day.events.map(event => (
+                        <div key={event.id} className="flex items-center justify-between gap-3 text-xs">
+                          <span className={`font-bold ${event.type === 'RECEIVABLE' ? 'text-emerald-700' : 'text-amber-700'}`}>{event.description}</span>
+                          <span className="font-black">{event.type === 'RECEIVABLE' ? '+' : '−'} {formatBRL(event.amountCents)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              {!projection.daily.some(day => day.events.length) && (
+                <div className="p-6 text-center bg-emerald-50 rounded-xl text-emerald-700 font-bold text-xs">Nenhum compromisso futuro registrado.</div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
       {tab === 'transactions' && (
         <Card className="p-5 flex-1 overflow-auto">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">

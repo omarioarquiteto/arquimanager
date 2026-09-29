@@ -2458,8 +2458,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <span className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700">Conciliação</span>
             <span className="px-2 py-1 rounded-lg bg-slate-100 text-slate-600">Classificação</span>
           </div>
-            </div>
-          </div>
           <div className="space-y-3">
             {attentionItems.map(item => (
               <AttentionItem

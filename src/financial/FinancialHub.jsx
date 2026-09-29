@@ -204,6 +204,87 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
     return { ...match, paidCents, status: 'MATCHED' };
   };
+  const matchPlannedItem = ({ items, amountCents, date, description, type }) => {
+    const normalizedDescription = normalizeText(description);
+    const isPayable = type === 'PAYABLE';
+    const candidates = items
+      .filter(item => item.companyId === companyId)
+      .filter(item => {
+        const total = Number(item.amountCents || 0);
+        const settled = Number(isPayable ? item.paidCents || 0 : item.receivedCents || 0);
+        return item.status !== (isPayable ? 'PAID' : 'RECEIVED') && total > settled;
+      })
+      .map(item => {
+        const total = Number(item.amountCents || 0);
+        const settled = Number(isPayable ? item.paidCents || 0 : item.receivedCents || 0);
+        const remaining = total - settled;
+        const dueDate = item.expectedDate || item.dueDate;
+        const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(dueDate).getTime()) / 86400000;
+        const itemText = normalizeText([
+          item.description || '',
+          item.supplierName || '',
+          item.clientName || '',
+        ].join(' '));
+        let score = 0;
+        const exact = amountCents === remaining;
+        if (exact) score += 100;
+        if (dateDiff <= 3) score += 30;
+        else if (dateDiff <= 7) score += 20;
+        else if (dateDiff <= 15) score += 10;
+        const words = normalizedDescription.split(' ').filter(w => w.length >= 4);
+        const hits = words.filter(word => itemText.includes(word)).length;
+        if (hits >= 2) score += 30;
+        else if (hits === 1) score += 15;
+        if (item.projectId && normalizedDescription.includes(normalizeText(item.description || ''))) score += 10;
+        return { item, remaining, score, exact, dateDiff };
+      })
+      .filter(x => x.exact)
+      .sort((a,b) => b.score - a.score);
+
+    if (!candidates.length) return { status: 'NO_MATCH' };
+    const top = candidates[0];
+    const second = candidates[1];
+    if (second && second.score === top.score) return { status: 'AMBIGUOUS', candidates: candidates.slice(0, 5) };
+    if (top.score < 120) return { status: 'AMBIGUOUS', candidates: candidates.slice(0, 5) };
+    return { status: 'MATCH', ...top };
+  };
+
+  const reconcilePlannedPayment = async ({ transactionId, amountCents, date, description, type }) => {
+    const items = type === 'PAYABLE' ? payables : receivables;
+    const match = matchPlannedItem({ items, amountCents, date, description, type });
+    if (match.status !== 'MATCH') return match;
+    if (type === 'PAYABLE') {
+      await updateDoc(docPath(db, 'financial_payables', match.item.id), {
+        paidCents: Number(match.item.paidCents || 0) + amountCents,
+        status: 'PAID',
+        paymentTransactionId: transactionId,
+        actualDate: date,
+        updatedAt: serverTimestamp(),
+      });
+      await updateDoc(docPath(db, 'financial_transactions', transactionId), {
+        status: 'RECONCILED',
+        reconciliationType: 'PAYABLE_PAYMENT',
+        payableId: match.item.id,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(docPath(db, 'financial_receivables', match.item.id), {
+        receivedCents: Number(match.item.receivedCents || 0) + amountCents,
+        status: 'RECEIVED',
+        receiptTransactionId: transactionId,
+        actualDate: date,
+        updatedAt: serverTimestamp(),
+      });
+      await updateDoc(docPath(db, 'financial_transactions', transactionId), {
+        status: 'RECONCILED',
+        reconciliationType: 'RECEIVABLE_RECEIPT',
+        receivableId: match.item.id,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return { ...match, status: 'MATCHED' };
+  };
+
   const createPayable = async (data) => {
     if (!data.description.trim() || !data.amount || !data.dueDate) return;
     setBusy(true);
@@ -215,6 +296,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         dueDate: data.dueDate,
         expectedDate: data.dueDate,
         status: 'OPEN',
+        paidCents: 0,
         supplierName: data.supplierName?.trim() || '',
         categoryId: data.categoryId || null,
         projectId: data.projectId || null,
@@ -242,6 +324,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         dueDate: data.dueDate,
         expectedDate: data.dueDate,
         status: 'OPEN',
+        receivedCents: 0,
         clientId: data.clientId || null,
         projectId: data.projectId || null,
         notes: data.notes?.trim() || '',
@@ -398,27 +481,48 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         notes: data.notes?.trim() || '', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
 
-      let reconciled = false;
+      let reconciliationResult = { status: 'NO_MATCH' };
       if (type === 'EXPENSE') {
-        const result = await reconcileCardPayment({
+        reconciliationResult = await reconcileCardPayment({
           transactionId: ref.id, amountCents, date: data.date,
           description: data.description.trim(), accountId: data.accountId
         });
-        reconciled = result.status === 'MATCHED';
+        if (reconciliationResult.status !== 'MATCHED') {
+          reconciliationResult = await reconcilePlannedPayment({
+            transactionId: ref.id, amountCents, date: data.date,
+            description: data.description.trim(), type: 'PAYABLE'
+          });
+        }
+      } else if (type === 'INCOME') {
+        reconciliationResult = await reconcilePlannedPayment({
+          transactionId: ref.id, amountCents, date: data.date,
+          description: data.description.trim(), type: 'RECEIVABLE'
+        });
       }
 
+      const reconciled = reconciliationResult.status === 'MATCHED';
       if (status === 'IDENTIFICATION_REQUIRED' && !reconciled) {
         const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(data.description);
+        const plannedKind = !cardPayment && type === 'EXPENSE' && reconciliationResult.status === 'AMBIGUOUS' ? 'PAYABLE_PAYMENT' : (
+          type === 'INCOME' && reconciliationResult.status === 'AMBIGUOUS' ? 'RECEIVABLE_RECEIPT' : 'CLASSIFICATION'
+        );
         await addDoc(collectionPath(db, 'financial_inbox'), {
           companyId, transactionId: ref.id,
-          kind: cardPayment ? 'CARD_BILL_PAYMENT' : 'CLASSIFICATION',
-          reason: cardPayment ? 'Conciliar pagamento de cartão' : (type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação'),
-          confidence: cardPayment ? 50 : 0,
+          kind: cardPayment ? 'CARD_BILL_PAYMENT' : plannedKind,
+          reason: cardPayment ? 'Conciliar pagamento de cartão' : (
+            plannedKind === 'PAYABLE_PAYMENT' ? 'Conciliar conta a pagar' :
+            plannedKind === 'RECEIVABLE_RECEIPT' ? 'Conciliar conta a receber' :
+            (type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação')
+          ),
+          confidence: cardPayment ? 50 : (reconciliationResult.status === 'AMBIGUOUS' ? 60 : 0),
           status: 'OPEN', createdAt: serverTimestamp(),
         });
       }
       setModal(null);
-      setNotice(reconciled ? 'Pagamento de fatura identificado e conciliado automaticamente.' : 'Movimentação registrada.');
+      const noticeText = reconciliationResult.status === 'MATCHED'
+        ? (type === 'INCOME' ? 'Recebimento identificado e conciliado automaticamente.' : 'Pagamento identificado e conciliado automaticamente.')
+        : 'Movimentação registrada.';
+      setNotice(noticeText);
     } finally { setBusy(false); }
   };
 
@@ -517,22 +621,40 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           clientId: null, supplierId: null,
           importedAt: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         });
-        let reconciled = false;
+        let reconciliationResult = { status: 'NO_MATCH' };
         if (type === 'EXPENSE') {
-          const result = await reconcileCardPayment({
+          reconciliationResult = await reconcileCardPayment({
             transactionId: ref.id, amountCents: normalizedAmount, date: isoDate,
             description, accountId
           });
-          reconciled = result.status === 'MATCHED';
+          if (reconciliationResult.status !== 'MATCHED') {
+            reconciliationResult = await reconcilePlannedPayment({
+              transactionId: ref.id, amountCents: normalizedAmount, date: isoDate,
+              description, type: 'PAYABLE'
+            });
+          }
+        } else if (type === 'INCOME') {
+          reconciliationResult = await reconcilePlannedPayment({
+            transactionId: ref.id, amountCents: normalizedAmount, date: isoDate,
+            description, type: 'RECEIVABLE'
+          });
         }
 
+        const reconciled = reconciliationResult.status === 'MATCHED';
         if (!(type === 'EXPENSE' && rememberedRule?.categoryId) && !reconciled) {
           const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(description);
+          const plannedKind = !cardPayment && type === 'EXPENSE' && reconciliationResult.status === 'AMBIGUOUS' ? 'PAYABLE_PAYMENT' : (
+            type === 'INCOME' && reconciliationResult.status === 'AMBIGUOUS' ? 'RECEIVABLE_RECEIPT' : 'CLASSIFICATION'
+          );
           await addDoc(collectionPath(db, 'financial_inbox'), {
             companyId, transactionId: ref.id,
-            kind: cardPayment ? 'CARD_BILL_PAYMENT' : 'CLASSIFICATION',
-            reason: cardPayment ? 'Conciliar pagamento de cartão' : (type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada'),
-            confidence: cardPayment ? 50 : 0,
+            kind: cardPayment ? 'CARD_BILL_PAYMENT' : plannedKind,
+            reason: cardPayment ? 'Conciliar pagamento de cartão' : (
+              plannedKind === 'PAYABLE_PAYMENT' ? 'Conciliar conta a pagar' :
+              plannedKind === 'RECEIVABLE_RECEIPT' ? 'Conciliar conta a receber' :
+              (type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada')
+            ),
+            confidence: cardPayment ? 50 : (reconciliationResult.status === 'AMBIGUOUS' ? 60 : 0),
             status: 'OPEN', createdAt: serverTimestamp(),
           });
         }

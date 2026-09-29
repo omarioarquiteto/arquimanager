@@ -1751,12 +1751,52 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     try {
       await addDoc(collectionPath(db, 'financial_accounts'), {
         companyId, name, institution: data.institution.trim(), type: data.type,
-        balanceCents: toCents(data.balance), active: true,
+        source: 'MANUAL', balanceCents: toCents(data.balance), active: true,
         createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
       setModal(null);
       setNotice('Conta adicionada.');
     } finally { setBusy(false); }
+  };
+
+  const deleteManualAccount = async (account) => {
+    if (!account?.id) return;
+    if (account.provider === 'PLUGGY' || account.providerAccountId) {
+      setNotice('Contas sincronizadas pela Pluggy não podem ser excluídas manualmente.');
+      return;
+    }
+
+    const linkedTransactions = transactions.filter(
+      tx => tx.companyId === companyId && tx.accountId === account.id
+    );
+    const linkedTransfers = transfers.filter(
+      transfer => transfer.companyId === companyId
+        && (transfer.fromAccountId === account.id || transfer.toAccountId === account.id)
+    );
+    const linkedCards = cards.filter(
+      card => card.companyId === companyId && card.paymentAccountId === account.id
+    );
+
+    if (linkedTransactions.length || linkedTransfers.length || linkedCards.length) {
+      const details = [];
+      if (linkedTransactions.length) details.push(`${linkedTransactions.length} movimentação(ões)`);
+      if (linkedTransfers.length) details.push(`${linkedTransfers.length} transferência(s)`);
+      if (linkedCards.length) details.push(`${linkedCards.length} cartão(ões)`);
+      setNotice(`Não é possível excluir "${account.name}" porque ela está vinculada a ${details.join(', ')}. Remova os vínculos primeiro.`);
+      return;
+    }
+
+    if (!window.confirm(`Excluir a conta "${account.name}"? Esta ação não pode ser desfeita.`)) return;
+
+    setBusy(true);
+    try {
+      await deleteDoc(docPath(db, 'financial_accounts', account.id));
+      setNotice(`Conta "${account.name}" excluída.`);
+    } catch (err) {
+      setNotice(err.message || 'Não foi possível excluir a conta.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const createTransaction = async (data) => {
@@ -2626,7 +2666,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 <div key={a.id} className="border border-slate-200 rounded-2xl p-4 bg-slate-50">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2"><Landmark size={19} className="text-[#1e5aa0]"/><span className="font-black text-slate-800">{a.name}</span></div>
-                    <span className="text-[9px] font-black uppercase text-slate-400">{a.type}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[9px] font-black uppercase text-slate-400">{a.type}</span>
+                      {a.provider !== 'PLUGGY' && !a.providerAccountId && (
+                        <button
+                          onClick={() => deleteManualAccount(a)}
+                          disabled={busy}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40"
+                          title="Excluir conta manual"
+                        >
+                          <Trash2 size={14}/>
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <p className="text-xs text-slate-500 mt-1">{a.institution || 'Instituição não informada'}</p>
                   <p className="text-xl font-black text-slate-800 mt-3">{formatBRL(a.balanceCents)}</p>

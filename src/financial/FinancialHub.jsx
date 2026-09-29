@@ -2438,6 +2438,106 @@ function TransactionRow({ tx, accounts, categories, detailed = false, onEdit, on
   );
 }
 
+function BulkClassificationRow({ group, categories, projects, clients, busy, onApply }) {
+  const [categoryId, setCategoryId] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [rememberMerchant, setRememberMerchant] = useState(true);
+
+  const isMixedType = group.expenseCount > 0 && group.incomeCount > 0;
+
+  return (
+    <div className="border border-slate-200 rounded-2xl p-3 bg-slate-50">
+      <div className="flex flex-col xl:flex-row xl:items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-[#1e5aa0]">
+              <Tags size={15}/>
+            </div>
+            <div className="min-w-0">
+              <p className="font-black text-slate-800 truncate">{group.merchant}</p>
+              <p className="text-[10px] text-slate-400">
+                {group.items.length} lançamento(s) · total {formatBRL(group.totalCents)}
+                {isMixedType ? ' · entradas e saídas' : group.incomeCount ? ' · entradas' : ' · saídas'}
+              </p>
+            </div>
+          </div>
+          {group.sampleDescriptions.length > 0 && (
+            <p className="text-[10px] text-slate-500 mt-2 truncate">
+              Exemplos: {group.sampleDescriptions.join(' · ')}
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 xl:w-[48%]">
+          <select
+            value={categoryId}
+            onChange={e => setCategoryId(e.target.value)}
+            disabled={busy}
+            className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+          >
+            <option value="">Escolha a categoria...</option>
+            {categories.map(category => (
+              <option key={category.id} value={category.id}>{category.nome}</option>
+            ))}
+          </select>
+
+          <select
+            value={projectId}
+            onChange={e => setProjectId(e.target.value)}
+            disabled={busy}
+            className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+          >
+            <option value="">Sem projeto</option>
+            {projects.map(project => (
+              <option key={project.id} value={project.id}>{project.nomeProjeto}</option>
+            ))}
+          </select>
+
+          {group.incomeCount > 0 && !isMixedType && (
+            <select
+              value={clientId}
+              onChange={e => setClientId(e.target.value)}
+              disabled={busy}
+              className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold"
+            >
+              <option value="">Sem cliente/origem</option>
+              {clients.map(client => (
+                <option key={client.id} value={client.id}>{client.nome}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between xl:justify-end gap-3 xl:w-[22%]">
+          <label className="flex items-center gap-2 text-[10px] font-bold text-slate-600">
+            <input
+              type="checkbox"
+              checked={rememberMerchant}
+              onChange={e => setRememberMerchant(e.target.checked)}
+              disabled={busy}
+            />
+            lembrar regra
+          </label>
+          <button
+            disabled={!categoryId || busy}
+            onClick={() => onApply({
+              group,
+              categoryId,
+              projectId,
+              clientId: isMixedType ? '' : clientId,
+              rememberMerchant
+            })}
+            className="bg-emerald-600 text-white px-3 py-2.5 rounded-xl text-xs font-black whitespace-nowrap disabled:opacity-40"
+          >
+            {busy ? 'Aplicando...' : `Aplicar em ${group.items.length}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AttentionItem({ item, transaction, categories, projects, clients, bills, cards, onResolve }) {
   const [categoryId, setCategoryId] = useState(transaction?.categoryId || '');
   const [projectId, setProjectId] = useState(transaction?.projectId || '');

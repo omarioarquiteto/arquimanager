@@ -198,9 +198,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       for (let index = 0; index < installmentsCount; index += 1) {
         const billMonthDate = addMonths(purchaseDate, firstOffset + index);
         const referenceMonth = monthString(billMonthDate);
-        const dueDate = dateForDay(billMonthDate.getFullYear(), billMonthDate.getMonth(), Number(card.dueDay || 10));
-        const closingMonthDate = addMonths(billMonthDate, -1);
-        const closingDate = dateForDay(closingMonthDate.getFullYear(), closingMonthDate.getMonth(), Number(card.closingDay || 1));
+        const closingDay = Number(card.closingDay || 1);
+        const dueDay = Number(card.dueDay || 10);
+        const closingDate = dateForDay(billMonthDate.getFullYear(), billMonthDate.getMonth(), closingDay);
+        const dueMonthDate = addMonths(billMonthDate, dueDay > closingDay ? 0 : 1);
+        const dueDate = dateForDay(dueMonthDate.getFullYear(), dueMonthDate.getMonth(), dueDay);
         const amountCents = basePart + (index < remainder ? 1 : 0);
         const billId = companyId + '_' + data.cardId + '_' + referenceMonth;
 

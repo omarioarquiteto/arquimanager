@@ -1374,8 +1374,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             financialAccountId,
           });
 
-          // O id do documento é derivado do fato bancário, não do id retornado
-          // pela API. Isso impede duplicação mesmo se o identificador externo variar.
+          // O id do documento é derivado do identificador da Pluggy.
+          // O externalId/providerTransactionId continuam gravados para auditoria
+          // e para localizar o mesmo lançamento em sincronizações futuras.
           const deterministicKey = stableHash(externalId);
           const ref = docPath(db, 'financial_transactions', `${companyId}_pluggy_tx_${deterministicKey}`);
           const item = {
@@ -2151,6 +2152,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const affectedBillAmounts = new Map();
     const affectedPayableAmounts = new Map();
     const affectedReceivableAmounts = new Map();
+    const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
 
     pluggyTransactions.forEach(tx => {
       const amount = Number(tx.amountCents || 0);
@@ -2175,39 +2177,48 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const bill = bills.find(item => item.id === billId);
         if (!bill) return;
         const nextPaid = Math.max(0, Number(bill.paidCents || 0) - amount);
-        reversalBatch.update(docPath(db, 'financial_bills', billId), {
+        const billChange = {
           paidCents: nextPaid,
           status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(bill.totalCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
-          lastPaymentTransactionId: null,
-          lastPaidAt: null,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (pluggyTransactionIds.has(bill.lastPaymentTransactionId)) {
+          billChange.lastPaymentTransactionId = null;
+          billChange.lastPaidAt = null;
+        }
+        reversalBatch.update(docPath(db, 'financial_bills', billId), billChange);
       });
 
       affectedPayableAmounts.forEach((amount, payableId) => {
         const payable = payables.find(item => item.id === payableId);
         if (!payable) return;
         const nextPaid = Math.max(0, Number(payable.paidCents || 0) - amount);
-        reversalBatch.update(docPath(db, 'financial_payables', payableId), {
+        const payableChange = {
           paidCents: nextPaid,
           status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(payable.amountCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
-          paymentTransactionId: null,
-          actualDate: null,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (pluggyTransactionIds.has(payable.paymentTransactionId)) {
+          payableChange.paymentTransactionId = null;
+          payableChange.actualDate = null;
+        }
+        reversalBatch.update(docPath(db, 'financial_payables', payableId), payableChange);
       });
 
       affectedReceivableAmounts.forEach((amount, receivableId) => {
         const receivable = receivables.find(item => item.id === receivableId);
         if (!receivable) return;
         const nextReceived = Math.max(0, Number(receivable.receivedCents || 0) - amount);
-        reversalBatch.update(docPath(db, 'financial_receivables', receivableId), {
+        const receivableChange = {
           receivedCents: nextReceived,
           status: nextReceived <= 0 ? 'OPEN' : (nextReceived >= Number(receivable.amountCents || 0) ? 'RECEIVED' : 'PARTIALLY_RECEIVED'),
-          receiptTransactionId: null,
-          actualDate: null,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (pluggyTransactionIds.has(receivable.receiptTransactionId)) {
+          receivableChange.receiptTransactionId = null;
+          receivableChange.actualDate = null;
+        }
+        reversalBatch.update(docPath(db, 'financial_receivables', receivableId), receivableChange);
       });
 
       if (affectedBillAmounts.size || affectedPayableAmounts.size || affectedReceivableAmounts.size) {

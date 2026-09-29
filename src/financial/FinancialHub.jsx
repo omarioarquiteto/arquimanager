@@ -370,11 +370,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const findTransferCandidate = ({ amountCents, date, description, accountId, type, pool = transactions }) => {
     if (!isTransferDescription(description) || !amountCents) return { status: 'NO_MATCH' };
     const oppositeType = type === 'EXPENSE' ? 'INCOME' : 'EXPENSE';
-    const candidates = pool
-      .filter(tx => tx.companyId === companyId)
-      .filter(tx => tx.id && tx.accountId && tx.accountId !== accountId)
-      .filter(tx => tx.type === oppositeType && tx.status !== 'CANCELLED')
-      .filter(tx => tx.reconciliationType !== 'TRANSFER' && !tx.transferId)
+    const candidates = (Array.isArray(pool) ? pool : [])
+      .filter(tx => tx && tx.companyId === companyId)
+      .filter(tx => tx?.id && tx?.accountId && tx.accountId !== accountId)
+      .filter(tx => tx?.type === oppositeType && tx?.status !== 'CANCELLED')
+      .filter(tx => tx?.reconciliationType !== 'TRANSFER' && !tx?.transferId)
       .map(tx => {
         const sameAmount = Number(tx.amountCents || 0) === Number(amountCents);
         const dayDiff = Math.abs(parseDate(date).getTime() - parseDate(tx.date).getTime()) / 86400000;
@@ -399,7 +399,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
   const reconcileTransfer = async ({ transactionId, amountCents, date, description, accountId, type, pool }) => {
     const match = findTransferCandidate({ amountCents, date, description, accountId, type, pool });
-    if (match.status !== 'MATCH') return match;
+    if (match.status !== 'MATCH' || !match.tx?.id || !match.tx?.accountId) {
+      return { status: 'NO_MATCH' };
+    }
     const currentRef = docPath(db, 'financial_transactions', transactionId);
     const candidateRef = docPath(db, 'financial_transactions', match.tx.id);
     const transferRef = doc(collectionPath(db, 'financial_transfers'));
@@ -1340,7 +1342,30 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       // Processa em ordem. As duas pontas de uma transferência ficam no pool
       // e podem se reconciliar automaticamente sem depender de um novo snapshot.
       for (const item of importedItems) {
-        await processPluggyTransaction(item);
+        try {
+          await processPluggyTransaction(item);
+        } catch (transactionError) {
+          // Um lançamento problemático não pode interromper a sincronização
+          // das demais movimentações do banco.
+          console.error('Falha ao processar transação Pluggy', item?.id, transactionError);
+          if (item?.id) {
+            const attentionRef = doc(collectionPath(db, 'financial_inbox'));
+            pendingInbox.push({
+              ref: attentionRef,
+              data: {
+                companyId,
+                transactionId: item.id,
+                kind: 'CLASSIFICATION',
+                reason: 'Verificar movimentação importada automaticamente',
+                confidence: 0,
+                source: 'PLUGGY',
+                status: 'OPEN',
+                createdAt: serverTimestamp(),
+              },
+            });
+            attentionQueued += 1;
+          }
+        }
       }
 
       // Fecha automaticamente itens antigos de Atenção quando uma sincronização

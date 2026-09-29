@@ -1404,7 +1404,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             nextStatus = 'IDENTIFICATION_REQUIRED';
           } else if (rememberedRule) {
             nextCategoryId = rememberedRule.categoryId || null;
-            nextProjectId = rememberedRule.projectId || null;
+            nextProjectId = tx.type === 'EXPENSE' ? null : (rememberedRule.projectId || null);
             nextStatus = (nextCategoryId || nextProjectId) ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED';
             if (nextStatus === 'CLASSIFIED' && tx.status !== 'CLASSIFIED') {
               classifiedAutomatically += 1;
@@ -1875,7 +1875,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         safeItems.slice(start, start + 240).forEach(item => {
           batch.update(docPath(db, 'financial_transactions', item.transaction.id), {
             categoryId,
-            projectId: projectId || null,
+            projectId: null,
             clientId: clientId || null,
             status: 'CLASSIFIED',
             updatedAt: serverTimestamp(),
@@ -1989,11 +1989,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         return;
       }
 
+      const resolvedProjectId = tx.type === 'EXPENSE' ? null : (data.projectId || null);
       await updateDoc(docPath(db, 'financial_transactions', tx.id), {
         categoryId: data.categoryId || null,
-        projectId: data.projectId || null,
+        projectId: resolvedProjectId,
         clientId: data.clientId || null,
-        status: data.categoryId || data.projectId || data.clientId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
+        status: data.categoryId || resolvedProjectId || data.clientId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
         updatedAt: serverTimestamp(),
       });
       await updateDoc(docPath(db, 'financial_inbox', item.id), {
@@ -2861,18 +2862,6 @@ function BulkClassificationRow({ group, categories, projects, clients, busy, onA
             ))}
           </select>
 
-          <select
-            value={projectId}
-            onChange={e => setProjectId(e.target.value)}
-            disabled={busy}
-            className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold"
-          >
-            <option value="">Sem projeto</option>
-            {projects.map(project => (
-              <option key={project.id} value={project.id}>{project.nomeProjeto}</option>
-            ))}
-          </select>
-
           {group.incomeCount > 0 && !isMixedType && (
             <select
               value={clientId}
@@ -2905,6 +2894,7 @@ function BulkClassificationRow({ group, categories, projects, clients, busy, onA
               categoryId,
               projectId,
               clientId: isMixedType ? '' : clientId,
+              projectId: '',
               rememberMerchant
             })}
             className="bg-emerald-600 text-white px-3 py-2.5 rounded-xl text-xs font-black whitespace-nowrap disabled:opacity-40"
@@ -2998,7 +2988,7 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
             <option value="">Cliente / origem</option>
             {clients.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
           </select>}
-          {item.kind !== 'CARD_BILL_PAYMENT' && <select value={projectId} onChange={e=>setProjectId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
+          {item.kind !== 'CARD_BILL_PAYMENT' && transaction.type === 'INCOME' && <select value={projectId} onChange={e=>setProjectId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
             <option value="">Projeto</option>
             {projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}
           </select>}

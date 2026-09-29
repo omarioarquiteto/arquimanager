@@ -35,7 +35,7 @@ const loadPluggySdk = () => {
   return pluggyScriptPromise;
 };
 
-export default function PluggyConnections({ appUser, connections = [], onSaveConnection }) {
+export default function PluggyConnections({ appUser, connections = [], onSaveConnection, onSyncConnection }) {
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
   const widgetRef = useRef(null);
@@ -92,14 +92,17 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
             return;
           }
 
-          await onSaveConnection({
+          const connectionData = {
             itemId,
             connectorId: item.connector?.id || item.connectorId || null,
             connectorName: item.connector?.name || item.connectorName || 'Instituição financeira',
             status: item.status || 'UPDATED',
             clientUserId: item.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : null),
             lastConnectedAt: new Date().toISOString(),
-          });
+          };
+
+          await onSaveConnection(connectionData);
+          if (onSyncConnection) await onSyncConnection(connectionData);
 
           setBusyId('');
           widgetRef.current = null;
@@ -178,14 +181,24 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
                 <span className="text-[10px] font-bold text-slate-400">
                   {connection.lastConnectedAt ? new Date(connection.lastConnectedAt).toLocaleDateString('pt-BR') : 'Sem data'}
                 </span>
-                <button
-                  onClick={() => startConnection(connection)}
-                  disabled={busyId !== ''}
-                  className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
-                >
-                  <RefreshCw size={14} className={busyId === connection.itemId ? 'animate-spin' : ''}/>
-                  {busyId === connection.itemId ? 'Abrindo...' : 'Reconectar'}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onSyncConnection?.(connection)}
+                    disabled={busyId !== ''}
+                    className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <RefreshCw size={14}/>
+                    Sincronizar
+                  </button>
+                  <button
+                    onClick={() => startConnection(connection)}
+                    disabled={busyId !== ''}
+                    className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <Link2 size={14}/>
+                    Reconectar
+                  </button>
+                </div>
               </div>
 
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2 text-[10px] text-slate-400 font-medium">

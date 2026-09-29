@@ -292,6 +292,55 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return /(transferencia|transfer|ted|doc)/.test(text) && !/(compra|pagamento|fatura|boleto|fornecedor|loja|restaurante)/.test(text);
   };
 
+  const findRememberedRule = (merchantValue = '') => {
+    const normalized = normalizeText(merchantValue);
+    if (!normalized) return { status: 'NO_MATCH' };
+
+    const words = normalized.split(' ').filter(word => word.length >= 3);
+    const candidates = rules
+      .filter(rule => rule.companyId === companyId && rule.merchantNormalized && rule.categoryId)
+      .map(rule => {
+        const merchant = normalizeText(rule.merchantNormalized);
+        if (!merchant) return null;
+
+        let score = 0;
+        if (merchant === normalized) score = 100;
+        else if (normalized.includes(merchant) && merchant.length >= 4) score = 85;
+        else if (merchant.includes(normalized) && normalized.length >= 5) score = 75;
+        else {
+          const ruleWords = merchant.split(' ').filter(word => word.length >= 3);
+          const hits = ruleWords.filter(word => words.includes(word)).length;
+          if (ruleWords.length && hits === ruleWords.length) score = 70;
+          else if (hits >= 2) score = 60;
+        }
+
+        return score ? { rule, score } : null;
+      })
+      .filter(Boolean)
+      .sort((a,b) => b.score - a.score);
+
+    if (!candidates.length) return { status: 'NO_MATCH' };
+    const top = candidates[0];
+    const second = candidates[1];
+    if (second && second.score === top.score && second.rule.id !== top.rule.id) {
+      return { status: 'AMBIGUOUS', candidates: candidates.slice(0, 5) };
+    }
+    return { status: 'MATCH', rule: top.rule, score: top.score };
+  };
+
+  const findDuplicateTransaction = ({ accountId, date, amountCents, type, description, excludeId = null }) => {
+    const normalizedDescription = normalizeText(description);
+    if (!accountId || !date || !amountCents || !normalizedDescription) return null;
+
+    return transactions
+      .filter(tx => tx.companyId === companyId)
+      .filter(tx => tx.id !== excludeId)
+      .filter(tx => tx.accountId === accountId && tx.date === date)
+      .filter(tx => tx.type === type && tx.status !== 'CANCELLED')
+      .filter(tx => Number(tx.amountCents || 0) === Number(amountCents))
+      .find(tx => normalizeText(tx.description || tx.merchant || '') === normalizedDescription) || null;
+  };
+
   const findTransferCandidate = ({ amountCents, date, description, accountId, type, pool = transactions }) => {
     if (!isTransferDescription(description) || !amountCents) return { status: 'NO_MATCH' };
     const oppositeType = type === 'EXPENSE' ? 'INCOME' : 'EXPENSE';
@@ -886,14 +935,29 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!data.description.trim() || !data.accountId || !data.amount) return;
     setBusy(true);
     try {
-      const amountCents = toCents(data.amount);
+      const amountCents = Math.abs(toCents(data.amount));
       const type = data.type;
+      const duplicate = findDuplicateTransaction({
+        accountId: data.accountId,
+        date: data.date,
+        amountCents,
+        type,
+        description: data.description
+      });
+      if (duplicate) {
+        setNotice(`Esta movimentação já existe: "${duplicate.description}" em ${dateLabel(duplicate.date)}. Nenhum duplicado foi criado.`);
+        return;
+      }
+
       const normalizedMerchant = normalizeText(data.merchant || data.description);
-      const rememberedRule = rules.find(r => r.merchantNormalized === normalizedMerchant);
+      const remembered = findRememberedRule(data.merchant || data.description);
+      const rememberedRule = remembered.status === 'MATCH' ? remembered.rule : null;
       const effectiveCategoryId = data.categoryId || rememberedRule?.categoryId || null;
       const effectiveProjectId = data.projectId || rememberedRule?.projectId || null;
       const category = categories.find(c => c.id === effectiveCategoryId);
-      const status = type === 'INCOME' ? 'IDENTIFICATION_REQUIRED' : (effectiveCategoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED');
+      const status = type === 'INCOME'
+        ? (effectiveCategoryId || data.clientId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED')
+        : (effectiveCategoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED');
       const ref = await addDoc(collectionPath(db, 'financial_transactions'), {
         companyId, source: 'MANUAL', externalId: null,
         accountId: data.accountId, cardId: data.cardId || null,
@@ -933,7 +997,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       const reconciled = reconciliationResult.status === 'MATCHED';
       const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(data.description);
-      if (!reconciled && (status === 'IDENTIFICATION_REQUIRED' || reconciliationResult.status === 'AMBIGUOUS' || cardPayment)) {
+      if (!reconciled && (status === 'IDENTIFICATION_REQUIRED' || remembered.status === 'AMBIGUOUS' || reconciliationResult.status === 'AMBIGUOUS' || cardPayment)) {
         const plannedKind = !cardPayment && type === 'EXPENSE' && reconciliationResult.status === 'AMBIGUOUS' ? 'PAYABLE_PAYMENT' : (
           type === 'INCOME' && reconciliationResult.status === 'AMBIGUOUS' ? 'RECEIVABLE_RECEIPT' : 'CLASSIFICATION'
         );
@@ -946,7 +1010,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             plannedKind === 'RECEIVABLE_RECEIPT' ? 'Conciliar conta a receber' :
             (type === 'INCOME' ? 'Identificar entrada' : 'Classificar movimentação')
           ),
-          confidence: cardPayment ? 50 : (reconciliationResult.status === 'AMBIGUOUS' ? 60 : 0),
+          confidence: cardPayment ? 50 : (
+            reconciliationResult.status === 'AMBIGUOUS' ? 60 :
+            remembered.status === 'AMBIGUOUS' ? 65 : 0
+          ),
           status: 'OPEN', createdAt: serverTimestamp(),
         });
       }
@@ -1095,16 +1162,31 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const type = amountCents >= 0 ? 'INCOME' : 'EXPENSE';
         const normalizedAmount = Math.abs(amountCents);
         const normalizedMerchant = normalizeText(description);
-        const rememberedRule = rules.find(r => r.merchantNormalized === normalizedMerchant);
+        const remembered = findRememberedRule(description);
+        const rememberedRule = remembered.status === 'MATCH' ? remembered.rule : null;
         const externalId = transactionKey({ accountId, date: isoDate, description, amountCents: normalizedAmount });
         if (existing.has(externalId)) { skipped += 1; continue; }
+
+        const duplicate = findDuplicateTransaction({
+          accountId,
+          date: isoDate,
+          amountCents: normalizedAmount,
+          type,
+          description
+        });
+        if (duplicate) {
+          skipped += 1;
+          continue;
+        }
 
         const ref = await addDoc(collectionPath(db, 'financial_transactions'), {
           companyId, source: 'CSV', externalId, accountId, cardId: null,
           date: isoDate, actualDate: isoDate, expectedDate: null, description,
           merchant: description, normalizedMerchant,
           amountCents: normalizedAmount, type,
-          status: (type === 'EXPENSE' && rememberedRule?.categoryId && !isTransferDescription(description)) ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
+          status: isTransferDescription(description)
+            ? 'IDENTIFICATION_REQUIRED'
+            : (rememberedRule?.categoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED'),
           categoryId: isTransferDescription(description) ? null : (rememberedRule?.categoryId || null),
           projectId: isTransferDescription(description) ? null : (rememberedRule?.projectId || null),
           clientId: null, supplierId: null,
@@ -1131,7 +1213,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
         const reconciled = reconciliationResult.status === 'MATCHED';
         const cardPayment = type === 'EXPENSE' && isCardPaymentDescription(description);
-        if (!reconciled && (!(type === 'EXPENSE' && rememberedRule?.categoryId) || reconciliationResult.status === 'AMBIGUOUS' || cardPayment)) {
+        if (!reconciled && (
+          (!rememberedRule?.categoryId && !isTransferDescription(description)) ||
+          remembered.status === 'AMBIGUOUS' ||
+          reconciliationResult.status === 'AMBIGUOUS' ||
+          cardPayment ||
+          isTransferDescription(description)
+        )) {
           const plannedKind = !cardPayment && type === 'EXPENSE' && reconciliationResult.status === 'AMBIGUOUS' ? 'PAYABLE_PAYMENT' : (
             type === 'INCOME' && reconciliationResult.status === 'AMBIGUOUS' ? 'RECEIVABLE_RECEIPT' : 'CLASSIFICATION'
           );
@@ -1143,7 +1231,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               plannedKind === 'RECEIVABLE_RECEIPT' ? 'Conciliar conta a receber' :
               (type === 'INCOME' ? 'Identificar entrada importada' : 'Classificar despesa importada')
             ),
-            confidence: cardPayment ? 50 : (reconciliationResult.status === 'AMBIGUOUS' ? 60 : 0),
+            confidence: cardPayment ? 50 : (
+              reconciliationResult.status === 'AMBIGUOUS' ? 60 :
+              remembered.status === 'AMBIGUOUS' ? 65 :
+              isTransferDescription(description) ? 40 : 0
+            ),
             status: 'OPEN', createdAt: serverTimestamp(),
           });
         }

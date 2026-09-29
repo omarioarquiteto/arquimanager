@@ -1333,10 +1333,34 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
         if (existing) {
           alreadyPresent += 1;
+
+          // Mantém a classificação existente, mas garante que o vínculo com
+          // o lançamento original da Pluggy esteja gravado de forma estável.
+          await updateDoc(docPath(db, 'financial_transactions', existing.id), {
+            source: 'PLUGGY',
+            externalId,
+            providerTransactionId: rawTransaction.id,
+            providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
+            providerId: rawTransaction.providerId || existing.providerId || null,
+            providerCode: rawTransaction.providerCode || existing.providerCode || null,
+            providerUpdatedAt: rawTransaction.updatedAt || existing.providerUpdatedAt || null,
+            updatedAt: serverTimestamp(),
+          });
+
+          const existingData = {
+            ...existing,
+            source: 'PLUGGY',
+            externalId,
+            providerTransactionId: rawTransaction.id,
+            providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
+            providerId: rawTransaction.providerId || existing.providerId || null,
+            providerCode: rawTransaction.providerCode || existing.providerCode || null,
+          };
+
           importedItems.push({
             ref: docPath(db, 'financial_transactions', existing.id),
             id: existing.id,
-            data: existing,
+            data: existingData,
             rawTransaction,
             isNew: false,
           });
@@ -1352,9 +1376,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
           // O id do documento é derivado do fato bancário, não do id retornado
           // pela API. Isso impede duplicação mesmo se o identificador externo variar.
-          const deterministicKey = rawFingerprint
-            ? stableHash(rawFingerprint)
-            : stableHash(externalId);
+          const deterministicKey = stableHash(externalId);
           const ref = docPath(db, 'financial_transactions', `${companyId}_pluggy_tx_${deterministicKey}`);
           const item = {
             ref,
@@ -1437,6 +1459,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
         const shouldPreserveReconciled =
           tx.status === 'RECONCILED'
+          || tx.status === 'CLASSIFIED'
+          || tx.classificationSource === 'MANUAL'
           || tx.reconciliationType === 'TRANSFER'
           || !!tx.billId
           || !!tx.payableId
@@ -1969,6 +1993,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             projectId: null,
             clientId: clientId || null,
             status: 'CLASSIFIED',
+            classificationSource: 'MANUAL',
             updatedAt: serverTimestamp(),
           });
           batch.update(docPath(db, 'financial_inbox', item.id), {
@@ -2086,6 +2111,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         projectId: resolvedProjectId,
         clientId: data.clientId || null,
         status: data.categoryId || resolvedProjectId || data.clientId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
+        classificationSource: data.categoryId || resolvedProjectId || data.clientId ? 'MANUAL' : null,
         updatedAt: serverTimestamp(),
       });
       await updateDoc(docPath(db, 'financial_inbox', item.id), {
@@ -2099,6 +2125,149 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }
       setNotice('Movimentação conciliada e regra de classificação salva.');
     } finally { setBusy(false); }
+  };
+
+  const clearPluggySyncedData = async () => {
+    const pluggyTransactions = transactions.filter(tx =>
+      tx.companyId === companyId
+      && (tx.source === 'PLUGGY' || tx.providerTransactionId || String(tx.externalId || '').startsWith('pluggy:'))
+    );
+
+    const pluggyAccounts = accounts.filter(account =>
+      account.companyId === companyId
+      && (account.provider === 'PLUGGY' || account.providerAccountId)
+    );
+
+    const pluggyInbox = inbox.filter(item =>
+      item.companyId === companyId
+      && (item.source === 'PLUGGY' || pluggyTransactions.some(tx => tx.id === item.transactionId))
+    );
+
+    if (!pluggyTransactions.length && !pluggyAccounts.length && !pluggyInbox.length) {
+      setNotice('Não há dados sincronizados da Pluggy para limpar.');
+      return;
+    }
+
+    const affectedBillAmounts = new Map();
+    const affectedPayableAmounts = new Map();
+    const affectedReceivableAmounts = new Map();
+
+    pluggyTransactions.forEach(tx => {
+      const amount = Number(tx.amountCents || 0);
+      if (!amount) return;
+      if (tx.billId) affectedBillAmounts.set(tx.billId, (affectedBillAmounts.get(tx.billId) || 0) + amount);
+      if (tx.payableId) affectedPayableAmounts.set(tx.payableId, (affectedPayableAmounts.get(tx.payableId) || 0) + amount);
+      if (tx.receivableId) affectedReceivableAmounts.set(tx.receivableId, (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount);
+    });
+
+    if (!window.confirm(
+      'ATENÇÃO: esta operação apagará todas as movimentações importadas pela Pluggy, itens da Atenção ligados a elas e contas bancárias sincronizadas. ' +
+      'Também desfará as baixas de faturas/contas a pagar/receber feitas por essas movimentações. ' +
+      'Seus cadastros manuais serão preservados. Deseja continuar?'
+    )) return;
+
+    setBusy(true);
+    try {
+      // Reverte os valores conciliados antes de excluir as movimentações.
+      const reversalBatch = writeBatch(db);
+
+      affectedBillAmounts.forEach((amount, billId) => {
+        const bill = bills.find(item => item.id === billId);
+        if (!bill) return;
+        const nextPaid = Math.max(0, Number(bill.paidCents || 0) - amount);
+        reversalBatch.update(docPath(db, 'financial_bills', billId), {
+          paidCents: nextPaid,
+          status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(bill.totalCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
+          lastPaymentTransactionId: null,
+          lastPaidAt: null,
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      affectedPayableAmounts.forEach((amount, payableId) => {
+        const payable = payables.find(item => item.id === payableId);
+        if (!payable) return;
+        const nextPaid = Math.max(0, Number(payable.paidCents || 0) - amount);
+        reversalBatch.update(docPath(db, 'financial_payables', payableId), {
+          paidCents: nextPaid,
+          status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(payable.amountCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
+          paymentTransactionId: null,
+          actualDate: null,
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      affectedReceivableAmounts.forEach((amount, receivableId) => {
+        const receivable = receivables.find(item => item.id === receivableId);
+        if (!receivable) return;
+        const nextReceived = Math.max(0, Number(receivable.receivedCents || 0) - amount);
+        reversalBatch.update(docPath(db, 'financial_receivables', receivableId), {
+          receivedCents: nextReceived,
+          status: nextReceived <= 0 ? 'OPEN' : (nextReceived >= Number(receivable.amountCents || 0) ? 'RECEIVED' : 'PARTIALLY_RECEIVED'),
+          receiptTransactionId: null,
+          actualDate: null,
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      if (affectedBillAmounts.size || affectedPayableAmounts.size || affectedReceivableAmounts.size) {
+        await reversalBatch.commit();
+      }
+
+      // Remove transfers criadas automaticamente a partir das movimentações Pluggy.
+      const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
+      const autoPluggyTransfers = transfers.filter(transfer =>
+        transfer.companyId === companyId
+        && transfer.source === 'AUTO_RECONCILIATION'
+        && (
+          pluggyTransactionIds.has(transfer.outgoingTransactionId)
+          || pluggyTransactionIds.has(transfer.incomingTransactionId)
+        )
+      );
+
+      for (let start = 0; start < autoPluggyTransfers.length; start += 400) {
+        const batch = writeBatch(db);
+        autoPluggyTransfers.slice(start, start + 400).forEach(transfer => {
+          batch.delete(docPath(db, 'financial_transfers', transfer.id));
+        });
+        await batch.commit();
+      }
+
+      const idsToDelete = pluggyTransactions.map(tx => tx.id);
+      for (let start = 0; start < idsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        idsToDelete.slice(start, start + 400).forEach(id => {
+          batch.delete(docPath(db, 'financial_transactions', id));
+        });
+        await batch.commit();
+      }
+
+      const inboxIdsToDelete = pluggyInbox.map(item => item.id);
+      for (let start = 0; start < inboxIdsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        inboxIdsToDelete.slice(start, start + 400).forEach(id => {
+          batch.delete(docPath(db, 'financial_inbox', id));
+        });
+        await batch.commit();
+      }
+
+      const accountIdsToDelete = pluggyAccounts.map(account => account.id);
+      for (let start = 0; start < accountIdsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        accountIdsToDelete.slice(start, start + 400).forEach(id => {
+          batch.delete(docPath(db, 'financial_accounts', id));
+        });
+        await batch.commit();
+      }
+
+      setNotice(
+        `Base sincronizada da Pluggy limpa: ${pluggyTransactions.length} movimentação(ões), ${pluggyAccounts.length} conta(s) e ${pluggyInbox.length} item(ns) de Atenção removido(s). Seus cadastros manuais foram preservados. Agora faça uma nova sincronização.`
+      );
+    } catch (err) {
+      setNotice(err.message || 'Não foi possível limpar os dados sincronizados da Pluggy.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const clearAllAttention = async () => {
@@ -2702,6 +2871,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               onSaveConnection={savePluggyConnection}
               onSyncConnection={syncPluggyConnection}
             />
+            <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 rounded-xl border border-red-100 bg-red-50">
+              <div>
+                <p className="text-xs font-black text-red-800">Recomeçar sincronização</p>
+                <p className="text-[10px] text-red-700 mt-1">
+                  Apaga apenas os dados importados pela Pluggy e desfaz conciliações feitas por eles. Cadastros manuais são preservados.
+                </p>
+              </div>
+              <button
+                onClick={clearPluggySyncedData}
+                disabled={busy}
+                className="shrink-0 px-3 py-2.5 rounded-xl border border-red-200 bg-white text-red-700 text-xs font-black hover:bg-red-100 disabled:opacity-50"
+              >
+                <Trash2 size={15} className="inline mr-1.5"/> Limpar dados sincronizados
+              </button>
+            </div>
           </Card>
 
           <Card className="p-5">

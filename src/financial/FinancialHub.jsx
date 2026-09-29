@@ -156,7 +156,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const groups = new Map();
 
     attentionItems
-      .filter(item => item.kind === 'CLASSIFICATION' && item.transaction)
+      .filter(item => item.kind === 'CLASSIFICATION' && item.transaction && item.transaction.type === 'EXPENSE')
       .forEach(item => {
         const tx = item.transaction;
         const description = tx.description || '';
@@ -2135,8 +2135,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                   <h4 className="font-black text-xl text-slate-800">Classificação em massa</h4>
                 </div>
                 <p className="text-xs text-slate-400 mt-1">
-                  Agrupe lançamentos semelhantes, escolha a categoria uma única vez e o ArquiManager resolve o grupo inteiro.
-                  Transferências e pagamentos de fatura ficam fora deste fluxo.
+                  Agrupe despesas semelhantes, escolha a categoria uma única vez e o ArquiManager resolve o grupo inteiro.
+                  Transferências, pagamentos de fatura e entradas ficam fora deste fluxo.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">

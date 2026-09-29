@@ -1,7 +1,7 @@
 
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { initializeApp, getApps } from 'firebase/app';
+import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { 
@@ -25,7 +25,7 @@ const firebaseConfig = {
   appId: "1:148259023703:web:04a57624f1c526e4b0ac12",
   measurementId: "G-NW2WSES695"
 };
-const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
@@ -166,39 +166,18 @@ export default function App() {
     }
   });
   const [loadingAuth, setLoadingAuth] = useState(true);
-  const [authError, setAuthError] = useState('');
 
   useEffect(() => {
-    let active = true;
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (!active) return;
-      setFirebaseUser(user);
-    });
-
     const initAuth = async () => {
       try {
-        setAuthError('');
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else if (!auth.currentUser) {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Erro Auth:", error);
-        if (active) {
-          const code = error?.code || 'auth/unknown';
-          setAuthError(code);
-        }
-      } finally {
-        if (active) setLoadingAuth(false);
-      }
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
+        else await signInAnonymously(auth);
+      } catch (error) { console.error("Erro Auth:", error); }
     };
-
     initAuth();
-    return () => {
-      active = false;
-      unsub();
-    };
+
+    const unsub = onAuthStateChanged(auth, (user) => { setFirebaseUser(user); setLoadingAuth(false); });
+    return () => unsub();
   }, []);
 
 // Lógica de Login: Atualiza estado e guarda na memória do navegador
@@ -214,13 +193,13 @@ export default function App() {
   };
 
   if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 font-medium">Conectando ao ArquiManager...</div>;
-  if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} authError={authError} onUnlock={handleLoginSuccess} />;
+  if (!appUser || !firebaseUser) return <LoginScreen firebaseUser={firebaseUser} onUnlock={handleLoginSuccess} />;
 
   return <MainLayout firebaseUser={firebaseUser} appUser={appUser} onLogout={handleLogout} />;
 }
 
 // --- TELA DE LOGIN E CADASTRO DA EMPRESA ---
-function LoginScreen({ firebaseUser, authError, onUnlock }) {
+function LoginScreen({ firebaseUser, onUnlock }) {
   const [view, setView] = useState('login');
   const [error, setError] = useState('');
   
@@ -282,15 +261,6 @@ function LoginScreen({ firebaseUser, authError, onUnlock }) {
           <p className="text-slate-500 text-sm text-center font-medium">Gestão Inteligente para Escritórios</p>
         </div>
 
-        {authError && (
-          <div className="bg-amber-50 text-amber-800 p-3 rounded-lg text-xs mb-4 font-medium border border-amber-200">
-            <div className="font-black uppercase flex items-center gap-2"><AlertCircle size={16}/> Falha na conexão com o Firebase</div>
-            <p className="mt-1 break-words">
-              Código: <strong>{authError}</strong>. Verifique se <strong>arksuper.netlify.app</strong> está em
-              <strong> Authentication → Settings → Authorized domains</strong> e se o provedor <strong>Anonymous</strong> está habilitado.
-            </p>
-          </div>
-        )}
         {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 font-medium border border-red-100 flex items-center"><AlertCircle size={16} className="mr-2 shrink-0"/> {error}</div>}
 
         {view === 'login' ? (
@@ -488,7 +458,7 @@ const allowedProjects = useMemo(() => {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} /> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} />; // projects={allowedProjects} contasPagar={contasPagar} docTypes={docTypes} suppliers={suppliers} canEdit={canEdit} appUser={appUser} groups={payGroups} subgroups={paySubgroups} /> : <NoAccess />;
       case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;

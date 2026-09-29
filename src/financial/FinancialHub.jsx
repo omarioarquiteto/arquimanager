@@ -73,6 +73,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [bulkQuery, setBulkQuery] = useState('');
+  const [bulkLimit, setBulkLimit] = useState(20);
+  const [bulkBusyKey, setBulkBusyKey] = useState('');
 
   useEffect(() => {
     if (!companyId) return;
@@ -149,7 +152,54 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       });
   }, [inbox, transactions]);
 
-  const attentionCount = attentionItems.length;
+  const bulkClassificationGroups = useMemo(() => {
+    const groups = new Map();
+
+    attentionItems
+      .filter(item => item.kind === 'CLASSIFICATION' && item.transaction)
+      .forEach(item => {
+        const tx = item.transaction;
+        const description = tx.description || '';
+        if (isTransferDescription(description) || isCardPaymentDescription(description)) return;
+
+        const merchant = tx.merchant || description;
+        const key = normalizeText(merchant);
+        if (!key || key.length < 4) return;
+
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            merchant,
+            items: [],
+            totalCents: 0,
+            expenseCount: 0,
+            incomeCount: 0,
+            sampleDescriptions: [],
+          });
+        }
+
+        const group = groups.get(key);
+        group.items.push(item);
+        group.totalCents += Number(tx.amountCents || 0);
+        if (tx.type === 'INCOME') group.incomeCount += 1;
+        else group.expenseCount += 1;
+
+        if (group.sampleDescriptions.length < 3 && description && !group.sampleDescriptions.includes(description)) {
+          group.sampleDescriptions.push(description);
+        }
+      });
+
+    const query = normalizeText(bulkQuery);
+    return [...groups.values()]
+      .filter(group => !query || normalizeText(group.merchant).includes(query))
+      .sort((a, b) => {
+        const countDiff = b.items.length - a.items.length;
+        if (countDiff) return countDiff;
+        return b.totalCents - a.totalCents;
+      });
+  }, [attentionItems, bulkQuery]);
+
+  const visibleBulkGroups = bulkClassificationGroups.slice(0, bulkLimit);
 
   const accountBalance = useMemo(
     () => accounts.reduce((sum, a) => sum + Number(a.balanceCents || 0), 0),
@@ -1540,6 +1590,50 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     } finally { setBusy(false); }
   };
 
+  const bulkClassifyGroup = async ({ group, categoryId, projectId, clientId, rememberMerchant }) => {
+    if (!group?.items?.length || !categoryId) return;
+
+    setBulkBusyKey(group.key);
+    try {
+      if (rememberMerchant) {
+        const ruleId = `${companyId}_${group.key.replace(/[^a-z0-9_-]+/g, '_').slice(0, 120)}`;
+        await setDoc(docPath(db, 'financial_rules', ruleId), {
+          companyId,
+          merchantNormalized: group.key,
+          categoryId,
+          projectId: projectId || null,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+
+      const safeItems = group.items.filter(item => item?.id && item?.transaction?.id);
+      for (let start = 0; start < safeItems.length; start += 240) {
+        const batch = writeBatch(db);
+        safeItems.slice(start, start + 240).forEach(item => {
+          batch.update(docPath(db, 'financial_transactions', item.transaction.id), {
+            categoryId,
+            projectId: projectId || null,
+            clientId: clientId || null,
+            status: 'CLASSIFIED',
+            updatedAt: serverTimestamp(),
+          });
+          batch.update(docPath(db, 'financial_inbox', item.id), {
+            status: 'RESOLVED',
+            resolvedAt: serverTimestamp(),
+            resolvedBy: appUser?.id || 'SYSTEM_BULK_CLASSIFICATION',
+          });
+        });
+        await batch.commit();
+      }
+
+      setNotice(`${safeItems.length} movimentação(ões) de “${group.merchant}” classificada(s) de uma vez.${rememberMerchant ? ' Regra salva para próximos lançamentos.' : ''}`);
+    } catch (err) {
+      setNotice(err.message || 'Não foi possível classificar este grupo.');
+    } finally {
+      setBulkBusyKey('');
+    }
+  };
+
   const resolveInbox = async (item, data) => {
     const tx = transactions.find(t => t.id === item.transactionId);
     if (!tx) return;
@@ -2032,8 +2126,68 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       )}
 
       {tab === 'attention' && (
-        <Card className="p-5 flex-1 overflow-auto">
-          <div className="flex items-center gap-2 mb-5">
+        <div className="space-y-5 flex-1 overflow-auto pb-4">
+          <Card className="p-5">
+            <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Tags className="text-[#1e5aa0]" size={21}/>
+                  <h4 className="font-black text-xl text-slate-800">Classificação em massa</h4>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Agrupe lançamentos semelhantes, escolha a categoria uma única vez e o ArquiManager resolve o grupo inteiro.
+                  Transferências e pagamentos de fatura ficam fora deste fluxo.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 text-slate-400" size={15}/>
+                  <input
+                    value={bulkQuery}
+                    onChange={e => setBulkQuery(e.target.value)}
+                    placeholder="Buscar estabelecimento..."
+                    className="pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-blue-100 w-56"
+                  />
+                </div>
+                <span className="px-3 py-2.5 rounded-xl bg-slate-100 text-slate-600 text-[10px] font-black">
+                  {bulkClassificationGroups.length} grupo(s)
+                </span>
+              </div>
+            </div>
+
+            {bulkClassificationGroups.length ? (
+              <>
+                <div className="mt-4 space-y-2">
+                  {visibleBulkGroups.map(group => (
+                    <BulkClassificationRow
+                      key={group.key}
+                      group={group}
+                      categories={categories}
+                      projects={projects}
+                      clients={clients}
+                      busy={bulkBusyKey === group.key}
+                      onApply={bulkClassifyGroup}
+                    />
+                  ))}
+                </div>
+                {bulkClassificationGroups.length > bulkLimit && (
+                  <button
+                    onClick={() => setBulkLimit(limit => limit + 20)}
+                    className="mt-4 w-full py-2.5 border border-slate-200 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-50"
+                  >
+                    Mostrar mais grupos ({bulkClassificationGroups.length - bulkLimit} restantes)
+                  </button>
+                )}
+              </>
+            ) : (
+              <div className="mt-4 p-6 rounded-xl bg-emerald-50 border border-emerald-100 text-center text-emerald-700 font-bold text-xs">
+                Nenhum grupo de classificação em massa disponível.
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center gap-2 mb-5">
             <CircleAlert className="text-amber-500" size={22}/>
             <div>
               <h4 className="font-black text-xl text-slate-800">Caixa de atenção</h4>
@@ -2062,6 +2216,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             {!attentionCount && <div className="p-6 text-center bg-emerald-50 rounded-xl text-emerald-700 font-bold">Nenhum item aguardando tratamento.</div>}
           </div>
         </Card>
+        </div>
       )}
 
       {tab === 'planning' && (

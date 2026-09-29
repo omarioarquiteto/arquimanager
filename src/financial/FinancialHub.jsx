@@ -1073,9 +1073,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         .map(d => ({ id: d.id, ...d.data() }))
         .filter(tx => tx.companyId === companyId);
 
-      const transactionsByExternalId = new Map();
-      const duplicateTransactionIds = [];
-
       const transactionPriority = (tx) => {
         if (tx?.status === 'RECONCILED' || tx?.reconciliationType) return 3;
         if (tx?.status === 'CLASSIFIED') return 2;
@@ -1083,14 +1080,37 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         return 0;
       };
 
-      companyTransactions
-        .filter(tx => tx.externalId)
-        .forEach(tx => {
-          const key = String(tx.externalId);
-          const current = transactionsByExternalId.get(key);
+      // Identidade do lançamento bancário:
+      // 1) providerTransactionId (identificador estável da Pluggy);
+      // 2) externalId;
+      // 3) chave composta para registros antigos que não tenham nenhum dos dois.
+      const transactionIdentity = (tx) => {
+        if (tx?.providerTransactionId) return 'provider:' + String(tx.providerTransactionId);
+        if (tx?.externalId) return 'external:' + String(tx.externalId);
 
+        const account = tx?.providerAccountId || tx?.accountId || '';
+        const date = tx?.date || '';
+        const amount = Number(tx?.amountCents || 0);
+        const description = normalizeText(tx?.description || tx?.merchant || '');
+        if (account && date && amount && description) {
+          return 'legacy:' + account + '|' + date + '|' + amount + '|' + description;
+        }
+        return null;
+      };
+
+      // Consolida o histórico antes de qualquer nova importação.
+      const canonicalByIdentity = new Map();
+      const duplicateTransactionIds = new Set();
+
+      companyTransactions
+        .filter(tx => tx?.source === 'PLUGGY' || tx?.providerTransactionId || String(tx?.externalId || '').startsWith('pluggy:'))
+        .forEach(tx => {
+          const identity = transactionIdentity(tx);
+          if (!identity) return;
+
+          const current = canonicalByIdentity.get(identity);
           if (!current) {
-            transactionsByExternalId.set(key, tx);
+            canonicalByIdentity.set(identity, tx);
             return;
           }
 
@@ -1098,67 +1118,70 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           const nextScore = transactionPriority(tx);
 
           if (nextScore > currentScore) {
-            duplicateTransactionIds.push(current.id);
-            transactionsByExternalId.set(key, tx);
+            duplicateTransactionIds.add(current.id);
+            canonicalByIdentity.set(identity, tx);
           } else {
-            duplicateTransactionIds.push(tx.id);
+            duplicateTransactionIds.add(tx.id);
           }
         });
 
-      // A caixa de Atenção também pode ter sido duplicada durante uma
-      // sincronização concorrente/rápida. Reaproveitamos apenas uma ocorrência
-      // aberta por transactionId e removemos itens órfãos das transações que
-      // forem descartadas acima.
+      // Mapa usado pela importação. O lançamento canônico é localizado pelo
+      // providerTransactionId e pelo externalId.
+      const existingByExternalId = new Map();
+      [...canonicalByIdentity.values()].forEach(tx => {
+        if (tx?.externalId) existingByExternalId.set(String(tx.externalId), tx);
+        if (tx?.providerTransactionId) {
+          existingByExternalId.set('pluggy:' + String(tx.providerTransactionId), tx);
+        }
+      });
+
+      const canonicalTransactionIds = new Set(
+        [...canonicalByIdentity.values()].map(tx => tx.id)
+      );
+
       const serverInboxSnapshot = await getDocs(collectionPath(db, 'financial_inbox'));
       const companyInbox = serverInboxSnapshot.docs
         .map(d => ({ id: d.id, ...d.data() }))
         .filter(item => item.companyId === companyId);
 
-      const canonicalTransactionIds = new Set(
-        [...transactionsByExternalId.values()].map(tx => tx.id)
-      );
-
-      const duplicateInboxIds = [];
+      const duplicateInboxIds = new Set();
       const openInboxByTransactionServer = new Map();
 
       companyInbox
         .filter(item => item.status !== 'RESOLVED')
         .forEach(item => {
           if (!canonicalTransactionIds.has(item.transactionId)) {
-            duplicateInboxIds.push(item.id);
+            duplicateInboxIds.add(item.id);
             return;
           }
 
           const existingItems = openInboxByTransactionServer.get(item.transactionId) || [];
           if (existingItems.length) {
-            // Mantém a primeira ocorrência e exclui as demais.
-            duplicateInboxIds.push(item.id);
+            duplicateInboxIds.add(item.id);
           } else {
             existingItems.push(item);
             openInboxByTransactionServer.set(item.transactionId, existingItems);
           }
         });
 
-      const cleanupIds = [...new Set([
-        ...duplicateTransactionIds,
-        ...duplicateInboxIds,
-      ])];
-
-      for (let start = 0; start < cleanupIds.length; start += 400) {
+      const transactionIdsToDelete = [...duplicateTransactionIds];
+      for (let start = 0; start < transactionIdsToDelete.length; start += 400) {
         const cleanupBatch = writeBatch(db);
-
-        cleanupIds.slice(start, start + 400).forEach(id => {
-          if (duplicateTransactionIds.includes(id)) {
-            cleanupBatch.delete(docPath(db, 'financial_transactions', id));
-          } else if (duplicateInboxIds.includes(id)) {
-            cleanupBatch.delete(docPath(db, 'financial_inbox', id));
-          }
+        transactionIdsToDelete.slice(start, start + 400).forEach(id => {
+          cleanupBatch.delete(docPath(db, 'financial_transactions', id));
         });
-
         await cleanupBatch.commit();
       }
 
-      const existingByExternalId = transactionsByExternalId;
+      const inboxIdsToDelete = [...duplicateInboxIds];
+      for (let start = 0; start < inboxIdsToDelete.length; start += 400) {
+        const cleanupBatch = writeBatch(db);
+        inboxIdsToDelete.slice(start, start + 400).forEach(id => {
+          cleanupBatch.delete(docPath(db, 'financial_inbox', id));
+        });
+        await cleanupBatch.commit();
+      }
+
       const importedItems = [];
       const newTransactionsBatch = writeBatch(db);
       let newImported = 0;
@@ -1227,8 +1250,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       // do Firestore chegar ao React. Isso permite parear uma transferência
       // importada nas duas pontas no mesmo ciclo de sincronização.
       const cleanTransactionPool = companyTransactions.filter(tx => {
-        if (!tx.externalId) return true;
-        return transactionsByExternalId.get(String(tx.externalId))?.id === tx.id;
+        const identity = transactionIdentity(tx);
+        if (!identity) return true;
+        return canonicalByIdentity.get(identity)?.id === tx.id;
       });
 
       const pool = cleanTransactionPool

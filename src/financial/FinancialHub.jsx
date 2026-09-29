@@ -13,6 +13,7 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnections from './PluggyConnections.jsx';
+import { pluggyTransactionToFinancial } from './pluggyAdapter.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -959,6 +960,128 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     setNotice(`Banco conectado: ${connection.connectorName || 'instituição financeira'}.`);
   };
 
+  const syncPluggyConnection = async (connection) => {
+    if (!connection?.itemId) return;
+
+    setBusy(true);
+    try {
+      const response = await fetch('/.netlify/functions/pluggy-sync-item', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          itemId: connection.itemId,
+          clientUserId: connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Não foi possível sincronizar o banco.');
+
+      const accountIdMap = new Map();
+      const accountBatch = writeBatch(db);
+
+      (data.bankAccounts || []).forEach(account => {
+        const financialId = `${companyId}_pluggy_account_${account.id}`;
+        accountIdMap.set(account.id, financialId);
+        accountBatch.set(docPath(db, 'financial_accounts', financialId), {
+          companyId,
+          name: account.name || 'Conta bancária',
+          institution: connection.connectorName || 'Instituição financeira',
+          type: account.subtype === 'SAVINGS_ACCOUNT' ? 'CONTA_POUPANCA' : 'CONTA_CORRENTE',
+          balanceCents: toCents(account.balance),
+          currencyCode: account.currencyCode || 'BRL',
+          provider: 'PLUGGY',
+          providerAccountId: account.id,
+          providerItemId: connection.itemId,
+          balanceSource: 'PLUGGY',
+          lastBalanceSyncAt: data.syncedAt || new Date().toISOString(),
+          active: true,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      });
+
+      const bankAccounts = data.bankAccounts || [];
+      for (const account of bankAccounts) {
+        const financialId = accountIdMap.get(account.id);
+        if (!financialId) continue;
+
+        const accountTransactions = (data.transactions || []).filter(tx => tx.accountId === account.id);
+        const transactionBatchItems = [];
+
+        for (const rawTransaction of accountTransactions) {
+          const externalId = `pluggy:${rawTransaction.id}`;
+          if (transactions.some(existingTx => existingTx.externalId === externalId)) continue;
+
+          try {
+            const normalized = pluggyTransactionToFinancial({
+              transaction: rawTransaction,
+              companyId,
+              financialAccountId: financialId,
+            });
+            const remembered = findRememberedRule(normalized.merchant || normalized.description);
+            const categoryId = normalized.type === 'EXPENSE' && !remembered.status.includes('AMBIGUOUS')
+              ? (remembered.status === 'MATCH' ? remembered.rule.categoryId : null)
+              : null;
+            const projectId = remembered.status === 'MATCH' ? remembered.rule.projectId || null : null;
+            const status = remembered.status === 'MATCH' && categoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED';
+
+            transactionBatchItems.push({
+              ref: doc(collectionPath(db, 'financial_transactions')),
+              data: {
+                ...normalized,
+                categoryId,
+                projectId,
+                status,
+                syncId: data.syncedAt || null,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              }
+            });
+          } catch (err) {
+            console.error('Transação Pluggy ignorada:', err);
+          }
+        }
+
+        // Firestore batch aceita 500 operações; reservamos margem para futuras extensões.
+        for (let start = 0; start < transactionBatchItems.length; start += 400) {
+          const batch = writeBatch(db);
+          if (start === 0) {
+            Object.entries(Object.fromEntries(accountBatch._mutations || [])).forEach(() => {});
+          }
+          transactionBatchItems.slice(start, start + 400).forEach(item => batch.set(item.ref, item.data));
+          if (start === 0) {
+            // As contas são salvas separadamente abaixo para manter o batch simples e previsível.
+          }
+          await batch.commit();
+        }
+      }
+
+      await accountBatch.commit();
+
+      await setDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`), {
+        companyId,
+        itemId: connection.itemId,
+        connectorId: data.item?.connectorId || connection.connectorId || null,
+        connectorName: data.item?.connectorName || connection.connectorName || 'Instituição financeira',
+        clientUserId: connection.clientUserId || null,
+        status: data.item?.status || connection.status || 'UPDATED',
+        lastConnectedAt: connection.lastConnectedAt || new Date().toISOString(),
+        lastSyncedAt: data.syncedAt || new Date().toISOString(),
+        lastSyncTransactions: (data.transactions || []).length,
+        lastSyncAccounts: (data.bankAccounts || []).length,
+        lastSyncCreditAccounts: (data.creditAccounts || []).length,
+        syncTruncated: Boolean(data.truncated),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      setNotice(`${data.bankAccounts?.length || 0} conta(s) bancária(s) sincronizada(s) e ${data.transactions?.length || 0} movimentação(ões) importada(s).${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`);
+    } catch (err) {
+      setNotice(err.message || 'Falha ao sincronizar a conexão Pluggy.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createAccount = async (data) => {
     const name = data.name.trim();
     if (!name) return;
@@ -1679,9 +1802,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <PluggyConnections
               appUser={appUser}
               connections={connections}
-              db={db}
               onSaveConnection={savePluggyConnection}
-              collectionPath={collectionPath}
+              onSyncConnection={syncPluggyConnection}
             />
           </Card>
 

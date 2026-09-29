@@ -2797,7 +2797,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     <div><p className="font-black text-slate-800">{card.name}</p><p className="text-xs text-slate-400">{card.institution}</p></div>
                     <div className="flex items-center gap-1">
                       <WalletCards size={19} className="text-[#1e5aa0]"/>
-                      {card.source === 'MANUAL' && (
+                      {card.source !== 'PLUGGY' && !card.provider && !card.providerCardId && !card.providerAccountId && !card.providerItemId && (
                         <button
                           onClick={() => deleteManualCard(card)}
                           disabled={busy}

@@ -842,8 +842,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           date: isoDate, actualDate: isoDate, expectedDate: null, description,
           merchant: description, normalizedMerchant,
           amountCents: normalizedAmount, type,
-          status: (type === 'EXPENSE' && rememberedRule?.categoryId) ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
-          categoryId: rememberedRule?.categoryId || null, projectId: rememberedRule?.projectId || null,
+          status: (type === 'EXPENSE' && rememberedRule?.categoryId && !isTransferDescription(description)) ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED',
+          categoryId: isTransferDescription(description) ? null : (rememberedRule?.categoryId || null),
+          projectId: isTransferDescription(description) ? null : (rememberedRule?.projectId || null),
           clientId: null, supplierId: null,
           importedAt: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
         });

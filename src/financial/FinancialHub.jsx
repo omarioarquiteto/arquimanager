@@ -587,6 +587,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           ['calendar', 'Calendário'],
           ['transactions', 'Movimentações'],
           ['attention', `Atenção ${attentionCount ? `(${attentionCount})` : ''}`],
+          ['planning', 'A pagar / A receber'],
           ['accounts', 'Contas e cartões'],
         ].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wide border transition-colors ${tab === id ? 'bg-[#1e5aa0] text-white border-[#1e5aa0]' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}>
@@ -602,6 +603,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <Metric label="Entradas no mês" value={formatBRL(totals.income)} icon={<ArrowUpCircle size={18}/>} tone="green"/>
             <Metric label="Saídas no mês" value={formatBRL(totals.expense)} icon={<ArrowDownCircle size={18}/>} tone="red"/>
             <Metric label="Resultado do mês" value={formatBRL(totals.result)} icon={<ArrowLeftRight size={18}/>} tone={totals.result >= 0 ? 'green' : 'red'}/>
+            <Metric label="Em aberto a pagar" value={formatBRL(payableOpenTotal)} icon={<ArrowDownCircle size={18}/>} tone="amber"/>
+            <Metric label="Em aberto a receber" value={formatBRL(receivableOpenTotal)} icon={<ArrowUpCircle size={18}/>} tone="blue"/>
           </div>
 
           <div className="grid lg:grid-cols-[1.35fr_.65fr] gap-5">
@@ -660,13 +663,18 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <div className="grid grid-cols-7 gap-1">
               {days.map((day, idx) => {
                 const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
+                const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day) : [];
                 const income = dayTx.filter(t => t.type === 'INCOME').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const expense = dayTx.filter(t => t.type === 'EXPENSE').reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const plannedIncome = dayPlanned.filter(t => t.type === 'RECEIVABLE').reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const plannedExpense = dayPlanned.filter(t => t.type === 'PAYABLE').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 return <div key={`${day || 'blank'}-${idx}`} className="min-h-[76px] bg-slate-50 border border-slate-100 rounded-lg p-2">
                   {day && <div className="text-xs font-black text-slate-700">{Number(day.slice(8))}</div>}
                   {income > 0 && <div className="mt-2 text-[10px] font-bold text-emerald-600">+{formatBRL(income)}</div>}
                   {expense > 0 && <div className="text-[10px] font-bold text-red-600">-{formatBRL(expense)}</div>}
-                  {dayTx.length > 0 && <div className="mt-1 text-[9px] text-slate-400">{dayTx.length} movimento(s)</div>}
+                  {plannedIncome > 0 && <div className="text-[10px] font-bold text-blue-600">↗ previsto {formatBRL(plannedIncome)}</div>}
+                  {plannedExpense > 0 && <div className="text-[10px] font-bold text-amber-600">↘ previsto {formatBRL(plannedExpense)}</div>}
+                  {(dayTx.length + dayPlanned.length) > 0 && <div className="mt-1 text-[9px] text-slate-400">{dayTx.length} real · {dayPlanned.length} previsto(s)</div>}
                 </div>;
               })}
             </div>
@@ -743,6 +751,60 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             {!attentionCount && <div className="p-6 text-center bg-emerald-50 rounded-xl text-emerald-700 font-bold">Nenhum item aguardando tratamento.</div>}
           </div>
         </Card>
+      )}
+
+      {tab === 'planning' && (
+        <div className="space-y-5 flex-1 overflow-auto pb-4">
+          <div className="grid lg:grid-cols-2 gap-5">
+            <Card className="p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h4 className="font-black text-xl text-slate-800">A pagar</h4>
+                  <p className="text-xs text-slate-400">Obrigações previstas. Não alteram o saldo até o pagamento real.</p>
+                </div>
+                <button onClick={() => setModal({type:'payable'})} className="bg-[#1e5aa0] text-white px-3 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"><Plus size={15}/> Nova</button>
+              </div>
+              <div className="mb-4 p-4 rounded-xl bg-amber-50 border border-amber-100">
+                <p className="text-[10px] font-black uppercase text-amber-700">Em aberto</p>
+                <p className="text-2xl font-black text-amber-900 mt-1">{formatBRL(payableOpenTotal)}</p>
+              </div>
+              <div className="space-y-2">
+                {[...payables].sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||''))).map(p => (
+                  <div key={p.id} className="p-3 rounded-xl border border-slate-100 bg-slate-50 flex items-center gap-3">
+                    <ArrowDownCircle size={18} className="text-red-500 shrink-0"/>
+                    <div className="flex-1 min-w-0"><p className="font-black text-slate-800 truncate">{p.description}</p><p className="text-[10px] text-slate-400">Vence {dateLabel(p.dueDate)} · {p.status === 'PAID' ? 'Paga' : 'Em aberto'}</p></div>
+                    <span className="font-black text-red-600 text-sm">{formatBRL(p.amountCents)}</span>
+                  </div>
+                ))}
+                {!payables.length && <EmptyState text="Nenhuma conta a pagar cadastrada."/>}
+              </div>
+            </Card>
+
+            <Card className="p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h4 className="font-black text-xl text-slate-800">A receber</h4>
+                  <p className="text-xs text-slate-400">Valores esperados. Não alteram o saldo até o recebimento real.</p>
+                </div>
+                <button onClick={() => setModal({type:'receivable'})} className="bg-emerald-600 text-white px-3 py-2.5 rounded-xl text-xs font-black flex items-center gap-2"><Plus size={15}/> Nova</button>
+              </div>
+              <div className="mb-4 p-4 rounded-xl bg-blue-50 border border-blue-100">
+                <p className="text-[10px] font-black uppercase text-blue-700">Em aberto</p>
+                <p className="text-2xl font-black text-blue-900 mt-1">{formatBRL(receivableOpenTotal)}</p>
+              </div>
+              <div className="space-y-2">
+                {[...receivables].sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||''))).map(r => (
+                  <div key={r.id} className="p-3 rounded-xl border border-slate-100 bg-slate-50 flex items-center gap-3">
+                    <ArrowUpCircle size={18} className="text-emerald-500 shrink-0"/>
+                    <div className="flex-1 min-w-0"><p className="font-black text-slate-800 truncate">{r.description}</p><p className="text-[10px] text-slate-400">Vence {dateLabel(r.dueDate)} · {r.status === 'RECEIVED' ? 'Recebido' : 'Em aberto'}</p></div>
+                    <span className="font-black text-emerald-600 text-sm">{formatBRL(r.amountCents)}</span>
+                  </div>
+                ))}
+                {!receivables.length && <EmptyState text="Nenhuma conta a receber cadastrada."/>}
+              </div>
+            </Card>
+          </div>
+        </div>
       )}
 
       {tab === 'accounts' && (
@@ -827,6 +889,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {modal?.type === 'account' && <AccountModal onClose={()=>setModal(null)} onSave={createAccount} busy={busy}/>}
       {modal?.type === 'card' && <CardModal accounts={accounts} onClose={()=>setModal(null)} onSave={createCard} busy={busy}/>}
       {modal?.type === 'cardPurchase' && <CardPurchaseModal cards={cards} categories={categories} projects={projects} onClose={()=>setModal(null)} onSave={createCardPurchase} busy={busy}/>}
+      {modal?.type === 'payable' && <PayableModal categories={categories} projects={projects} onClose={()=>setModal(null)} onSave={createPayable} busy={busy}/>}
+      {modal?.type === 'receivable' && <ReceivableModal clients={clients} projects={projects} onClose={()=>setModal(null)} onSave={createReceivable} busy={busy}/>}
       {modal?.type === 'csv' && <CsvModal accounts={accounts} onClose={()=>setModal(null)} onImport={importCsv} busy={busy}/>}
     </div>
   );
@@ -950,6 +1014,41 @@ function AccountModal({ onClose, onSave, busy }) {
       <Field label="Saldo inicial"><input value={data.balance} onChange={e=>update('balance',e.target.value)} type="number" step="0.01" className={inputCls}/></Field>
     </div>
     <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black">{busy?'Salvando...':'Criar conta'}</button></div>
+  </Modal>;
+}
+
+function PayableModal({ categories, projects, onClose, onSave, busy }) {
+  const [data,setData]=useState({description:'',amount:'',dueDate:todayLocal(),categoryId:'',projectId:'',supplierName:'',notes:''});
+  const update=(k,v)=>setData(p=>({...p,[k]:v}));
+  return <Modal title="Nova conta a pagar" onClose={onClose}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Field label="Descrição *"><input value={data.description} onChange={e=>update('description',e.target.value)} placeholder="Ex.: Serviço de renderização" className={inputCls}/></Field>
+      <Field label="Valor (R$) *"><input value={data.amount} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
+      <Field label="Vencimento *"><input value={data.dueDate} onChange={e=>update('dueDate',e.target.value)} type="date" className={inputCls}/></Field>
+      <Field label="Fornecedor"><input value={data.supplierName} onChange={e=>update('supplierName',e.target.value)} placeholder="Ex.: Empresa XYZ" className={inputCls}/></Field>
+      <Field label="Categoria"><select value={data.categoryId} onChange={e=>update('categoryId',e.target.value)} className={inputCls}><option value="">A definir</option>{categories.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}</select></Field>
+      <Field label="Projeto"><select value={data.projectId} onChange={e=>update('projectId',e.target.value)} className={inputCls}><option value="">Sem projeto</option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}</select></Field>
+      <div className="sm:col-span-2"><Field label="Observação"><textarea value={data.notes} onChange={e=>update('notes',e.target.value)} rows={3} className={inputCls}/></Field></div>
+    </div>
+    <div className="mt-4 p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-800">A obrigação fica prevista no calendário, mas o saldo bancário só muda com um pagamento real.</div>
+    <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black">{busy?'Salvando...':'Cadastrar'}</button></div>
+  </Modal>;
+}
+
+function ReceivableModal({ clients, projects, onClose, onSave, busy }) {
+  const [data,setData]=useState({description:'',amount:'',dueDate:todayLocal(),clientId:'',projectId:'',notes:''});
+  const update=(k,v)=>setData(p=>({...p,[k]:v}));
+  return <Modal title="Nova conta a receber" onClose={onClose}>
+    <div className="grid sm:grid-cols-2 gap-4">
+      <Field label="Descrição *"><input value={data.description} onChange={e=>update('description',e.target.value)} placeholder="Ex.: Parcela de projeto" className={inputCls}/></Field>
+      <Field label="Valor (R$) *"><input value={data.amount} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
+      <Field label="Vencimento *"><input value={data.dueDate} onChange={e=>update('dueDate',e.target.value)} type="date" className={inputCls}/></Field>
+      <Field label="Cliente"><select value={data.clientId} onChange={e=>update('clientId',e.target.value)} className={inputCls}><option value="">Não vinculado</option>{clients.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}</select></Field>
+      <Field label="Projeto"><select value={data.projectId} onChange={e=>update('projectId',e.target.value)} className={inputCls}><option value="">Sem projeto</option>{projects.map(p=><option key={p.id} value={p.id}>{p.nomeProjeto}</option>)}</select></Field>
+      <div className="sm:col-span-2"><Field label="Observação"><textarea value={data.notes} onChange={e=>update('notes',e.target.value)} rows={3} className={inputCls}/></Field></div>
+    </div>
+    <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800">O recebimento fica previsto no calendário, mas o saldo bancário só aumenta quando o dinheiro realmente entrar.</div>
+    <div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2.5 border rounded-xl text-xs font-bold">Cancelar</button><button disabled={busy} onClick={()=>onSave(data)} className="px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black">{busy?'Salvando...':'Cadastrar'}</button></div>
   </Modal>;
 }
 

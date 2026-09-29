@@ -1336,17 +1336,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
           // Mantém a classificação existente, mas garante que o vínculo com
           // o lançamento original da Pluggy esteja gravado de forma estável.
-          await updateDoc(docPath(db, 'financial_transactions', existing.id), {
-            source: 'PLUGGY',
-            externalId,
-            providerTransactionId: rawTransaction.id,
-            providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
-            providerId: rawTransaction.providerId || existing.providerId || null,
-            providerCode: rawTransaction.providerCode || existing.providerCode || null,
-            providerUpdatedAt: rawTransaction.updatedAt || existing.providerUpdatedAt || null,
-            updatedAt: serverTimestamp(),
-          });
-
+          // A atualização é aplicada depois, no processamento assíncrono da
+          // sincronização, porque este callback não é async.
           const existingData = {
             ...existing,
             source: 'PLUGGY',
@@ -1355,6 +1346,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
             providerId: rawTransaction.providerId || existing.providerId || null,
             providerCode: rawTransaction.providerCode || existing.providerCode || null,
+            providerUpdatedAt: rawTransaction.updatedAt || existing.providerUpdatedAt || null,
           };
 
           importedItems.push({
@@ -1363,6 +1355,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             data: existingData,
             rawTransaction,
             isNew: false,
+            refreshIdentity: true,
           });
           return;
         }
@@ -1433,6 +1426,27 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           }
           openInboxByTransaction.get(item.transactionId).push(item);
         });
+
+      // Atualiza os identificadores Pluggy dos lançamentos já existentes.
+      // Fazemos isso fora do forEach para manter o callback síncrono e permitir
+      // o await em um ponto controlado da sincronização.
+      const existingIdentityUpdates = importedItems.filter(item => item.refreshIdentity);
+      for (let start = 0; start < existingIdentityUpdates.length; start += 400) {
+        const identityBatch = writeBatch(db);
+        existingIdentityUpdates.slice(start, start + 400).forEach(item => {
+          identityBatch.update(item.ref, {
+            source: 'PLUGGY',
+            externalId: item.data.externalId,
+            providerTransactionId: item.data.providerTransactionId,
+            providerAccountId: item.data.providerAccountId || null,
+            providerId: item.data.providerId || null,
+            providerCode: item.data.providerCode || null,
+            providerUpdatedAt: item.data.providerUpdatedAt || null,
+            updatedAt: serverTimestamp(),
+          });
+        });
+        await identityBatch.commit();
+      }
 
       const pendingInbox = [];
       const resolvedInbox = [];

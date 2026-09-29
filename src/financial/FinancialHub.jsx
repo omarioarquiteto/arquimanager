@@ -31,6 +31,15 @@ const dateLabel = (s) => {
   return `${d}/${m}/${String(y).slice(2)}`;
 };
 
+const stableHash = (value = '') => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
 function Card({ children, className = '' }) {
   return <div className={`bg-white border border-slate-200 rounded-2xl shadow-sm ${className}`}>{children}</div>;
 }
@@ -1104,11 +1113,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const account = tx?.providerAccountId || tx?.accountId || '';
         const date = tx?.date || '';
         const amount = Number(tx?.amountCents || 0);
+        const type = tx?.type || '';
         const description = normalizeText(tx?.description || tx?.merchant || '');
         if (!account || !date || !amount || !description) return null;
         return [
           String(account),
           String(date),
+          String(type),
           String(amount),
           String(description),
         ].join('|');
@@ -1250,6 +1261,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           amountCents: Math.abs(toCents(
             rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0
           )),
+          type: rawTransaction.type === 'credit' ? 'INCOME' : rawTransaction.type === 'debit' ? 'EXPENSE' : (Number(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0) < 0 ? 'EXPENSE' : 'INCOME'),
           description: rawTransaction.description || rawTransaction.descriptionRaw || '',
           merchant: rawTransaction.merchant?.name || rawTransaction.merchant?.businessName || rawTransaction.description || '',
         });
@@ -1276,10 +1288,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             financialAccountId,
           });
 
-          // Para novos lançamentos, o id do documento também é determinístico.
-          // Assim duas sincronizações concorrentes apontam para o mesmo documento.
-          const safeExternalId = String(rawTransaction.id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
-          const ref = docPath(db, 'financial_transactions', `${companyId}_pluggy_${safeExternalId}`);
+          // O id do documento é derivado do fato bancário, não do id retornado
+          // pela API. Isso impede duplicação mesmo se o identificador externo variar.
+          const deterministicKey = rawFingerprint
+            ? stableHash(rawFingerprint)
+            : stableHash(externalId);
+          const ref = docPath(db, 'financial_transactions', `${companyId}_pluggy_tx_${deterministicKey}`);
           const item = {
             ref,
             id: ref.id,

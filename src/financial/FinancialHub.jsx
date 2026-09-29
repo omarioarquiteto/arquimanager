@@ -1184,7 +1184,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       });
 
       const canonicalTransactionIds = new Set(
-        [...canonicalByIdentity.values()].map(tx => tx.id)
+        companyTransactions
+          .filter(tx => !duplicateTransactionIds.has(tx.id))
+          .map(tx => tx.id)
       );
 
       const serverInboxSnapshot = await getDocs(collectionPath(db, 'financial_inbox'));
@@ -1314,9 +1316,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       // do Firestore chegar ao React. Isso permite parear uma transferência
       // importada nas duas pontas no mesmo ciclo de sincronização.
       const cleanTransactionPool = companyTransactions.filter(tx => {
-        const identity = transactionIdentity(tx);
-        if (!identity) return true;
-        return canonicalByIdentity.get(identity)?.id === tx.id;
+        return !duplicateTransactionIds.has(tx.id);
       });
 
       const pool = cleanTransactionPool

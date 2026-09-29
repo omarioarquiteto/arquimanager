@@ -977,12 +977,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Não foi possível sincronizar o banco.');
 
-      const accountIdMap = new Map();
       const accountBatch = writeBatch(db);
+      const pendingTransactions = [];
 
       (data.bankAccounts || []).forEach(account => {
         const financialId = `${companyId}_pluggy_account_${account.id}`;
-        accountIdMap.set(account.id, financialId);
         accountBatch.set(docPath(db, 'financial_accounts', financialId), {
           companyId,
           name: account.name || 'Conta bancária',
@@ -1000,63 +999,60 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }, { merge: true });
       });
 
-      const bankAccounts = data.bankAccounts || [];
-      for (const account of bankAccounts) {
-        const financialId = accountIdMap.get(account.id);
-        if (!financialId) continue;
+      const existingExternalIds = new Set(
+        transactions.map(existingTx => existingTx.externalId).filter(Boolean)
+      );
 
-        const accountTransactions = (data.transactions || []).filter(tx => tx.accountId === account.id);
-        const transactionBatchItems = [];
+      (data.transactions || []).forEach(rawTransaction => {
+        const externalId = `pluggy:${rawTransaction.id}`;
+        if (!rawTransaction?.id || existingExternalIds.has(externalId)) return;
 
-        for (const rawTransaction of accountTransactions) {
-          const externalId = `pluggy:${rawTransaction.id}`;
-          if (transactions.some(existingTx => existingTx.externalId === externalId)) continue;
+        const financialAccountId = `${companyId}_pluggy_account_${rawTransaction.accountId}`;
+        try {
+          const normalized = pluggyTransactionToFinancial({
+            transaction: rawTransaction,
+            companyId,
+            financialAccountId,
+          });
 
-          try {
-            const normalized = pluggyTransactionToFinancial({
-              transaction: rawTransaction,
-              companyId,
-              financialAccountId: financialId,
-            });
-            const remembered = findRememberedRule(normalized.merchant || normalized.description);
-            const categoryId = normalized.type === 'EXPENSE' && !remembered.status.includes('AMBIGUOUS')
-              ? (remembered.status === 'MATCH' ? remembered.rule.categoryId : null)
-              : null;
-            const projectId = remembered.status === 'MATCH' ? remembered.rule.projectId || null : null;
-            const status = remembered.status === 'MATCH' && categoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED';
+          const remembered = findRememberedRule(normalized.merchant || normalized.description);
+          const categoryId = remembered.status === 'MATCH' && normalized.type === 'EXPENSE'
+            ? remembered.rule.categoryId || null
+            : null;
+          const projectId = remembered.status === 'MATCH'
+            ? remembered.rule.projectId || null
+            : null;
+          const status = categoryId || projectId
+            ? 'CLASSIFIED'
+            : 'IDENTIFICATION_REQUIRED';
 
-            transactionBatchItems.push({
-              ref: doc(collectionPath(db, 'financial_transactions')),
-              data: {
-                ...normalized,
-                categoryId,
-                projectId,
-                status,
-                syncId: data.syncedAt || null,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              }
-            });
-          } catch (err) {
-            console.error('Transação Pluggy ignorada:', err);
-          }
+          pendingTransactions.push({
+            ref: doc(collectionPath(db, 'financial_transactions')),
+            data: {
+              ...normalized,
+              categoryId,
+              projectId,
+              status,
+              syncId: data.syncedAt || null,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+          });
+          existingExternalIds.add(externalId);
+        } catch (err) {
+          console.error('Transação Pluggy ignorada:', err);
         }
-
-        // Firestore batch aceita 500 operações; reservamos margem para futuras extensões.
-        for (let start = 0; start < transactionBatchItems.length; start += 400) {
-          const batch = writeBatch(db);
-          if (start === 0) {
-            Object.entries(Object.fromEntries(accountBatch._mutations || [])).forEach(() => {});
-          }
-          transactionBatchItems.slice(start, start + 400).forEach(item => batch.set(item.ref, item.data));
-          if (start === 0) {
-            // As contas são salvas separadamente abaixo para manter o batch simples e previsível.
-          }
-          await batch.commit();
-        }
-      }
+      });
 
       await accountBatch.commit();
+
+      for (let start = 0; start < pendingTransactions.length; start += 400) {
+        const batch = writeBatch(db);
+        pendingTransactions
+          .slice(start, start + 400)
+          .forEach(item => batch.set(item.ref, item.data));
+        await batch.commit();
+      }
 
       await setDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`), {
         companyId,
@@ -1074,7 +1070,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         updatedAt: serverTimestamp(),
       }, { merge: true });
 
-      setNotice(`${data.bankAccounts?.length || 0} conta(s) bancária(s) sincronizada(s) e ${data.transactions?.length || 0} movimentação(ões) importada(s).${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`);
+      setNotice(`${data.bankAccounts?.length || 0} conta(s) bancária(s) sincronizada(s) e ${pendingTransactions.length} movimentação(ões) nova(s) importada(s).${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`);
     } catch (err) {
       setNotice(err.message || 'Falha ao sincronizar a conexão Pluggy.');
     } finally {

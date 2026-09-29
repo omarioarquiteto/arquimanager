@@ -147,13 +147,6 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         </div>
       )}
 
-      {notice && (
-        <div className="flex items-start gap-2 p-3 rounded-xl bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs font-bold">
-          <ShieldCheck size={17} className="shrink-0 mt-0.5"/>
-          <span>{notice}</span>
-        </div>
-      )}
-
       {!connections.length ? (
         <div className="p-8 border border-dashed border-slate-200 rounded-2xl bg-slate-50 text-center">
           <Landmark size={30} className="mx-auto text-slate-300 mb-3"/>

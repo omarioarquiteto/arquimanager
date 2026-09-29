@@ -962,11 +962,62 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       await addDoc(collectionPath(db, 'financial_cards'), {
         companyId, name: data.name.trim(), institution: data.institution.trim(),
         limitCents, closingDay, dueDay, paymentAccountId: data.paymentAccountId || null,
-        active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        source: 'MANUAL', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
       setModal(null);
       setNotice('Cartão cadastrado.');
     } finally { setBusy(false); }
+  };
+
+  const deleteManualCard = async (card) => {
+    if (!card?.id) return;
+
+    // Cartões sincronizados por um provedor não devem ser removidos manualmente.
+    if (card.source === 'PLUGGY' || card.provider === 'PLUGGY' || card.providerCardId || card.providerAccountId || card.providerItemId) {
+      setNotice('Cartões sincronizados por instituição financeira não podem ser excluídos manualmente.');
+      return;
+    }
+
+    const linkedTransactions = transactions.filter(
+      tx => tx.companyId === companyId && tx.cardId === card.id
+    );
+    const linkedBills = bills.filter(
+      bill => bill.companyId === companyId && bill.cardId === card.id
+    );
+
+    // As compras são uma coleção separada e ainda não ficam no estado React.
+    // Verificamos aqui para não deixar compras órfãs no Firestore.
+    let linkedPurchases = [];
+    try {
+      const snapshot = await getDocs(collectionPath(db, 'financial_purchases'));
+      linkedPurchases = snapshot.docs
+        .map(item => ({ id: item.id, ...item.data() }))
+        .filter(purchase => purchase.companyId === companyId && purchase.cardId === card.id);
+    } catch (err) {
+      setNotice(err.message || 'Não foi possível verificar os vínculos do cartão.');
+      return;
+    }
+
+    if (linkedTransactions.length || linkedBills.length || linkedPurchases.length) {
+      const details = [];
+      if (linkedPurchases.length) details.push(`${linkedPurchases.length} compra(s)`);
+      if (linkedBills.length) details.push(`${linkedBills.length} fatura(s)`);
+      if (linkedTransactions.length) details.push(`${linkedTransactions.length} movimentação(ões)`);
+      setNotice(`Não é possível excluir "${card.name}" porque ele está vinculado a ${details.join(', ')}. Remova os vínculos primeiro.`);
+      return;
+    }
+
+    if (!window.confirm(`Excluir o cartão "${card.name}"? Esta ação não pode ser desfeita.`)) return;
+
+    setBusy(true);
+    try {
+      await deleteDoc(docPath(db, 'financial_cards', card.id));
+      setNotice(`Cartão "${card.name}" excluído.`);
+    } catch (err) {
+      setNotice(err.message || 'Não foi possível excluir o cartão.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const createCardPurchase = async (data) => {
@@ -2742,7 +2793,22 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const openBills = bills.filter(b => b.cardId === card.id && b.status !== 'PAID');
                 const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
-                  <div className="flex items-start justify-between gap-2"><div><p className="font-black text-slate-800">{card.name}</p><p className="text-xs text-slate-400">{card.institution}</p></div><WalletCards size={19} className="text-[#1e5aa0]"/></div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div><p className="font-black text-slate-800">{card.name}</p><p className="text-xs text-slate-400">{card.institution}</p></div>
+                    <div className="flex items-center gap-1">
+                      <WalletCards size={19} className="text-[#1e5aa0]"/>
+                      {card.source === 'MANUAL' && (
+                        <button
+                          onClick={() => deleteManualCard(card)}
+                          disabled={busy}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40"
+                          title="Excluir cartão manual"
+                        >
+                          <Trash2 size={14}/>
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
                     <div><span className="text-slate-400 block">Limite</span><strong>{formatBRL(card.limitCents)}</strong></div>
                     <div><span className="text-slate-400 block">Em aberto</span><strong className="text-red-600">{formatBRL(openTotal)}</strong></div>

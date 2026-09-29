@@ -1098,7 +1098,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       let attentionQueued = 0;
 
       const processPluggyTransaction = async ({ item, rawTransaction }) => {
+        const poolVersion = pool.find(candidate => candidate.id === item.id);
         const tx = {
+          ...(poolVersion || {}),
           ...item.data,
           id: item.id,
         };
@@ -1238,8 +1240,41 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
           const poolIndex = pool.findIndex(candidate => candidate.id === item.id);
           if (poolIndex >= 0) {
-            pool[poolIndex] = { ...pool[poolIndex], ...tx, status: 'RECONCILED', reconciliationType: tx.reconciliationType };
+            pool[poolIndex] = {
+              ...pool[poolIndex],
+              ...tx,
+              status: 'RECONCILED',
+              reconciliationType: tx.reconciliationType,
+              transferId: reconciliationResult.transferId || pool[poolIndex].transferId || null,
+              billId: reconciliationResult.bill?.id || pool[poolIndex].billId || null,
+              payableId: reconciliationResult.item?.id && tx.type === 'EXPENSE'
+                ? reconciliationResult.item.id
+                : (pool[poolIndex].payableId || null),
+              receivableId: reconciliationResult.item?.id && tx.type === 'INCOME'
+                ? reconciliationResult.item.id
+                : (pool[poolIndex].receivableId || null),
+            };
           }
+
+          if (reconciliationResult.transferId) {
+            const candidateIndex = pool.findIndex(candidate => candidate.id === reconciliationResult.tx?.id);
+            if (candidateIndex >= 0) {
+              pool[candidateIndex] = {
+                ...pool[candidateIndex],
+                status: 'RECONCILED',
+                reconciliationType: 'TRANSFER',
+                transferId: reconciliationResult.transferId,
+                categoryId: null,
+                projectId: null,
+              };
+            }
+          }
+          return;
+        }
+
+        if (shouldPreserveReconciled) {
+          const existingAttention = openInboxByTransaction.get(item.id) || [];
+          existingAttention.forEach(attention => resolvedInbox.push(attention));
           return;
         }
 

@@ -206,7 +206,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
         await setDoc(docPath(db, 'financial_bills', billId), {
           companyId, cardId: data.cardId, referenceMonth, closingDate, dueDate,
-          totalCents: increment(amountCents), paidCents: 0, status: 'OPEN', updatedAt: serverTimestamp(),
+          totalCents: increment(amountCents), updatedAt: serverTimestamp(),
         }, { merge: true });
 
         await setDoc(docPath(db, 'financial_installments', purchaseRef.id + '_' + (index + 1)), {

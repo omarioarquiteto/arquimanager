@@ -1345,7 +1345,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       // Fecha automaticamente itens antigos de Atenção quando uma sincronização
       // posterior conseguiu resolver o fato.
-      for (const start = 0; start < resolvedInbox.length; start += 400) {
+      for (let start = 0; start < resolvedInbox.length; start += 400) {
         const batch = writeBatch(db);
         resolvedInbox
           .slice(start, start + 400)

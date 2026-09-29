@@ -40,6 +40,17 @@ const stableHash = (value = '') => {
   return (hash >>> 0).toString(36);
 };
 
+const syncDateOnly = (value) => {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
+  return [
+    parsed.getFullYear(),
+    String(parsed.getMonth() + 1).padStart(2, '0'),
+    String(parsed.getDate()).padStart(2, '0'),
+  ].join('-');
+};
+
 function Card({ children, className = '' }) {
   return <div className={`bg-white border border-slate-200 rounded-2xl shadow-sm ${className}`}>{children}</div>;
 }
@@ -1257,7 +1268,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const rawFingerprint = transactionFingerprint({
           providerAccountId: rawTransaction.accountId,
           accountId: rawTransaction.accountId,
-          date: rawTransaction.date ? String(rawTransaction.date).slice(0, 10) : '',
+          date: syncDateOnly(rawTransaction.date),
           amountCents: Math.abs(toCents(
             rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0
           )),

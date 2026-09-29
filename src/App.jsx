@@ -391,6 +391,53 @@ function ClientsView({ clients, projects, canCreate, canEdit, canDelete, appUser
   );
 }
 
+// --- PROTEÇÃO DO MÓDULO FINANCEIRO ---
+// Impede que uma exceção de renderização do Financeiro transforme o aplicativo inteiro
+// em uma tela branca e preserva o restante do ArquiManager.
+class FinancialErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Erro no módulo Financeiro:', error, info);
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    const message = this.state.error?.message || 'Erro desconhecido no módulo Financeiro.';
+
+    return (
+      <div className="h-full flex items-center justify-center p-6">
+        <div className="w-full max-w-2xl bg-white border border-red-200 rounded-2xl shadow-sm p-6">
+          <div className="flex items-center gap-3 mb-3">
+            <AlertCircle className="text-red-500" size={24}/>
+            <h3 className="text-lg font-black text-slate-800">Erro ao carregar o Financeiro</h3>
+          </div>
+          <p className="text-sm text-slate-600 mb-4">
+            O restante do ArquiManager continua preservado. O módulo Financeiro encontrou uma exceção de execução.
+          </p>
+          <div className="p-3 rounded-xl bg-red-50 border border-red-100 text-xs font-mono text-red-700 break-words">
+            {message}
+          </div>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="mt-4 px-4 py-2.5 bg-[#1e5aa0] text-white rounded-xl text-xs font-black"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
 // --- LAYOUT PRINCIPAL E GESTÃO DE ESTADO GLOBAL ---
 function MainLayout({ firebaseUser, appUser, onLogout }) {
   const [currentView, setCurrentView] = useState('dashboard');
@@ -458,7 +505,11 @@ const allowedProjects = useMemo(() => {
       case 'dashboard': return hasScreenAccess('dashboard') ? <DashboardView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} appUser={appUser} contasPagar={contasPagar} payGroups={payGroups} paySubgroups={paySubgroups} docTypes={docTypes} /> : <NoAccess />;
       case 'clients': return hasScreenAccess('clients') ? <ClientsView clients={clients} projects={allowedProjects} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} onOpenProject={(p)=>{setTargetProjectToEdit(p); setCurrentView('projetos');}} /> : <NoAccess />;
       case 'projetos': return hasScreenAccess('projetos') ? <ProjetosView projects={allowedProjects} clients={clients} companyUsers={companyUsers} targetProject={targetProjectToEdit} clearTargetProject={()=>setTargetProjectToEdit(null)} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} checklists={checklists} /> : <NoAccess />;
-      case 'recebimentos': return hasScreenAccess('recebimentos') ? <React.Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 font-bold">Carregando Financeiro...</div>}><FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} db={db} /></React.Suspense> : <NoAccess />;
+      case 'recebimentos': return hasScreenAccess('recebimentos') ? <FinancialErrorBoundary>
+  <React.Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 font-bold">Carregando Financeiro...</div>}>
+    <FinancialHub appUser={appUser} projects={allowedProjects} clients={clients} db={db} />
+  </React.Suspense>
+</FinancialErrorBoundary> : <NoAccess />;
       case 'pagamentos': return hasScreenAccess('pagamentos') ? <PagamentosView suppliers={suppliers} docTypes={docTypes} groups={payGroups} subgroups={paySubgroups} contasPagar={contasPagar} appUser={appUser} canEdit={canEdit} canDelete={canDelete} /> : <NoAccess />;
       case 'checklist': return hasScreenAccess('checklist') ? <ChecklistView projects={allowedProjects} checklists={checklists} companyUsers={companyUsers} canCreate={canCreate} canEdit={canEdit} canDelete={canDelete} appUser={appUser} documents={documents} /> : <NoAccess />;
       case 'equipe': return appUser.role === 'gestor' ? <EquipeView companyUsers={companyUsers} projects={projects} appUser={appUser} company={company} /> : <NoAccess />;

@@ -13,7 +13,7 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnections from './PluggyConnections.jsx';
-import { isPluggyCardBillPayment, isPluggyTransfer, pluggyTransactionToFinancial } from './pluggyAdapter.js';
+import { isPluggyCardBillPayment, isPluggyTransfer, pluggyTransactionDetailsToFinancial, pluggyTransactionToFinancial } from './pluggyAdapter.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -1340,13 +1340,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           // sincronização, porque este callback não é async.
           const existingData = {
             ...existing,
+            ...pluggyTransactionDetailsToFinancial(rawTransaction),
             source: 'PLUGGY',
             externalId,
             providerTransactionId: rawTransaction.id,
             providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
             providerId: rawTransaction.providerId || existing.providerId || null,
             providerCode: rawTransaction.providerCode || existing.providerCode || null,
-            providerUpdatedAt: rawTransaction.updatedAt || existing.providerUpdatedAt || null,
           };
 
           importedItems.push({

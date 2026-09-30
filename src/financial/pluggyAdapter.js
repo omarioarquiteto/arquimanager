@@ -17,6 +17,93 @@ const dateOnly = (value) => {
 
 const safeText = (value) => String(value || '').trim();
 
+const sensitiveKeys = new Set([
+  'cpf', 'cnpj', 'documentnumber', 'document_number',
+  'accountnumber', 'account_number', 'branchnumber', 'branch_number',
+  'routingnumber', 'routing_number', 'password', 'secret',
+  'token', 'accesstoken', 'access_token', 'clientsecret', 'client_secret',
+  'apikey', 'api_key', 'credentials',
+]);
+
+const sanitizeProviderValue = (value, key = '') => {
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeProviderValue(item));
+  }
+
+  if (value && typeof value === 'object') {
+    const result = {};
+    Object.entries(value).forEach(([childKey, childValue]) => {
+      const normalizedKey = normalizeText(childKey).replace(/\\s+/g, '');
+      if (sensitiveKeys.has(normalizedKey)) return;
+
+      if (normalizedKey === 'cardnumber' || normalizedKey === 'card_number') {
+        const digits = String(childValue || '').replace(/\\D/g, '');
+        result[childKey] = digits ? digits.slice(-4) : null;
+        return;
+      }
+
+      result[childKey] = sanitizeProviderValue(childValue, childKey);
+    });
+    return result;
+  }
+
+  if (value === undefined) return null;
+  return value;
+};
+
+export const pluggyTransactionDetailsToFinancial = (transaction = {}) => {
+  const credit = transaction.creditCardMetadata || {};
+  const payment = transaction.paymentData || {};
+  const boleto = transaction.boletoMetadata || {};
+
+  const installmentNumber = Number(
+    credit.installmentNumber ?? transaction.installmentNumber ?? 0
+  );
+  const totalInstallments = Number(
+    credit.totalInstallments ?? transaction.totalInstallments ?? 0
+  );
+  const totalAmount = Number(
+    credit.totalAmount ?? transaction.totalAmount ?? 0
+  );
+
+  return {
+    providerRawData: sanitizeProviderValue(transaction),
+    providerCreatedAt: safeText(transaction.createdAt) || null,
+    providerUpdatedAt: safeText(transaction.updatedAt) || null,
+    providerCategoryId: safeText(transaction.categoryId) || null,
+
+    originalAmount: Number.isFinite(Number(transaction.amount)) ? Number(transaction.amount) : null,
+    amountInAccountCurrency: Number.isFinite(Number(transaction.amountInAccountCurrency))
+      ? Number(transaction.amountInAccountCurrency)
+      : null,
+
+    paymentMethod: safeText(payment.paymentMethod) || null,
+    paymentReason: safeText(payment.reason) || null,
+    paymentReferenceNumber: safeText(payment.referenceNumber) || null,
+    boletoBaseAmount: Number.isFinite(Number(boleto.baseAmount)) ? Number(boleto.baseAmount) : null,
+    boletoDiscountAmount: Number.isFinite(Number(boleto.discountAmount)) ? Number(boleto.discountAmount) : null,
+    boletoInterestAmount: Number.isFinite(Number(boleto.interestAmount)) ? Number(boleto.interestAmount) : null,
+
+    creditCardInstallmentNumber: installmentNumber > 0 ? installmentNumber : null,
+    creditCardTotalInstallments: totalInstallments > 0 ? totalInstallments : null,
+    creditCardTotalAmountCents: totalAmount > 0 ? toCents(totalAmount) : null,
+    creditCardPayeeMcc: Number.isFinite(Number(credit.payeeMCC ?? transaction.payeeMCC))
+      ? Number(credit.payeeMCC ?? transaction.payeeMCC)
+      : null,
+    creditCardLast4: safeText(credit.cardNumber || transaction.cardNumber).replace(/\\D/g, '').slice(-4) || null,
+    creditCardBillId: safeText(credit.billId || transaction.billId) || null,
+    creditCardPurchaseDate: safeText(credit.purchaseDate || transaction.purchaseDate) || null,
+
+    providerType: safeText(transaction.type) || null,
+    providerStatus: safeText(transaction.status) || null,
+    operationType: safeText(transaction.operationType) || null,
+    operationTypeAdditionalInfo: safeText(transaction.operationTypeAdditionalInfo) || null,
+    merchantDetails: sanitizeProviderValue(transaction.merchant || null),
+    paymentDetails: sanitizeProviderValue(transaction.paymentData || null),
+    boletoDetails: sanitizeProviderValue(transaction.boletoMetadata || null),
+  };
+};
+
 export const pluggyTypeToFinancialType = (type, amount = 0) => {
   const normalized = normalizeText(type);
   if (normalized === 'credit') return 'INCOME';
@@ -92,9 +179,10 @@ export const pluggyTransactionToFinancial = ({
       ? toCents(transaction.balance)
       : null,
 
+    ...pluggyTransactionDetailsToFinancial(transaction),
+
     notes: '',
     importedAt: new Date().toISOString(),
-    providerUpdatedAt: safeText(transaction.updatedAt) || null,
   };
 };
 

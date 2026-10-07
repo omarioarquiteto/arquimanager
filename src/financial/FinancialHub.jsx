@@ -2994,6 +2994,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               onSaveConnection={savePluggyConnection}
               onSyncConnection={syncPluggyConnection}
               onClearConnection={requestClearPluggyConnection}
+              onDeleteConnection={deletePluggyConnection}
               busy={busy}
             />
           </Card>

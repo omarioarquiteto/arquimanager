@@ -64,7 +64,9 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
       body: JSON.stringify({
         itemId: itemId || undefined,
         clientUserId: appUser?.id ? `arquimanager:${appUser.id}` : undefined,
-        avoidDuplicates: true,
+        connectorId: 200,
+        meuPluggy: true,
+        avoidDuplicates: false,
       }),
     });
 
@@ -264,7 +266,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
             className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 disabled:opacity-50"
           >
             <Link2 size={16}/>
-            {busyId === 'new' ? 'Abrindo...' : 'Conectar banco'}
+            {busyId === 'new' ? 'Abrindo...' : 'Conectar com Meu Pluggy'}
           </button>
         </div>
       </div>
@@ -284,7 +286,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         <div className="p-8 border border-dashed border-slate-200 rounded-2xl bg-slate-50 text-center">
           <Landmark size={30} className="mx-auto text-slate-300 mb-3"/>
           <p className="font-black text-slate-600">Nenhum banco conectado</p>
-          <p className="text-xs text-slate-400 mt-1">A primeira conexão será usada como origem das contas e movimentações bancárias.</p>
+          <p className="text-xs text-slate-400 mt-1">Cada banco autorizado pelo Meu Pluggy aparece como uma conexão independente no Arksuper.</p>
         </div>
       ) : (
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">

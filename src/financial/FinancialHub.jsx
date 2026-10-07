@@ -2221,11 +2221,26 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   };
 
-  const executeClearPluggyConnection = async (scope) => {
+  const executeClearPluggyConnection = async (scope, options = {}) => {
     if (!scope?.connection?.itemId) return;
 
+    const deleteRemote = Boolean(options.deleteRemote);
     setBusy(true);
     try {
+      if (deleteRemote) {
+        const response = await fetch('/.netlify/functions/pluggy-delete-item', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            itemId: scope.connection.itemId,
+            clientUserId: scope.connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Não foi possível revogar a conexão no Pluggy.');
+        }
+      }
       const {
         connection,
         pluggyTransactions,
@@ -2330,20 +2345,52 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         await batch.commit();
       }
 
-      setModal(null);
-      setNotice(
-        `Dados sincronizados de ${connection.connectorName || 'este banco'} excluídos: ` +
-        `${pluggyTransactions.length} movimentação(ões), ` +
-        `${pluggyAccounts.length} conta(s), ` +
-        `${pluggyInbox.length} item(ns) de Atenção e ` +
-        `${autoPluggyTransfers.length} transferência(s) automática(s). ` +
-        `Cadastros manuais foram preservados.`
-      );
+      if (deleteRemote) {
+        await deleteDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`));
+        setModal(null);
+        setNotice(
+          `Conexão ${connection.connectorName || 'bancária'} excluída e autorização revogada no Pluggy. Os dados sincronizados desta conexão também foram removidos. Agora você pode reconectar o banco pelo Meu Pluggy.`
+        );
+      } else {
+        setModal(null);
+        setNotice(
+          `Dados sincronizados de ${connection.connectorName || 'este banco'} excluídos: ` +
+          `${pluggyTransactions.length} movimentação(ões), ` +
+          `${pluggyAccounts.length} conta(s), ` +
+          `${pluggyInbox.length} item(ns) de Atenção e ` +
+          `${autoPluggyTransfers.length} transferência(s) automática(s). ` +
+          `Cadastros manuais foram preservados.`
+        );
+      }
     } catch (err) {
       setNotice(err.message || 'Não foi possível excluir os dados sincronizados deste banco.');
     } finally {
       setBusy(false);
     }
+  };
+
+  const deletePluggyConnection = async (connection) => {
+    if (!connection?.itemId) {
+      setNotice('Não foi possível identificar a conexão selecionada.');
+      return;
+    }
+
+    const bankName = connection.connectorName || 'este banco';
+    const confirmed = window.confirm(
+      `Excluir a conexão ${bankName} e revogar sua autorização no Pluggy?\\n\\nIsso removerá do Arksuper os dados sincronizados desse banco e permitirá uma nova autorização pelo Meu Pluggy. Cadastros manuais dos outros bancos não serão afetados.`
+    );
+    if (!confirmed) return;
+
+    const scope = getPluggyCleanupScope(connection) || {
+      connection,
+      pluggyTransactions: [],
+      pluggyAccounts: [],
+      pluggyInbox: [],
+      autoPluggyTransfers: [],
+      pluggyTransactionIds: new Set(),
+    };
+
+    await executeClearPluggyConnection(scope, { deleteRemote: true });
   };
 
   const clearAllAttention = async () => {

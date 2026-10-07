@@ -2377,7 +2377,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     const bankName = connection.connectorName || 'este banco';
     const confirmed = window.confirm(
-      `Excluir a conexão ${bankName} e revogar sua autorização no Pluggy?\\n\\nIsso removerá do Arksuper os dados sincronizados desse banco e permitirá uma nova autorização pelo Meu Pluggy. Cadastros manuais dos outros bancos não serão afetados.`
+      `Excluir a conexão ${bankName} e revogar sua autorização no Pluggy?\n\nIsso removerá do Arksuper os dados sincronizados desse banco e permitirá uma nova autorização pelo Meu Pluggy. Cadastros manuais dos outros bancos não serão afetados.`
     );
     if (!confirmed) return;
 

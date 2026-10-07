@@ -35,7 +35,7 @@ const loadPluggySdk = () => {
   return pluggyScriptPromise;
 };
 
-export default function PluggyConnections({ appUser, connections = [], onSaveConnection, onSyncConnection, onClearConnection, busy = false }) {
+export default function PluggyConnections({ appUser, connections = [], onSaveConnection, onSyncConnection, onClearConnection, onDeleteConnection, busy = false }) {
   const [busyId, setBusyId] = useState('');
   const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState('');
@@ -327,10 +327,18 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
                   <button
                     onClick={() => onClearConnection?.(connection)}
                     disabled={busyId !== '' || busy}
-                    className="px-2.5 py-2 rounded-xl border border-red-200 text-red-600 text-xs font-black flex items-center justify-center gap-1 hover:bg-red-50 disabled:opacity-50"
-                    title="Limpar todos os dados sincronizados deste banco"
+                    className="px-2.5 py-2 rounded-xl border border-amber-200 text-amber-700 text-xs font-black flex items-center justify-center gap-1 hover:bg-amber-50 disabled:opacity-50"
+                    title="Limpar somente os dados sincronizados deste banco"
                   >
                     <Trash2 size={14}/>
+                  </button>
+                  <button
+                    onClick={() => onDeleteConnection?.(connection)}
+                    disabled={busyId !== '' || busy}
+                    className="px-2.5 py-2 rounded-xl border border-red-200 text-red-600 text-xs font-black flex items-center justify-center gap-1 hover:bg-red-50 disabled:opacity-50"
+                    title="Excluir conexão e revogar autorização no Pluggy"
+                  >
+                    <XCircle size={14}/>
                   </button>
                 </div>
               </div>

@@ -158,7 +158,26 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         detail: { total: items.length, novas: newConnections, sincronizadas: syncedConnections, newText },
       }));
     } catch (err) {
-      setError(err.message || 'Não foi possível atualizar as conexões do Meu Pluggy.');
+      // Mesmo sem a permissão opt-in de GET /v2/items, sincronizamos todas as
+      // conexões que o Arksuper já conhece. A listagem só é necessária para
+      // descobrir proxy Items ainda não registrados localmente.
+      if (err?.message?.includes('LIST_ITEMS_FEATURE_NOT_ENABLED')) {
+        try {
+          const known = connections.filter(connection => connection?.itemId);
+          for (const connection of known) {
+            if (onSyncConnection) await onSyncConnection(connection);
+          }
+          setError(
+            known.length
+              ? 'As conexões já autorizadas foram sincronizadas. Para descobrir automaticamente novos bancos do Meu Pluggy, peça à Pluggy a habilitação da listagem de Items; enquanto isso, autorize cada novo banco uma vez pelo botão “Conectar banco”.'
+              : err.message
+          );
+        } catch (syncError) {
+          setError(syncError.message || err.message);
+        }
+      } else {
+        setError(err.message || 'Não foi possível atualizar as conexões do Meu Pluggy.');
+      }
     } finally {
       setDiscovering(false);
     }

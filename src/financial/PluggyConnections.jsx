@@ -246,7 +246,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         <div>
           <h4 className="font-black text-xl text-slate-800">Conexões bancárias</h4>
           <p className="text-xs text-slate-400 mt-1">
-            Use o Meu Pluggy para centralizar seus bancos. Cada banco conectado ao Meu Pluggy precisa de uma autorização única no Arksuper; depois, o sistema sincroniza todos os bancos autorizados.
+            O Arksuper sincroniza todos os bancos do Meu Pluggy que já foram autorizados nesta aplicação. A descoberta automática de novas conexões depende da liberação “List items” da Pluggy.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -256,7 +256,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
             className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-black flex items-center gap-2 hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw size={16} className={discovering ? 'animate-spin' : ''}/>
-            {discovering ? 'Atualizando...' : 'Atualizar Meu Pluggy'}
+            {discovering ? 'Sincronizando...' : 'Sincronizar Meu Pluggy'}
           </button>
           <button
             onClick={() => startConnection()}

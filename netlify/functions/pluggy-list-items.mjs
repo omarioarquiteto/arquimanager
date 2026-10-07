@@ -69,16 +69,26 @@ const listMeuPluggyItems = async (apiKey, clientUserId) => {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      if (response.status === 403 && String(data.code || '').toUpperCase() === 'LIST_ITEMS_FEATURE_NOT_ENABLED') {
+      const providerMessage = String(data.message || data.codeDescription || '').trim();
+      const providerCode = String(data.code || '').toUpperCase();
+      const normalizedProviderMessage = providerMessage.toLowerCase();
+
+      const listItemsDisabled =
+        providerCode === 'LIST_ITEMS_FEATURE_NOT_ENABLED'
+        || normalizedProviderMessage.includes('not enabled to list its items')
+        || normalizedProviderMessage.includes('não está habilitado para listar')
+        || normalizedProviderMessage.includes('list items');
+
+      if (response.status === 403 && listItemsDisabled) {
         const error = new Error(
-          'A Pluggy ainda não habilitou a listagem de conexões para esta aplicação. O Arksuper continuará permitindo autorizar cada banco do Meu Pluggy separadamente.'
+          'A Pluggy não habilitou a listagem automática de Items para esta aplicação. O Arksuper continuará funcionando com os bancos do Meu Pluggy autorizados individualmente.'
         );
         error.code = 'LIST_ITEMS_FEATURE_NOT_ENABLED';
         error.status = 403;
         throw error;
       }
 
-      const error = new Error(data.message || data.codeDescription || `Falha Pluggy ao listar conexões (${response.status}).`);
+      const error = new Error(providerMessage || `Falha Pluggy ao listar conexões (${response.status}).`);
       error.code = data.code || null;
       error.status = response.status;
       throw error;

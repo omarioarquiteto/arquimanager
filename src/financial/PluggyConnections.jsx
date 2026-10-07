@@ -37,8 +37,20 @@ const loadPluggySdk = () => {
 
 export default function PluggyConnections({ appUser, connections = [], onSaveConnection, onSyncConnection, onClearConnection, busy = false }) {
   const [busyId, setBusyId] = useState('');
+  const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState('');
   const widgetRef = useRef(null);
+
+  const appClientUserId = appUser?.id ? `arquimanager:${appUser.id}` : '';
+
+  const connectionDataFromItem = (item) => ({
+    itemId: item?.id,
+    connectorId: item?.connector?.id || item?.connectorId || null,
+    connectorName: item?.connector?.name || item?.connectorName || 'Instituição financeira',
+    status: item?.status || 'UPDATED',
+    clientUserId: item?.clientUserId || appClientUserId || null,
+    lastConnectedAt: item?.lastUpdatedAt || item?.updatedAt || new Date().toISOString(),
+  });
 
   useEffect(() => () => {
     try { widgetRef.current?.destroy?.(); } catch {}
@@ -62,6 +74,94 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
     }
 
     return data.accessToken;
+  };
+
+  const discoverMeuPluggyConnections = async () => {
+    if (!appClientUserId) {
+      throw new Error('Não foi possível identificar o usuário do Arksuper para localizar as conexões do Meu Pluggy.');
+    }
+
+    const response = await fetch('/.netlify/functions/pluggy-list-items', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientUserId: appClientUserId }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = data.error || 'Não foi possível localizar as conexões do Meu Pluggy.';
+      if (data.requiresIndividualAuthorization) {
+        throw new Error(
+          detail + ' Autorize cada banco uma vez no botão “Conectar banco”; depois use “Atualizar Meu Pluggy”.'
+        );
+      }
+      throw new Error(detail);
+    }
+
+    return Array.isArray(data.items) ? data.items : [];
+  };
+
+  const refreshMeuPluggyConnections = async () => {
+    setError('');
+    setDiscovering(true);
+
+    try {
+      const items = await discoverMeuPluggyConnections();
+
+      if (!items.length) {
+        setError(
+          'Nenhuma conexão do Meu Pluggy está autorizada nesta aplicação. No Meu Pluggy você pode ter vários bancos; cada banco precisa de uma autorização uma única vez no Arksuper.'
+        );
+        return;
+      }
+
+      const currentByItemId = new Map(
+        connections.filter(Boolean).map(connection => [connection.itemId, connection])
+      );
+
+      let newConnections = 0;
+      let syncedConnections = 0;
+
+      // Uma autorização por banco, mas sincronização de todos os proxy Items
+      // já autorizados. Processamos sequencialmente para evitar concorrência
+      // desnecessária com o Firestore e com os limites da API.
+      for (const item of items) {
+        if (!item?.id) continue;
+
+        const current = currentByItemId.get(item.id);
+        const connectionData = connectionDataFromItem(item);
+
+        await onSaveConnection?.({
+          ...current,
+          ...connectionData,
+        });
+
+        if (!current) newConnections += 1;
+
+        if (onSyncConnection) {
+          await onSyncConnection(connectionData);
+          syncedConnections += 1;
+        }
+      }
+
+      setError('');
+      const newText = newConnections
+        ? `${newConnections} conexão(ões) nova(s)`
+        : 'nenhuma conexão nova';
+      setBusyId('');
+      // O parent grava o resultado no Firestore; o snapshot atualiza a lista.
+      console.info('[ArquiManager] Meu Pluggy atualizado:', {
+        total: items.length,
+        novas: newConnections,
+      });
+      window.dispatchEvent(new CustomEvent('arquimanager:pluggy-refresh', {
+        detail: { total: items.length, novas: newConnections, sincronizadas: syncedConnections, newText },
+      }));
+    } catch (err) {
+      setError(err.message || 'Não foi possível atualizar as conexões do Meu Pluggy.');
+    } finally {
+      setDiscovering(false);
+    }
   };
 
   const startConnection = async (existing = null) => {
@@ -127,17 +227,31 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         <div>
           <h4 className="font-black text-xl text-slate-800">Conexões bancárias</h4>
           <p className="text-xs text-slate-400 mt-1">
-            Conecte bancos e cartões pelo fluxo seguro da Pluggy. O ArquiManager recebe a referência da conexão; suas credenciais bancárias não ficam armazenadas aqui.
+            Use o Meu Pluggy para centralizar seus bancos. Cada banco conectado ao Meu Pluggy precisa de uma autorização única no Arksuper; depois, o sistema sincroniza todos os bancos autorizados.
           </p>
         </div>
-        <button
-          onClick={() => startConnection()}
-          disabled={busyId !== ''}
-          className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 disabled:opacity-50"
-        >
-          <Link2 size={16}/>
-          {busyId === 'new' ? 'Abrindo...' : 'Conectar banco'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={refreshMeuPluggyConnections}
+            disabled={busyId !== '' || discovering || busy}
+            className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-black flex items-center gap-2 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw size={16} className={discovering ? 'animate-spin' : ''}/>
+            {discovering ? 'Atualizando...' : 'Atualizar Meu Pluggy'}
+          </button>
+          <button
+            onClick={() => startConnection()}
+            disabled={busyId !== '' || discovering || busy}
+            className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 disabled:opacity-50"
+          >
+            <Link2 size={16}/>
+            {busyId === 'new' ? 'Abrindo...' : 'Conectar banco'}
+          </button>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-xs font-medium">
+        <strong>Meu Pluggy:</strong> C6, Nubank, Mercado Pago e outros bancos podem coexistir. O Arksuper não assume que o primeiro banco conectado é o único; ele procura todos os proxy Items autorizados para o seu usuário.
       </div>
 
       {error && (

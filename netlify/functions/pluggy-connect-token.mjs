@@ -71,8 +71,15 @@ export default async function handler(request) {
 
     const apiKey = await getPluggyApiKey();
 
+    // MeuPluggy (connector 200) usa a mesma identidade do usuário MeuPluggy
+    // para gerar vários proxy Items, um por banco autorizado. Portanto,
+    // avoidDuplicates precisa ficar desabilitado nesse fluxo; caso contrário
+    // o segundo banco retorna ITEM_USER_ALREADY_EXISTS.
+    const connectorId = Number(body.connectorId || 0);
+    const isMeuPluggy = connectorId === 200 || body.meuPluggy === true;
+
     const options = {
-      avoidDuplicates: body.avoidDuplicates !== false,
+      avoidDuplicates: isMeuPluggy ? false : body.avoidDuplicates !== false,
     };
 
     if (clientUserId) options.clientUserId = clientUserId;

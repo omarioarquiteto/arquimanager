@@ -1123,130 +1123,115 @@ export default function PluggyConnectionsV2({
   };
 
   const clearLocalData = async (scope) => {
-    const transactionIds = new Set(scope.providerTransactions.map(tx => String(tx.id)));
+    const payableIds = new Set();
+    const receivableIds = new Set();
+    const billIds = new Set();
 
-    const payableChanges = [];
-    const receivableChanges = [];
-    const billChanges = [];
+    for (const tx of scope.providerTransactions) {
+      if (tx.reconciliationType === 'PAYABLE_PAYMENT' && tx.payableId) payableIds.add(String(tx.payableId));
+      if (tx.reconciliationType === 'RECEIVABLE_RECEIPT' && tx.receivableId) receivableIds.add(String(tx.receivableId));
+      if (tx.reconciliationType === 'CARD_BILL_PAYMENT' && tx.billId) billIds.add(String(tx.billId));
+    }
+
+    const readByIds = async (collectionName, ids) => {
+      const list = Array.from(ids);
+      if (!list.length) return [];
+      const result = [];
+      for (let start = 0; start < list.length; start += 30) {
+        const snapshot = await getDocs(
+          query(coll(db, collectionName), where('__name__', 'in', list.slice(start, start + 30)))
+        );
+        result.push(...snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
+      }
+      return result;
+    };
+
+    const [payables, receivables, bills] = await Promise.all([
+      readByIds('financial_payables', payableIds),
+      readByIds('financial_receivables', receivableIds),
+      readByIds('financial_bills', billIds),
+    ]);
+
+    const payableMap = new Map(payables.map(item => [String(item.id), item]));
+    const receivableMap = new Map(receivables.map(item => [String(item.id), item]));
+    const billMap = new Map(bills.map(item => [String(item.id), item]));
+    const reversalOps = [];
 
     for (const tx of scope.providerTransactions) {
       const amount = Math.abs(Number(tx.amountCents || 0));
       if (!amount) continue;
 
-      if (
-        tx.reconciliationType === 'PAYABLE_PAYMENT'
-        && tx.payableId
-      ) {
-        payableChanges.push({
-          collection: 'financial_payables',
-          id: tx.payableId,
-          type: 'update',
-          data: {
-            paidCents: 0,
-            status: 'OPEN',
-            paymentTransactionId: null,
-            actualDate: null,
-            updatedAt: serverTimestamp(),
-          },
-        });
+      if (tx.reconciliationType === 'PAYABLE_PAYMENT' && tx.payableId) {
+        const payable = payableMap.get(String(tx.payableId));
+        if (payable?.paymentTransactionId === tx.id) {
+          const paidCents = Math.max(0, Number(payable.paidCents || 0) - amount);
+          const totalCents = Number(payable.amountCents || 0);
+          reversalOps.push({
+            collection: 'financial_payables', id: payable.id, type: 'update',
+            data: {
+              paidCents,
+              status: paidCents <= 0 ? 'OPEN' : (paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID'),
+              paymentTransactionId: null,
+              actualDate: paidCents > 0 ? payable.actualDate || null : null,
+              updatedAt: serverTimestamp(),
+            },
+          });
+        }
       }
 
-      if (
-        tx.reconciliationType === 'RECEIVABLE_RECEIPT'
-        && tx.receivableId
-      ) {
-        receivableChanges.push({
-          collection: 'financial_receivables',
-          id: tx.receivableId,
-          type: 'update',
-          data: {
-            receivedCents: 0,
-            status: 'OPEN',
-            receiptTransactionId: null,
-            actualDate: null,
-            updatedAt: serverTimestamp(),
-          },
-        });
+      if (tx.reconciliationType === 'RECEIVABLE_RECEIPT' && tx.receivableId) {
+        const receivable = receivableMap.get(String(tx.receivableId));
+        if (receivable?.receiptTransactionId === tx.id) {
+          const receivedCents = Math.max(0, Number(receivable.receivedCents || 0) - amount);
+          const totalCents = Number(receivable.amountCents || 0);
+          reversalOps.push({
+            collection: 'financial_receivables', id: receivable.id, type: 'update',
+            data: {
+              receivedCents,
+              status: receivedCents <= 0 ? 'OPEN' : (receivedCents >= totalCents ? 'RECEIVED' : 'PARTIALLY_RECEIVED'),
+              receiptTransactionId: null,
+              actualDate: receivedCents > 0 ? receivable.actualDate || null : null,
+              updatedAt: serverTimestamp(),
+            },
+          });
+        }
       }
 
-      if (
-        tx.reconciliationType === 'CARD_BILL_PAYMENT'
-        && tx.billId
-      ) {
-        billChanges.push({
-          collection: 'financial_bills',
-          id: tx.billId,
-          type: 'update',
-          data: {
-            paidCents: 0,
-            status: 'OPEN',
-            lastPaymentTransactionId: null,
-            lastPaidAt: null,
-            updatedAt: serverTimestamp(),
-          },
-        });
+      if (tx.reconciliationType === 'CARD_BILL_PAYMENT' && tx.billId) {
+        const bill = billMap.get(String(tx.billId));
+        if (bill?.lastPaymentTransactionId === tx.id) {
+          const paidCents = Math.max(0, Number(bill.paidCents || 0) - amount);
+          const totalCents = Number(bill.totalCents || 0);
+          reversalOps.push({
+            collection: 'financial_bills', id: bill.id, type: 'update',
+            data: {
+              paidCents,
+              status: paidCents <= 0 ? 'OPEN' : (paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID'),
+              lastPaymentTransactionId: null,
+              lastPaidAt: null,
+              updatedAt: serverTimestamp(),
+            },
+          });
+        }
       }
     }
 
-    await batchWrite(db, [
-      ...payableChanges,
-      ...receivableChanges,
-      ...billChanges,
-    ]);
+    await batchWrite(db, reversalOps);
 
     const deleteOps = [
-      ...scope.providerTransfers.map(item => ({
-        collection: 'financial_transfers',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.providerTransactions.map(item => ({
-        collection: 'financial_transactions',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.providerBills.map(item => ({
-        collection: 'financial_bills',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.installments.map(item => ({
-        collection: 'financial_installments',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.purchases.map(item => ({
-        collection: 'financial_purchases',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.providerInbox.map(item => ({
-        collection: 'financial_inbox',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.providerCards.map(item => ({
-        collection: 'financial_cards',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.providerAccounts.map(item => ({
-        collection: 'financial_accounts',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...scope.providerConnections.map(item => ({
-        collection: 'financial_connections',
-        id: item.id,
-        type: 'delete',
-      })),
-      ...(scope.syncRuns || []).map(item => ({
-        collection: 'financial_sync_runs',
-        id: item.id,
-        type: 'delete',
-      })),
+      ...scope.providerTransfers.map(item => ({ collection: 'financial_transfers', id: item.id, type: 'delete' })),
+      ...scope.providerTransactions.map(item => ({ collection: 'financial_transactions', id: item.id, type: 'delete' })),
+      ...scope.providerBills.map(item => ({ collection: 'financial_bills', id: item.id, type: 'delete' })),
+      ...scope.installments.map(item => ({ collection: 'financial_installments', id: item.id, type: 'delete' })),
+      ...scope.purchases.map(item => ({ collection: 'financial_purchases', id: item.id, type: 'delete' })),
+      ...scope.providerInbox.map(item => ({ collection: 'financial_inbox', id: item.id, type: 'delete' })),
+      ...scope.providerCards.map(item => ({ collection: 'financial_cards', id: item.id, type: 'delete' })),
+      ...scope.providerAccounts.map(item => ({ collection: 'financial_accounts', id: item.id, type: 'delete' })),
+      ...(scope.syncRuns || []).map(item => ({ collection: 'financial_sync_runs', id: item.id, type: 'delete' })),
     ];
 
+    // Limpeza local preserva a conexão. A conexão só é apagada no fluxo
+    // explícito de revogação/exclusão.
     await batchWrite(db, deleteOps);
     return {
       transactions: scope.providerTransactions.length,
@@ -1311,8 +1296,12 @@ export default function PluggyConnectionsV2({
         });
 
         summary = await clearLocalData(scope);
-      } else {
-        await deleteDoc(refDoc(db, 'financial_connections', `${companyId}_${connection.itemId}`));
+      }
+
+      if (revokeRemote) {
+        await deleteDoc(
+          refDoc(db, 'financial_connections', `${companyId}_${connection.itemId}`)
+        );
       }
 
       setProgress({

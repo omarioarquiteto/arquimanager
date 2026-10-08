@@ -853,86 +853,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   };
 
-  const updateCreditCardInstallmentPlan = async (tx, data) => {
-    const card = cards.find(item => item.id === tx.cardId);
-    if (!card) throw new Error('Cartão não encontrado.');
+  const updateCreditCardTransactionDetails = async (tx, data) => {
+    if (!tx?.id) return;
+    const description = data.description?.trim() || tx.description || '';
+    const merchant = data.merchant?.trim() || tx.merchant || description;
 
-    const paymentType = String(data.creditCardPaymentType || 'SINGLE').toUpperCase();
-    const currentInstallment = Math.max(1, Number(data.creditCardInstallmentNumber || 1));
-    const totalInstallments = Math.max(currentInstallment, Math.min(48, Number(data.creditCardTotalInstallments || 1)));
-    const purchaseDate = data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || todayLocal();
-    const seriesId = tx.parcelSeriesId || `series_${stableHash(`${card.id}|${tx.id}`)}`;
-
-    const serverSnapshot = await getDocs(collectionPath(db, 'financial_transactions'));
-    const seriesProjections = serverSnapshot.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter(item => item.companyId === companyId && item.source === 'PLUGGY_PROJECTION' && item.parcelSeriesId === seriesId && item.cardId === card.id);
-
-    for (const projection of seriesProjections) {
-      const shouldRemove = paymentType === 'SINGLE'
-        || Number(projection.creditCardInstallmentNumber || 0) <= currentInstallment
-        || Number(projection.creditCardInstallmentNumber || 0) > totalInstallments;
-      if (!shouldRemove) continue;
-
-      const oldBill = projection.billId ? bills.find(item => item.id === projection.billId) : null;
-      const oldBillSnap = projection.billId ? await getDoc(docPath(db, 'financial_bills', projection.billId)) : null;
-      if (oldBillSnap?.exists()) {
-        const bill = oldBillSnap.data();
-        if (bill.provisional !== false) {
-          const nextProjected = Math.max(0, Number(bill.projectedCents || 0) - Number(projection.amountCents || 0));
-          const nextTotal = Number(bill.officialTotalCents || 0) + nextProjected;
-          await updateDoc(docPath(db, 'financial_bills', projection.billId), {
-            projectedCents: nextProjected,
-            totalCents: nextTotal,
-            status: billStatusFromValues({ totalCents: nextTotal, paidCents: Number(bill.paidCents || 0), dueDate: bill.dueDate, provisional: true }),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } else if (oldBill?.provisional !== false) {
-        const nextProjected = Math.max(0, Number(oldBill.projectedCents || 0) - Number(projection.amountCents || 0));
-        const nextTotal = Number(oldBill.officialTotalCents || 0) + nextProjected;
-        await updateDoc(docPath(db, 'financial_bills', projection.billId), { projectedCents: nextProjected, totalCents: nextTotal, updatedAt: serverTimestamp() });
-      }
-      await deleteDoc(docPath(db, 'financial_transactions', projection.id));
-    }
-
-    const currentBill = tx.billId ? bills.find(item => item.id === tx.billId) : null;
-    const baseChanges = {
-      description: data.description?.trim() || tx.description || '',
-      merchant: data.merchant?.trim() || tx.merchant || data.description?.trim() || tx.description || '',
-      normalizedMerchant: normalizeText(data.merchant?.trim() || tx.merchant || data.description?.trim() || tx.description || ''),
-      categoryId: data.categoryId || null,
-      projectId: data.projectId || null,
-      clientId: data.clientId || null,
+    await updateDoc(docPath(db, 'financial_transactions', tx.id), {
+      description,
+      merchant,
+      normalizedMerchant: normalizeText(merchant),
       notes: data.notes?.trim() || '',
-      parcelSeriesId: paymentType === 'INSTALLMENT' && totalInstallments > currentInstallment ? seriesId : null,
-      creditCardInstallmentNumber: paymentType === 'INSTALLMENT' ? currentInstallment : 1,
-      creditCardTotalInstallments: paymentType === 'INSTALLMENT' ? totalInstallments : 1,
-      creditCardPaymentType: paymentType === 'INSTALLMENT' ? 'INSTALLMENT' : 'SINGLE',
-      creditCardPurchaseDate: purchaseDate,
-      isCreditCardTransaction: true,
-      cashImpact: false,
-      accountType: 'CREDIT_CARD',
+      categoryId: data.categoryId || tx.categoryId || null,
+      projectId: data.projectId || tx.projectId || null,
+      clientId: data.clientId || tx.clientId || null,
       updatedAt: serverTimestamp(),
-    };
-    await updateDoc(docPath(db, 'financial_transactions', tx.id), baseChanges);
-
-    if (paymentType === 'INSTALLMENT' && totalInstallments > currentInstallment) {
-      await createOrUpdateProjectedInstallments({
-        tx: { ...tx, ...baseChanges, id: tx.id, billId: tx.billId, parcelSeriesId: seriesId },
-        card,
-        currentBill,
-        currentInstallment,
-        totalInstallments,
-        amountCents: Number(tx.amountCents || 0),
-        description: tx.description,
-        merchant: tx.merchant || tx.description,
-        categoryId: data.categoryId || tx.categoryId || null,
-        projectId: data.projectId || tx.projectId || null,
-        notes: data.notes || tx.notes || '',
-        purchaseDate,
-      });
-    }
+    });
   };
 
   const updateTransaction = async (data) => {
@@ -975,9 +910,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     setBusy(true);
     try {
       if (isCreditCardTransaction(tx)) {
-        await updateCreditCardInstallmentPlan(tx, data);
+        await updateCreditCardTransactionDetails(tx, data);
         setModal(null);
-        setNotice('Lançamento do cartão atualizado e parcelas futuras recalculadas.');
+        setNotice('Lançamento do cartão atualizado.');
         return;
       }
 
@@ -1219,191 +1154,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       setNotice('Compra registrada em ' + installmentsCount + ' parcela(s).');
     } finally { setBusy(false); }
   };
-  const createOrUpdateProjectedInstallments = async ({
-    tx,
-    card,
-    currentBill,
-    currentInstallment,
-    totalInstallments,
-    amountCents,
-    description,
-    merchant,
-    categoryId,
-    projectId,
-    notes,
-    purchaseDate,
-    transactionPool = null,
-  }) => {
-    if (!tx?.id || !card?.id) return;
-    const currentNumber = Math.max(1, Number(currentInstallment || 1));
-    const total = Math.max(currentNumber, Math.min(48, Number(totalInstallments || currentNumber)));
-    if (total <= currentNumber) return;
-
-    const baseDueDate = currentBill?.dueDate
-      || dateForMonthDay(monthFromIso(currentBill?.referenceMonth || todayLocal()), Number(card.dueDay || 10))
-      || todayLocal();
-
-    const baseClosingDate = currentBill?.closingDate
-      || dateForMonthDay(monthFromIso(currentBill?.referenceMonth || baseDueDate), Number(card.closingDay || 1));
-
-    const seriesId = tx.parcelSeriesId || `series_${stableHash(`${card.id}|${tx.id}`)}`;
-    const companyTransactions = Array.isArray(transactionPool)
-      ? transactionPool
-      : (await getDocs(collectionPath(db, 'financial_transactions'))).docs
-          .map(d => ({ id: d.id, ...d.data() }))
-          .filter(item => item.companyId === companyId);
-    const existingSeries = companyTransactions.filter(item =>
-      item?.source === 'PLUGGY_PROJECTION'
-      && item?.parcelSeriesId === seriesId
-      && item?.cardId === card.id
-    );
-
-    for (let installment = currentNumber + 1; installment <= total; installment += 1) {
-      const offset = installment - currentNumber;
-      const dueDate = addMonthsToIsoDate(baseDueDate, offset);
-      const closingDate = baseClosingDate ? addMonthsToIsoDate(baseClosingDate, offset) : '';
-      const referenceMonth = monthFromIso(closingDate || dueDate);
-      const billId = `${companyId}_${card.id}_${referenceMonth}`;
-      const billRef = docPath(db, 'financial_bills', billId);
-      const billSnap = await getDoc(billRef);
-      const existingBill = billSnap.exists() ? { id: billId, ...billSnap.data() } : null;
-
-      // Se a fatura daquele mês já é oficial, a fonte de verdade passa a ser
-      // a Pluggy e não criamos uma segunda parcela projetada nela.
-      if (existingBill?.provisional === false && existingBill?.providerBillId) continue;
-
-      const projectionId = `${companyId}_pluggy_projection_${seriesId}_${installment}`;
-      const projectionRef = docPath(db, 'financial_transactions', projectionId);
-      const projectionSnap = await getDoc(projectionRef);
-      const existingProjection = projectionSnap.exists() ? { id: projectionId, ...projectionSnap.data() } : null;
-
-      const hasBillBreakdown = existingBill && (
-        Object.prototype.hasOwnProperty.call(existingBill, 'officialTotalCents')
-        || Object.prototype.hasOwnProperty.call(existingBill, 'projectedCents')
-      );
-      const legacyTotal = Number(existingBill?.totalCents || 0);
-      const officialTotal = Number(
-        existingBill?.officialTotalCents
-        ?? (existingBill?.provisional === false ? legacyTotal : 0)
-      );
-      const projectedCents = Number(
-        existingBill?.projectedCents
-        ?? (hasBillBreakdown ? 0 : (existingBill?.provisional === false ? 0 : legacyTotal))
-      );
-      const delta = existingProjection ? 0 : Number(amountCents || 0);
-      const nextProjected = projectedCents + delta;
-      const totalCents = officialTotal + nextProjected;
-
-      await setDoc(billRef, {
-        companyId,
-        cardId: card.id,
-        referenceMonth,
-        closingDate: closingDate || null,
-        dueDate,
-        source: existingBill?.source === 'PLUGGY' ? 'PLUGGY' : 'PLUGGY_PROJECTION',
-        provisional: existingBill?.provisional === false ? false : true,
-        officialTotalCents: officialTotal,
-        projectedCents: nextProjected,
-        totalCents,
-        paidCents: Number(existingBill?.paidCents || 0),
-        status: billStatusFromValues({ totalCents, paidCents: Number(existingBill?.paidCents || 0), dueDate, provisional: true }),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-
-      if (!existingProjection) {
-        const projectedDate = purchaseDate || dueDate;
-        await setDoc(projectionRef, {
-          companyId,
-          source: 'PLUGGY_PROJECTION',
-          externalId: `projection:${seriesId}:${installment}`,
-          projectionKey: `credit-card-installment:${seriesId}:${installment}`,
-          financialAccountId: null,
-          accountId: card.id,
-          cardId: card.id,
-          billId,
-          accountType: 'CREDIT_CARD',
-          isCreditCardTransaction: true,
-          cashImpact: false,
-          date: projectedDate,
-          actualDate: null,
-          expectedDate: dueDate,
-          description: description || 'Compra parcelada',
-          descriptionRaw: description || null,
-          merchant: merchant || description || 'Compra parcelada',
-          normalizedMerchant: normalizeText(merchant || description || 'Compra parcelada'),
-          amountCents: Math.abs(Number(amountCents || 0)),
-          type: 'EXPENSE',
-          status: 'SCHEDULED',
-          categoryId: categoryId || null,
-          projectId: projectId || null,
-          clientId: null,
-          supplierId: null,
-          notes: notes || '',
-          parcelSeriesId: seriesId,
-          creditCardInstallmentNumber: installment,
-          creditCardTotalInstallments: total,
-          creditCardPaymentType: 'INSTALLMENT',
-          creditCardPurchaseDate: purchaseDate || null,
-          installmentProjectedFrom: tx.id,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      }
-    }
-
-    // Propaga a última classificação/observação do lançamento para as
-    // parcelas futuras que já foram projetadas na mesma série.
-    const retainedSeries = existingSeries.filter(item => {
-      const installment = Number(item.creditCardInstallmentNumber || 0);
-      return installment > currentNumber && installment <= total;
-    });
-    for (const projected of retainedSeries) {
-      await updateDoc(docPath(db, 'financial_transactions', projected.id), {
-        description: description || projected.description || 'Compra parcelada',
-        merchant: merchant || projected.merchant || description || 'Compra parcelada',
-        normalizedMerchant: normalizeText(merchant || projected.merchant || description || 'Compra parcelada'),
-        categoryId: categoryId || null,
-        projectId: projectId || null,
-        notes: notes || '',
-        updatedAt: serverTimestamp(),
-      });
-    }
-
-    await updateDoc(docPath(db, 'financial_transactions', tx.id), {
-      parcelSeriesId: seriesId,
-      creditCardInstallmentNumber: currentNumber,
-      creditCardTotalInstallments: total,
-      creditCardPaymentType: 'INSTALLMENT',
-      creditCardPurchaseDate: purchaseDate || tx.creditCardPurchaseDate || tx.date || null,
-      cashImpact: false,
-      isCreditCardTransaction: true,
-      accountType: 'CREDIT_CARD',
-      updatedAt: serverTimestamp(),
-    });
-
-    // Remove projeções que ficaram fora do novo limite de parcelas.
-    const obsolete = existingSeries.filter(item => Number(item.creditCardInstallmentNumber || 0) > total);
-    for (const item of obsolete) {
-      const oldBillId = item.billId;
-      const oldBillSnap = oldBillId ? await getDoc(docPath(db, 'financial_bills', oldBillId)) : null;
-      if (oldBillSnap?.exists()) {
-        const oldBill = oldBillSnap.data();
-        if (oldBill.provisional !== false) {
-          const nextProjected = Math.max(0, Number(oldBill.projectedCents || 0) - Number(item.amountCents || 0));
-          const officialTotal = Number(oldBill.officialTotalCents || 0);
-          const nextTotal = officialTotal + nextProjected;
-          await updateDoc(docPath(db, 'financial_bills', oldBillId), {
-            projectedCents: nextProjected,
-            totalCents: nextTotal,
-            status: billStatusFromValues({ totalCents: nextTotal, paidCents: Number(oldBill.paidCents || 0), dueDate: oldBill.dueDate, provisional: true }),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      }
-      await deleteDoc(docPath(db, 'financial_transactions', item.id));
-    }
-  };
-
   const saveCategory = async (data) => {
     const name = String(data?.name || '').trim();
     if (!name) return;
@@ -2511,22 +2261,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         </div>
       )}
 
-      {modal?.type === 'pluggyClearConfirm' && modal.scope && (
-        <PluggyClearConfirmModal
-          scope={modal.scope}
-          onClose={() => setModal(null)}
-          onContinue={() => confirmClearPluggyConnection(modal.scope)}
-          busy={busy}
-        />
-      )}
-      {modal?.type === 'pluggyClearFinal' && modal.scope && (
-        <PluggyClearFinalModal
-          scope={modal.scope}
-          onClose={() => setModal(null)}
-          onConfirm={() => executeClearPluggyConnection(modal.scope)}
-          busy={busy}
-        />
-      )}
       {modal?.type === 'category' && <CategoryModal
         initial={modal.initial}
         onClose={()=>setModal(null)}
@@ -2558,89 +2292,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   );
 }
 
-function PluggyClearConfirmModal({ scope, onClose, onContinue, busy }) {
-  const bankName = scope?.connection?.connectorName || 'este banco';
-  return (
-    <Modal title="Limpar dados sincronizados" onClose={onClose}>
-      <div className="space-y-4">
-        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200">
-          <p className="text-xs font-black uppercase tracking-wide text-amber-800">Banco selecionado</p>
-          <p className="text-lg font-black text-slate-800 mt-1">{bankName}</p>
-          <p className="text-xs text-slate-500 mt-1">Somente os dados sincronizados desta conexão serão afetados.</p>
-        </div>
-
-        <div className="grid sm:grid-cols-3 gap-3">
-          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-[10px] font-black uppercase text-slate-400">Movimentações</p>
-            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyTransactions.length}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-[10px] font-black uppercase text-slate-400">Contas</p>
-            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyAccounts.length}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-[10px] font-black uppercase text-slate-400">Atenção</p>
-            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyInbox.length}</p>
-          </div>
-        </div>
-
-        <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800 font-medium">
-          Os lançamentos, faturas, cartões de crédito, contas bancárias sincronizadas e vínculos automáticos deste banco serão removidos.
-          Cadastros manuais de outros bancos permanecem intactos.
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} disabled={busy} className="px-4 py-2.5 border rounded-xl text-xs font-bold">
-            Cancelar
-          </button>
-          <button onClick={onContinue} disabled={busy} className="px-4 py-2.5 bg-amber-500 text-white rounded-xl text-xs font-black hover:bg-amber-600">
-            Continuar
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function PluggyClearFinalModal({ scope, onClose, onConfirm, busy }) {
-  const bankName = scope?.connection?.connectorName || 'este banco';
-  return (
-    <Modal title="Confirmação final" onClose={onClose}>
-      <div className="space-y-4">
-        <div className="p-5 rounded-2xl bg-red-50 border-2 border-red-200">
-          <p className="text-sm font-black text-red-800 uppercase leading-relaxed">
-            TEM CERTEZA QUE DESEJA EXCLUIR TUDO QUE FOI SINCRONIZADO DESTE BANCO?
-          </p>
-          <p className="text-sm font-black text-red-700 uppercase mt-2">
-            ESSA AÇÃO NÃO PODERÁ SER DESFEITA.
-          </p>
-        </div>
-
-        <div className="text-sm text-slate-700">
-          Banco: <strong>{bankName}</strong>
-        </div>
-
-        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-          Serão removidos {scope.pluggyTransactions.length} lançamento(s), {scope.pluggyBills.length} fatura(s), {scope.pluggyCards.length} cartão(ões), {scope.pluggyAccounts.length} conta(s) e {scope.pluggyInbox.length} item(ns) de Atenção deste banco.
-          As transferências automáticas vinculadas também serão removidas. Cadastros manuais de outros bancos serão preservados.
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} disabled={busy} className="px-4 py-2.5 border rounded-xl text-xs font-bold">
-            NÃO, CANCELAR
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={busy}
-            className="px-4 py-2.5 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 disabled:opacity-50"
-          >
-            {busy ? 'EXCLUINDO...' : 'SIM, EXCLUIR TUDO DESTE BANCO'}
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
 function CategoryModal({ initial, onClose, onSave, busy }) {
   const [name, setName] = useState(initial?.name || '');
 

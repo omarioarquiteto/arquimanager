@@ -195,7 +195,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         if (!current) newConnections += 1;
 
         if (onSyncConnection) {
-          await onSyncConnection(connectionData, (progress) => {
+          const syncResult = await onSyncConnection(connectionData, (progress) => {
             const localPercent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
             setSyncProgress({
               percent: Math.round(basePercent + (localPercent / 100) * itemSpan),
@@ -203,14 +203,22 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
               connectionName: connectionData.connectorName || 'Banco',
             });
           });
-          syncedConnections += 1;
-        }
 
-        setSyncProgress({
-          percent: Math.round(basePercent + itemSpan),
-          status: (connectionData.connectorName || 'Banco') + ' sincronizado.',
-          connectionName: connectionData.connectorName || 'Banco',
-        });
+          if (syncResult?.ok !== false) {
+            syncedConnections += 1;
+            setSyncProgress({
+              percent: Math.round(basePercent + itemSpan),
+              status: (connectionData.connectorName || 'Banco') + ' sincronizado.',
+              connectionName: connectionData.connectorName || 'Banco',
+            });
+          } else {
+            setSyncProgress({
+              percent: Math.round(basePercent + itemSpan),
+              status: 'Falha ao sincronizar ' + (connectionData.connectorName || 'o banco') + '.',
+              connectionName: connectionData.connectorName || 'Banco',
+            });
+          }
+        }
       }
 
       setError('');
@@ -293,7 +301,7 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
     setDisplayProgress(0);
 
     try {
-      await onSyncConnection(connection, (progress) => {
+      const syncResult = await onSyncConnection(connection, (progress) => {
         setSyncProgress({
           percent: Math.max(0, Math.min(100, Number(progress?.percent || 0))),
           status: progress?.status || 'Sincronizando...',
@@ -301,12 +309,22 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         });
       });
 
-      setSyncProgress({
-        percent: 100,
-        status: 'Sincronização concluída.',
-        connectionName: connection.connectorName || 'Banco',
-      });
-      setDisplayProgress(100);
+      if (syncResult?.ok === false) {
+        setSyncProgress({
+          percent: 100,
+          status: 'Sincronização interrompida.',
+          connectionName: connection.connectorName || 'Banco',
+        });
+        setDisplayProgress(100);
+        if (syncResult.error) setError(syncResult.error);
+      } else {
+        setSyncProgress({
+          percent: 100,
+          status: 'Sincronização concluída.',
+          connectionName: connection.connectorName || 'Banco',
+        });
+        setDisplayProgress(100);
+      }
     } finally {
       setBusyId('');
       clearSyncProgressSoon();

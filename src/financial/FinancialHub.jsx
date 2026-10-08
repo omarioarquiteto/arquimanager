@@ -1293,23 +1293,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     for (let installment = currentNumber + 1; installment <= total; installment += 1) {
       const providerOccurrenceKey = `${seriesId}|${installment}`;
-      const looseSeriesId = `series_${stableHash(
-        [
-          card.providerAccountId || card.id,
-          normalizeText(merchant || description || ''),
-          purchaseDate || '',
-          String(total),
-          paymentType || (total > 1 ? 'INSTALLMENT' : 'SINGLE'),
-        ].join('|')
-      )}`;
-      const looseProviderOccurrenceKey = `${looseSeriesId}|${installment}`;
 
       // O provedor já enviou esta parcela. Ela é fonte de verdade e não
       // precisa de projeção local.
-      if (
-        providerInstallmentKeys.has(providerOccurrenceKey)
-        || providerInstallmentKeys.has(looseProviderOccurrenceKey)
-      ) {
+      if (providerInstallmentKeys.has(providerOccurrenceKey)) {
         continue;
       }
 
@@ -1611,31 +1598,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const rawForecastMonth = raw => monthFromIso(syncDateOnly(
       raw?.creditCardMetadata?.billForecastDate
       || raw?.billForecastDate
-      || raw?.creditCardMetadata?.billPostDate
-      || raw?.billPostDate
-      || raw?.creditCardMetadata?.billClosingDate
-      || raw?.billClosingDate
       || ''
     ));
-
-    const rawTotalAmountCents = raw => {
-      const credit = raw?.creditCardMetadata || {};
-      const totalAmount = Number(
-        credit.totalAmount
-        ?? raw?.totalAmount
-        ?? 0
-      );
-      return totalAmount > 0 ? String(toCents(totalAmount)) : '';
-    };
 
     const creditSeriesKeyFromRaw = raw => [
       String(raw?.accountId || ''),
       rawCardLast4(raw),
       rawPurchaseDate(raw),
+      rawTransactionDateTime(raw),
       rawMerchantName(raw),
       String(rawTotalInstallments(raw)),
       rawPaymentType(raw) || (rawTotalInstallments(raw) > 1 ? 'INSTALLMENT' : 'SINGLE'),
-      rawTotalAmountCents(raw),
     ].join('|');
 
     const creditLooseSeriesKeyFromRaw = raw => [
@@ -1666,25 +1639,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ?? raw?.creditCardMetadata?.totalInstallments
         ?? 0
       );
-      const rawTotalAmount = Number(
-        tx?.creditCardTotalAmountCents
-        ?? (
-          Number(
-            raw?.creditCardTotalAmount
-            ?? raw?.creditCardMetadata?.totalAmount
-            ?? 0
-          ) > 0
-            ? toCents(
-                raw?.creditCardTotalAmount
-                ?? raw?.creditCardMetadata?.totalAmount
-              )
-            : 0
-        )
-      );
       return [
         String(tx?.providerAccountId || raw?.accountId || tx?.accountId || ''),
         String(tx?.creditCardLast4 || rawCardLast4(raw) || '').replace(/\D/g, '').slice(-4),
         syncDateOnly(tx?.creditCardPurchaseDate || raw?.creditCardMetadata?.purchaseDate || raw?.date || tx?.date),
+        String(tx?.creditCardTransactionDateTime || raw?.creditCardMetadata?.transactionDateTime || '').trim(),
         normalizeText(tx?.merchant || raw?.merchant?.name || raw?.merchant?.businessName || raw?.description || tx?.description || ''),
         String(total),
         String(
@@ -1694,7 +1653,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ).trim().toUpperCase().match(/INSTALL|A_PRAZO|PARCEL/)
           ? 'INSTALLMENT'
           : 'SINGLE',
-        rawTotalAmount > 0 ? String(rawTotalAmount) : '',
       ].join('|');
     };
 
@@ -1705,21 +1663,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ?? raw?.creditCardMetadata?.totalInstallments
         ?? 0
       );
-      const rawTotalAmount = Number(
-        tx?.creditCardTotalAmountCents
-        ?? (
-          Number(
-            raw?.creditCardTotalAmount
-            ?? raw?.creditCardMetadata?.totalAmount
-            ?? 0
-          ) > 0
-            ? toCents(
-                raw?.creditCardTotalAmount
-                ?? raw?.creditCardMetadata?.totalAmount
-              )
-            : 0
-        )
-      );
       return [
         String(tx?.providerAccountId || raw?.accountId || tx?.accountId || ''),
         String(tx?.creditCardLast4 || rawCardLast4(raw) || '').replace(/\D/g, '').slice(-4),
@@ -1733,7 +1676,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ).trim().toUpperCase().match(/INSTALL|A_PRAZO|PARCEL/)
           ? 'INSTALLMENT'
           : 'SINGLE',
-        rawTotalAmount > 0 ? String(rawTotalAmount) : '',
       ].join('|');
     };
 
@@ -1742,18 +1684,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         tx?.creditCardBillForecastDate
         || tx?.providerRawData?.creditCardMetadata?.billForecastDate
         || tx?.billForecastDate
-        || tx?.creditCardBillPostDate
-        || tx?.providerRawData?.creditCardMetadata?.billPostDate
-        || tx?.billPostDate
-        || tx?.creditCardBillClosingDate
-        || tx?.providerRawData?.creditCardMetadata?.billClosingDate
-        || tx?.billClosingDate
         || ''
       ));
       if (explicit) return explicit;
 
       const billId = String(tx?.billId || '');
-      const match = billId.match(/(\d{4}-\d{2})$/);
+      const match = billId.match(/(\\d{4}-\\d{2})$/);
       return match ? match[1] : '';
     };
 
@@ -1905,14 +1841,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     for (const raw of dedupedCreditTransactions) {
       const seriesId = seriesIdForRaw(raw);
-      const looseSeriesId = `series_${stableHash(creditLooseSeriesKeyFromRaw(raw))}`;
       const installment = rawInstallmentNumber(raw);
       if (installment > 0) {
-        // Usamos a série estrita e a série "solta" para que diferenças de
-        // metadados entre parcelas não façam o sistema recriar uma parcela
-        // que o provedor já enviou.
         providerInstallmentKeys.add(`${seriesId}|${installment}`);
-        providerInstallmentKeys.add(`${looseSeriesId}|${installment}`);
       }
       providerOccurrenceKeys.add(creditOccurrenceKeyFromRaw(raw));
       const set = rawSeriesInstallments.get(seriesId) || new Set();
@@ -1932,14 +1863,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       if (!card) continue;
 
       const providerBillId = String(rawCredit.billId || rawTransaction.billId || '').trim();
-      const billForecastDate = syncDateOnly(
-        rawCredit.billForecastDate
-        || rawTransaction.billForecastDate
-        || rawCredit.billPostDate
-        || rawTransaction.billPostDate
-        || rawCredit.billClosingDate
-        || rawTransaction.billClosingDate
-      );
+      const billForecastDate = syncDateOnly(rawCredit.billForecastDate || rawTransaction.billForecastDate);
       let localBillId = providerBillToLocal.get(providerBillId) || null;
 
       if (!localBillId && billForecastDate) {
@@ -2066,7 +1990,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         creditCardPaymentType: paymentType,
         creditCardPurchaseDate: purchaseDate || null,
         creditCardTransactionDateTime: rawTransaction.creditCardMetadata?.transactionDateTime || rawTransaction.transactionDateTime || null,
-        creditCardTotalAmountCents: normalized.creditCardTotalAmountCents || null,
         notes: existingClassification.notes || '',
         source: 'PLUGGY',
         externalId: `pluggy:${rawTransaction.id}`,

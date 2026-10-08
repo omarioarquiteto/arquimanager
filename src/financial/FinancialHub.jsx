@@ -1293,10 +1293,23 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     for (let installment = currentNumber + 1; installment <= total; installment += 1) {
       const providerOccurrenceKey = `${seriesId}|${installment}`;
+      const looseSeriesId = `series_${stableHash(
+        [
+          card.providerAccountId || card.id,
+          normalizeText(merchant || description || ''),
+          purchaseDate || '',
+          String(total),
+          paymentType || (total > 1 ? 'INSTALLMENT' : 'SINGLE'),
+        ].join('|')
+      )}`;
+      const looseProviderOccurrenceKey = `${looseSeriesId}|${installment}`;
 
       // O provedor já enviou esta parcela. Ela é fonte de verdade e não
       // precisa de projeção local.
-      if (providerInstallmentKeys.has(providerOccurrenceKey)) {
+      if (
+        providerInstallmentKeys.has(providerOccurrenceKey)
+        || providerInstallmentKeys.has(looseProviderOccurrenceKey)
+      ) {
         continue;
       }
 
@@ -1598,6 +1611,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const rawForecastMonth = raw => monthFromIso(syncDateOnly(
       raw?.creditCardMetadata?.billForecastDate
       || raw?.billForecastDate
+      || raw?.creditCardMetadata?.billPostDate
+      || raw?.billPostDate
+      || raw?.creditCardMetadata?.billClosingDate
+      || raw?.billClosingDate
       || ''
     ));
 
@@ -1725,6 +1742,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         tx?.creditCardBillForecastDate
         || tx?.providerRawData?.creditCardMetadata?.billForecastDate
         || tx?.billForecastDate
+        || tx?.creditCardBillPostDate
+        || tx?.providerRawData?.creditCardMetadata?.billPostDate
+        || tx?.billPostDate
+        || tx?.creditCardBillClosingDate
+        || tx?.providerRawData?.creditCardMetadata?.billClosingDate
+        || tx?.billClosingDate
         || ''
       ));
       if (explicit) return explicit;
@@ -1882,9 +1905,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     for (const raw of dedupedCreditTransactions) {
       const seriesId = seriesIdForRaw(raw);
+      const looseSeriesId = `series_${stableHash(creditLooseSeriesKeyFromRaw(raw))}`;
       const installment = rawInstallmentNumber(raw);
       if (installment > 0) {
+        // Usamos a série estrita e a série "solta" para que diferenças de
+        // metadados entre parcelas não façam o sistema recriar uma parcela
+        // que o provedor já enviou.
         providerInstallmentKeys.add(`${seriesId}|${installment}`);
+        providerInstallmentKeys.add(`${looseSeriesId}|${installment}`);
       }
       providerOccurrenceKeys.add(creditOccurrenceKeyFromRaw(raw));
       const set = rawSeriesInstallments.get(seriesId) || new Set();
@@ -1904,7 +1932,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       if (!card) continue;
 
       const providerBillId = String(rawCredit.billId || rawTransaction.billId || '').trim();
-      const billForecastDate = syncDateOnly(rawCredit.billForecastDate || rawTransaction.billForecastDate);
+      const billForecastDate = syncDateOnly(
+        rawCredit.billForecastDate
+        || rawTransaction.billForecastDate
+        || rawCredit.billPostDate
+        || rawTransaction.billPostDate
+        || rawCredit.billClosingDate
+        || rawTransaction.billClosingDate
+      );
       let localBillId = providerBillToLocal.get(providerBillId) || null;
 
       if (!localBillId && billForecastDate) {

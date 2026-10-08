@@ -188,7 +188,7 @@ const purgePreviousPluggyIntegration = async (db, companyId, itemId) => {
   ).filter(item => item.companyId === companyId);
 
   const operations = [
-    ...legacyTransfers.keys().map(id => ({ collection: 'financial_transfers', id, type: 'delete' })),
+    ...Array.from(legacyTransfers.keys()).map(id => ({ collection: 'financial_transfers', id, type: 'delete' })),
     ...legacyTransactions.map(item => ({ collection: 'financial_transactions', id: item.id, type: 'delete' })),
     ...legacyBills.map(item => ({ collection: 'financial_bills', id: item.id, type: 'delete' })),
     ...legacyInstallments.map(item => ({ collection: 'financial_installments', id: item.id, type: 'delete' })),

@@ -3,7 +3,10 @@ import { Landmark, Link2, RefreshCw, ShieldCheck, Trash2, XCircle, AlertTriangle
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
+  query,
+  where,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -760,7 +763,7 @@ export default function PluggyConnectionsV2({
           setProgress(null);
         },
         onClose: () => {
-          if (busyId !== 'new') setBusyId('');
+          setBusyId('');
           widgetRef.current = null;
         },
       });
@@ -823,154 +826,140 @@ export default function PluggyConnectionsV2({
     const itemId = String(connection?.itemId || '');
     if (!itemId) throw new Error('itemId ausente.');
 
+    const itemRef = refDoc(db, 'financial_connections', `${companyId}_${itemId}`);
+
+    // A limpeza nova é dirigida pelos índices naturais da integração:
+    // providerItemId identifica diretamente cada registro pertencente ao banco.
+    // Não varremos coleções financeiras inteiras quando isso pode ser evitado.
     const [
       accountsSnapshot,
       cardsSnapshot,
       billsSnapshot,
       transactionsSnapshot,
       inboxSnapshot,
-      transfersSnapshot,
-      connectionsSnapshot,
       purchasesSnapshot,
-      installmentsSnapshot,
+      connectionSnapshot,
     ] = await Promise.all([
-      getDocs(coll(db, 'financial_accounts')),
-      getDocs(coll(db, 'financial_cards')),
-      getDocs(coll(db, 'financial_bills')),
-      getDocs(coll(db, 'financial_transactions')),
-      getDocs(coll(db, 'financial_inbox')),
-      getDocs(coll(db, 'financial_transfers')),
-      getDocs(coll(db, 'financial_connections')),
-      getDocs(coll(db, 'financial_purchases')),
-      getDocs(coll(db, 'financial_installments')),
+      getDocs(query(coll(db, 'financial_accounts'), where('providerItemId', '==', itemId))),
+      getDocs(query(coll(db, 'financial_cards'), where('providerItemId', '==', itemId))),
+      getDocs(query(coll(db, 'financial_bills'), where('providerItemId', '==', itemId))),
+      getDocs(query(coll(db, 'financial_transactions'), where('providerItemId', '==', itemId))),
+      getDocs(query(coll(db, 'financial_inbox'), where('source', '==', PLUGGY_SOURCE))),
+      getDocs(query(coll(db, 'financial_purchases'), where('providerItemId', '==', itemId))),
+      getDoc(itemRef),
     ]);
 
-    const accounts = accountsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-    const cards = cardsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-    const bills = billsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-    const transactions = transactionsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-    const inbox = inboxSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-    const transfers = transfersSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-
-    const accountIds = new Set(
-      accounts
-        .filter(account =>
-          account.companyId === companyId
-          && account.provider === 'PLUGGY'
-          && String(account.providerItemId || '') === itemId
-        )
-        .map(account => String(account.id))
-    );
-
-    const providerAccountIds = new Set(
-      accounts
-        .filter(account =>
-          account.companyId === companyId
-          && account.provider === 'PLUGGY'
-          && String(account.providerItemId || '') === itemId
-        )
-        .map(account => String(account.providerAccountId || ''))
-        .filter(Boolean)
-    );
-
-    const cardIds = new Set(
-      cards
-        .filter(card =>
-          card.companyId === companyId
-          && (
-            String(card.providerItemId || '') === itemId
-            || providerAccountIds.has(String(card.providerAccountId || ''))
-          )
-        )
-        .map(card => String(card.id))
-    );
-
-    const billIds = new Set(
-      bills
-        .filter(bill =>
-          bill.companyId === companyId
-          && (
-            String(bill.providerItemId || '') === itemId
-            || providerAccountIds.has(String(bill.providerAccountId || ''))
-            || cardIds.has(String(bill.cardId || ''))
-          )
-        )
-        .map(bill => String(bill.id))
-    );
-
-    const providerTransactions = transactions.filter(tx => {
-      if (tx.companyId !== companyId) return false;
-
-      const providerOwned =
-        tx.source === 'PLUGGY'
-        || tx.source === PLUGGY_SOURCE
-        || !!tx.providerTransactionId
-        || !!tx.providerItemId;
-
-      if (!providerOwned) return false;
-
-      return (
-        String(tx.providerItemId || '') === itemId
-        || providerAccountIds.has(String(tx.providerAccountId || ''))
-        || accountIds.has(String(tx.accountId || ''))
-        || cardIds.has(String(tx.cardId || ''))
-        || billIds.has(String(tx.billId || ''))
-      );
-    });
-
-    const providerTransactionIds = new Set(providerTransactions.map(tx => String(tx.id)));
-
-    const providerInbox = inbox.filter(item =>
-      item.companyId === companyId
-      && String(item.source || '') === PLUGGY_SOURCE
-      && providerTransactionIds.has(String(item.transactionId || ''))
-    );
-
-    const providerTransfers = transfers.filter(transfer =>
-      transfer.companyId === companyId
-      && transfer.source === 'AUTO_RECONCILIATION'
-      && (
-        providerTransactionIds.has(String(transfer.outgoingTransactionId || ''))
-        || providerTransactionIds.has(String(transfer.incomingTransactionId || ''))
-      )
-    );
-
-    const providerConnections = connectionsSnapshot.docs
+    const providerAccounts = accountsSnapshot.docs
       .map(item => ({ id: item.id, ...item.data() }))
-      .filter(item => item.companyId === companyId && item.itemId === itemId);
+      .filter(item => item.companyId === companyId);
+    const providerAccountIds = new Set(
+      providerAccounts.map(item => String(item.providerAccountId || '')).filter(Boolean)
+    );
 
-    const purchases = purchasesSnapshot.docs
+    // O cartão e a fatura podem carregar o providerItemId diretamente. O
+    // fallback por providerAccountId cobre registros válidos criados antes
+    // desse campo ter sido persistido.
+    const [fallbackCardsSnapshot, fallbackBillsSnapshot] = await Promise.all([
+      providerAccountIds.size
+        ? getDocs(query(coll(db, 'financial_cards'), where('providerAccountId', 'in', Array.from(providerAccountIds).slice(0, 30))))
+        : Promise.resolve({ docs: [] }),
+      providerAccountIds.size
+        ? getDocs(query(coll(db, 'financial_bills'), where('providerAccountId', 'in', Array.from(providerAccountIds).slice(0, 30))))
+        : Promise.resolve({ docs: [] }),
+    ]);
+
+    const providerCards = [
+      ...cardsSnapshot.docs.map(item => ({ id: item.id, ...item.data() })),
+      ...fallbackCardsSnapshot.docs.map(item => ({ id: item.id, ...item.data() })),
+    ]
+      .filter(item => item.companyId === companyId)
+      .reduce((unique, item) => unique.set(item.id, item), new Map());
+    const providerCardList = Array.from(providerCards.values());
+    const cardIds = new Set(providerCardList.map(item => String(item.id)));
+
+    const providerBills = [
+      ...billsSnapshot.docs.map(item => ({ id: item.id, ...item.data() })),
+      ...fallbackBillsSnapshot.docs.map(item => ({ id: item.id, ...item.data() })),
+    ]
+      .filter(item => item.companyId === companyId)
+      .reduce((unique, item) => unique.set(item.id, item), new Map());
+    const providerBillList = Array.from(providerBills.values()).filter(item =>
+      String(item.providerItemId || '') === itemId
+      || providerAccountIds.has(String(item.providerAccountId || ''))
+      || cardIds.has(String(item.cardId || ''))
+    );
+    const billIds = new Set(providerBillList.map(item => String(item.id)));
+
+    const providerTransactions = transactionsSnapshot.docs
+      .map(item => ({ id: item.id, ...item.data() }))
+      .filter(item => item.companyId === companyId);
+
+    const providerTransactionIds = new Set(providerTransactions.map(item => String(item.id)));
+    const providerInbox = inboxSnapshot.docs
+      .map(item => ({ id: item.id, ...item.data() }))
+      .filter(item =>
+        item.companyId === companyId
+        && providerTransactionIds.has(String(item.transactionId || ''))
+      );
+
+    const transfersSnapshot = providerTransactionIds.size
+      ? await getDocs(query(coll(db, 'financial_transfers'), where('source', '==', 'AUTO_RECONCILIATION')))
+      : { docs: [] };
+    const providerTransfers = transfersSnapshot.docs
       .map(item => ({ id: item.id, ...item.data() }))
       .filter(item =>
         item.companyId === companyId
         && (
-          item.providerItemId === itemId
-          || item.source === PLUGGY_SOURCE && cardIds.has(String(item.cardId || ''))
-          || item.source === 'PLUGGY' && cardIds.has(String(item.cardId || ''))
+          providerTransactionIds.has(String(item.outgoingTransactionId || ''))
+          || providerTransactionIds.has(String(item.incomingTransactionId || ''))
         )
       );
 
-    const purchaseIds = new Set(purchases.map(item => String(item.id)));
-    const installments = installmentsSnapshot.docs
+    const providerConnections = connectionSnapshot.exists()
+      ? [{ id: connectionSnapshot.id, ...connectionSnapshot.data() }]
+      : [];
+
+    const purchases = purchasesSnapshot.docs
       .map(item => ({ id: item.id, ...item.data() }))
-      .filter(item => item.companyId === companyId && purchaseIds.has(String(item.purchaseId || '')));
+      .filter(item => item.companyId === companyId);
+    const purchaseIds = new Set(purchases.map(item => String(item.id)));
+
+    const installments = purchaseIds.size
+      ? (await Promise.all(
+          Array.from(purchaseIds).reduce((groups, id, index) => {
+            const groupIndex = Math.floor(index / 30);
+            groups[groupIndex] ||= [];
+            groups[groupIndex].push(id);
+            return groups;
+          }, []).map(ids =>
+            getDocs(query(coll(db, 'financial_installments'), where('purchaseId', 'in', ids)))
+          )
+        )).flatMap(snapshot =>
+          snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
+        ).filter(item => item.companyId === companyId)
+      : [];
+
+    // Registros antigos da integração anterior só entram na limpeza quando
+    // possuem o mesmo providerItemId ou estão encadeados por uma entidade
+    // claramente pertencente a este Item. A nova integração nunca depende deles.
+    const legacyTransactions = await getDocs(
+      query(coll(db, 'financial_transactions'), where('providerItemId', '==', itemId))
+    );
+
+    const mergedTransactions = new Map(
+      providerTransactions.map(item => [item.id, item])
+    );
+    legacyTransactions.docs.forEach(item => mergedTransactions.set(item.id, { id: item.id, ...item.data() }));
+
+    const finalTransactions = Array.from(mergedTransactions.values())
+      .filter(item => item.companyId === companyId);
 
     return {
       itemId,
-      providerAccounts: accounts.filter(account => account.companyId === companyId && (
-        String(account.providerItemId || '') === itemId
-        || providerAccountIds.has(String(account.providerAccountId || ''))
-      )),
-      providerCards: cards.filter(card => card.companyId === companyId && (
-        String(card.providerItemId || '') === itemId
-        || providerAccountIds.has(String(card.providerAccountId || ''))
-      )),
-      providerBills: bills.filter(bill => bill.companyId === companyId && (
-        String(bill.providerItemId || '') === itemId
-        || providerAccountIds.has(String(bill.providerAccountId || ''))
-        || cardIds.has(String(bill.cardId || ''))
-      )),
-      providerTransactions,
+      providerAccounts,
+      providerCards: providerCardList,
+      providerBills: providerBillList,
+      providerTransactions: finalTransactions,
       providerInbox,
       providerTransfers,
       providerConnections,

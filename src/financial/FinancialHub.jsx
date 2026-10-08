@@ -1251,6 +1251,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     projectId,
     notes,
     purchaseDate,
+    transactionPool = null,
   }) => {
     if (!tx?.id || !card?.id) return;
     const currentNumber = Math.max(1, Number(currentInstallment || 1));
@@ -1265,8 +1266,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       || dateForMonthDay(monthFromIso(currentBill?.referenceMonth || baseDueDate), Number(card.closingDay || 1));
 
     const seriesId = tx.parcelSeriesId || `series_${stableHash(`${card.id}|${tx.id}`)}`;
-    const serverTransactionsSnapshot = await getDocs(collectionPath(db, 'financial_transactions'));
-    const companyTransactions = serverTransactionsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(item => item.companyId === companyId);
+    const companyTransactions = Array.isArray(transactionPool)
+      ? transactionPool
+      : (await getDocs(collectionPath(db, 'financial_transactions'))).docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(item => item.companyId === companyId);
     const existingSeries = companyTransactions.filter(item =>
       item?.source === 'PLUGGY_PROJECTION'
       && item?.parcelSeriesId === seriesId
@@ -1419,7 +1423,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }
   };
 
-  const syncCreditCardData = async ({ data, connection }) => {
+  const syncCreditCardData = async ({ data, connection, existingTransactions = [] }) => {
     const creditAccounts = Array.isArray(data.creditAccounts) ? data.creditAccounts : [];
     if (!creditAccounts.length) return;
 
@@ -1498,6 +1502,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }
 
     const creditTransactions = Array.isArray(data.creditTransactions) ? data.creditTransactions : [];
+    const serverTransactions = Array.isArray(existingTransactions) ? existingTransactions : [];
+    const transactionByProviderId = new Map(
+      serverTransactions
+        .filter(item => item?.providerTransactionId)
+        .map(item => [String(item.providerTransactionId), item])
+    );
+    const transactionByExternalId = new Map(
+      serverTransactions
+        .filter(item => item?.externalId)
+        .map(item => [String(item.externalId), item])
+    );
+    const projectionTransactions = serverTransactions.filter(
+      item => item?.source === 'PLUGGY_PROJECTION' && item?.cardId
+    );
+    const billCache = new Map();
     for (const rawTransaction of creditTransactions) {
       if (!rawTransaction?.id) continue;
       const rawAmount = Number(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0);
@@ -1553,20 +1572,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const paymentType = String(rawCredit.paymentType || rawTransaction.paymentType || '').trim().toUpperCase();
       const purchaseDate = syncDateOnly(rawCredit.purchaseDate || rawTransaction.purchaseDate || rawTransaction.date);
 
-      const localBillSnapshot = localBillId ? await getDoc(docPath(db, 'financial_bills', localBillId)) : null;
-      const localBillData = localBillSnapshot?.exists() ? localBillSnapshot.data() : null;
+      let localBillData = localBillId ? billCache.get(localBillId) : null;
+      if (localBillId && localBillData === undefined) {
+        const localBillSnapshot = await getDoc(docPath(db, 'financial_bills', localBillId));
+        localBillData = localBillSnapshot.exists() ? localBillSnapshot.data() : null;
+        billCache.set(localBillId, localBillData);
+      }
 
-      const serverTransactions = (await getDocs(collectionPath(db, 'financial_transactions'))).docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(item => item.companyId === companyId);
-
-      const existing = serverTransactions.find(item =>
-        item.providerTransactionId === rawTransaction.id
-        || item.externalId === `pluggy:${rawTransaction.id}`
-      );
+      const existing = transactionByProviderId.get(String(rawTransaction.id))
+        || transactionByExternalId.get(`pluggy:${rawTransaction.id}`)
+        || null;
 
       const projectionMatch = !existing && installmentNumber > 0
-        ? serverTransactions.find(item =>
+        ? projectionTransactions.find(item =>
             item.source === 'PLUGGY_PROJECTION'
             && item.cardId === card.id
             && Number(item.creditCardInstallmentNumber || 0) === installmentNumber
@@ -1698,6 +1716,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           projectId,
           notes: existingClassification.notes || '',
           purchaseDate,
+          transactionPool: serverTransactions,
         });
       }
     }
@@ -1708,10 +1727,15 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     setBusy(true);
     try {
-      const response = await fetch('/.netlify/functions/pluggy-sync-item', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+      const controller = new AbortController();
+      const syncTimeout = window.setTimeout(() => controller.abort(), 180000);
+      let response;
+      try {
+        response = await fetch('/.netlify/functions/pluggy-sync-item', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
           itemId: connection.itemId,
           clientUserId: connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
         }),
@@ -2364,7 +2388,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         await batch.commit();
       }
 
-      await syncCreditCardData({ data, connection });
+      await syncCreditCardData({
+        data,
+        connection,
+        existingTransactions: companyTransactions,
+      });
 
       await setDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`), {
         companyId,

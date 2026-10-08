@@ -1966,172 +1966,95 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const pendingTransactionWrites = [];
       reportProgress(48, 'Base preparada. Importando movimentações bancárias...');
 
-      let newImported = 0;
-      let alreadyPresent = 0;
-
       const yieldToBrowser = () => new Promise(resolve => {
         window.setTimeout(resolve, 0);
       });
 
-      const commitTransactionChunk = async (chunk, committed, total) => {
-        if (!chunk.length) return;
+      const TRANSACTION_CHUNK_SIZE = 20;
+      const TRANSACTION_CONCURRENCY = 4;
+      const TRANSACTION_COMMIT_TIMEOUT = 30000;
 
-        const transactionBatch = writeBatch(db);
-        chunk.forEach(item => transactionBatch.set(item.ref, item.data));
+      const commitBatchWithTimeout = async (batch, timeoutMs = TRANSACTION_COMMIT_TIMEOUT) => {
+        let timerId = null;
+        try {
+          const timeoutPromise = new Promise((_, reject) => {
+            timerId = window.setTimeout(() => {
+              reject(new Error(
+                'O Firestore demorou mais de 30 segundos para gravar um lote da sincronização.'
+              ));
+            }, timeoutMs);
+          });
 
-        const timeoutPromise = new Promise((_, reject) => {
-          window.setTimeout(() => reject(
-            new Error(
-              'A gravação de movimentações no Firestore demorou mais de 45 segundos. ' +
-              'A sincronização foi interrompida para evitar que permaneça travada em 56%.'
-            )
-          ), 45000);
-        });
-
-        await Promise.race([
-          transactionBatch.commit(),
-          timeoutPromise,
-        ]);
-
-        const nextCommitted = committed + chunk.length;
-        const writeProgress = 48 + (nextCommitted / Math.max(1, total)) * 18;
-        reportProgress(
-          writeProgress,
-          'Gravando movimentações bancárias: ' + nextCommitted + '/' + total + '...'
-        );
+          return await Promise.race([
+            batch.commit(),
+            timeoutPromise,
+          ]);
+        } finally {
+          if (timerId) window.clearTimeout(timerId);
+        }
       };
 
-      let newImported = 0;
-      let alreadyPresent = 0;
-      let preparedTransactions = 0;
+      const commitTransactionChunk = async (chunk) => {
+        if (!chunk.length) return;
 
-      // Processamento incremental: evita um forEach síncrono gigante bloquear
-      // a UI enquanto os lançamentos são preparados.
-      for (const rawTransaction of (data.transactions || [])) {
-        if (!rawTransaction?.id) continue;
+        let lastError = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const transactionBatch = writeBatch(db);
+          chunk.forEach(item => transactionBatch.set(item.ref, item.data));
 
-        const externalId = `pluggy:${rawTransaction.id}`;
-        const financialAccountId = `${companyId}_pluggy_account_${rawTransaction.accountId}`;
-
-        const rawFingerprint = transactionFingerprint({
-          providerAccountId: rawTransaction.accountId,
-          accountId: rawTransaction.accountId,
-          date: syncDateOnly(rawTransaction.date),
-          amountCents: Math.abs(toCents(
-            rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0
-          )),
-          type: rawTransaction.type === 'credit'
-            ? 'INCOME'
-            : rawTransaction.type === 'debit'
-              ? 'EXPENSE'
-              : (
-                Number(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0) < 0
-                  ? 'EXPENSE'
-                  : 'INCOME'
-              ),
-          description: rawTransaction.description || rawTransaction.descriptionRaw || '',
-          merchant: rawTransaction.merchant?.name
-            || rawTransaction.merchant?.businessName
-            || rawTransaction.description
-            || '',
-        });
-
-        const existing = existingByExternalId.get(externalId)
-          || (rawFingerprint ? existingByFingerprint.get(rawFingerprint) : null);
-
-        if (existing) {
-          alreadyPresent += 1;
-
-          const existingData = {
-            ...existing,
-            ...pluggyTransactionDetailsToFinancial(rawTransaction),
-            source: 'PLUGGY',
-            externalId,
-            providerTransactionId: rawTransaction.id,
-            providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
-            providerId: rawTransaction.providerId || existing.providerId || null,
-            providerCode: rawTransaction.providerCode || existing.providerCode || null,
-          };
-
-          importedItems.push({
-            ref: docPath(db, 'financial_transactions', existing.id),
-            id: existing.id,
-            data: existingData,
-            rawTransaction,
-            isNew: false,
-            refreshIdentity: true,
-          });
-        } else {
           try {
-            const normalized = pluggyTransactionToFinancial({
-              transaction: rawTransaction,
-              companyId,
-              financialAccountId,
-            });
-
-            const deterministicKey = stableHash(externalId);
-            const ref = docPath(
-              db,
-              'financial_transactions',
-              `${companyId}_pluggy_tx_${deterministicKey}`
-            );
-            const item = {
-              ref,
-              id: ref.id,
-              data: {
-                ...normalized,
-                importedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              },
-              rawTransaction,
-              isNew: true,
-            };
-
-            pendingTransactionWrites.push({
-              ref,
-              data: item.data,
-            });
-            importedItems.push(item);
-
-            const indexedItem = {
-              ...item.data,
-              id: ref.id,
-            };
-            existingByExternalId.set(externalId, indexedItem);
-            const indexedFingerprint = transactionFingerprint(indexedItem);
-            if (indexedFingerprint) existingByFingerprint.set(indexedFingerprint, indexedItem);
-            newImported += 1;
+            await commitBatchWithTimeout(transactionBatch);
+            return;
           } catch (err) {
-            console.error('Transação Pluggy ignorada:', err);
+            lastError = err;
+            const code = String(err?.code || '').toLowerCase();
+            const message = String(err?.message || '').toLowerCase();
+            const retryable = attempt === 1 && (
+              /unavailable|deadline|aborted|internal|resource-exhausted/.test(code)
+              || /unavailable|deadline|aborted|internal|resource-exhausted|temporarily/.test(message)
+            );
+
+            if (!retryable) break;
+            await yieldToBrowser();
           }
         }
 
-        preparedTransactions += 1;
+        throw lastError || new Error('Falha ao gravar movimentações no Firestore.');
+      };
 
-        if (preparedTransactions % 50 === 0) {
-          const preparationProgress = 48
-            + (preparedTransactions / Math.max(1, data.transactions?.length || preparedTransactions)) * 3;
-          reportProgress(
-            Math.min(51, preparationProgress),
-            'Preparando movimentações bancárias: ' + preparedTransactions + '/' + (data.transactions?.length || preparedTransactions) + '...'
-          );
-          await yieldToBrowser();
-        }
+      let committedTransactions = 0;
+      const transactionChunks = [];
+      for (let start = 0; start < pendingTransactionWrites.length; start += TRANSACTION_CHUNK_SIZE) {
+        transactionChunks.push(
+          pendingTransactionWrites.slice(start, start + TRANSACTION_CHUNK_SIZE)
+        );
       }
 
-      // O Firestore tem limite de tamanho de requisição além do limite de
-      // operações. Usamos blocos de 50 para evitar lotes pesados com
-      // providerRawData da Pluggy.
-      let committedTransactions = 0;
-      for (let start = 0; start < pendingTransactionWrites.length; start += 50) {
-        const chunk = pendingTransactionWrites.slice(start, start + 50);
-        await commitTransactionChunk(
-          chunk,
-          committedTransactions,
-          pendingTransactionWrites.length
+      // Quatro lotes pequenos podem ser gravados em paralelo. Isso reduz
+      // drasticamente o tempo total sem criar um lote grande o suficiente para
+      // bloquear a sincronização ou estourar o payload.
+      for (let groupStart = 0; groupStart < transactionChunks.length; groupStart += TRANSACTION_CONCURRENCY) {
+        const group = transactionChunks.slice(
+          groupStart,
+          groupStart + TRANSACTION_CONCURRENCY
         );
-        committedTransactions += chunk.length;
+        const groupTotal = group.reduce((sum, chunk) => sum + chunk.length, 0);
+        const groupEnd = committedTransactions + groupTotal;
+        const groupNumber = Math.floor(groupStart / TRANSACTION_CONCURRENCY) + 1;
+        const totalGroups = Math.ceil(transactionChunks.length / TRANSACTION_CONCURRENCY);
+
+        reportProgress(
+          48 + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18,
+          'Gravando movimentações: lote ' + groupNumber + '/' + totalGroups + '...'
+        );
+
+        await Promise.all(group.map(chunk => commitTransactionChunk(chunk)));
+
+        committedTransactions = groupEnd;
+        reportProgress(
+          48 + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18,
+          'Movimentações gravadas: ' + committedTransactions + '/' + pendingTransactionWrites.length + '...'
+        );
         await yieldToBrowser();
       }
 
@@ -3004,42 +2927,87 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const executeClearPluggyConnection = async (scope, options = {}) => {
     if (!scope?.connection?.itemId) return;
 
+    const connection = scope.connection;
     const deleteRemote = Boolean(options.deleteRemote);
+    const safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
+    const safePluggyCardIds = scope.pluggyCardIds instanceof Set
+      ? scope.pluggyCardIds
+      : new Set(safePluggyCards.map(card => card.id).filter(Boolean));
+    const safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
+      ? scope.pluggyTransactions
+      : [];
+    const safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
+      ? scope.pluggyTransactionIds
+      : new Set(safePluggyTransactions.map(tx => tx.id).filter(Boolean));
+    const safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
+    const safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
+    const safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
+    const safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
+      ? scope.autoPluggyTransfers
+      : [];
+
+    const commitCleanupBatch = async (batch, timeoutMs = 30000) => {
+      let timerId = null;
+      try {
+        const timeoutPromise = new Promise((_, reject) => {
+          timerId = window.setTimeout(() => {
+            reject(new Error(
+              'O Firestore demorou mais de 30 segundos durante a limpeza dos dados sincronizados.'
+            ));
+          }, timeoutMs);
+        });
+        return await Promise.race([batch.commit(), timeoutPromise]);
+      } finally {
+        if (timerId) window.clearTimeout(timerId);
+      }
+    };
+
+    const commitCleanupOperations = async (operations, label) => {
+      const validOperations = operations.filter(operation => operation?.id && operation?.kind);
+      if (!validOperations.length) return;
+
+      const CHUNK_SIZE = 150;
+      for (let start = 0; start < validOperations.length; start += CHUNK_SIZE) {
+        const chunk = validOperations.slice(start, start + CHUNK_SIZE);
+        const batch = writeBatch(db);
+
+        chunk.forEach(operation => {
+          const ref = docPath(db, operation.collection, operation.id);
+          if (operation.kind === 'delete') {
+            batch.delete(ref);
+          } else if (operation.kind === 'update') {
+            batch.update(ref, operation.data || {});
+          }
+        });
+
+        setNotice(
+          'Limpando dados sincronizados de ' +
+          (connection.connectorName || 'este banco') +
+          ': ' + Math.min(start + chunk.length, validOperations.length) +
+          '/' + validOperations.length + ' operações...'
+        );
+
+        await commitCleanupBatch(batch);
+        await new Promise(resolve => window.setTimeout(resolve, 0));
+      }
+
+      setNotice(label);
+    };
+
     setBusy(true);
     try {
-      if (deleteRemote) {
-        const response = await fetch('/.netlify/functions/pluggy-delete-item', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            itemId: scope.connection.itemId,
-            clientUserId: scope.connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
-          }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(data.error || 'Não foi possível revogar a conexão no Pluggy.');
-        }
-      }
-      const {
-        connection,
-        pluggyTransactions,
-        pluggyAccounts,
-        pluggyCards,
-        pluggyBills,
-        pluggyInbox,
-        autoPluggyTransfers,
-        pluggyTransactionIds,
-        pluggyCardIds,
-      } = scope;
+      // A confirmação pode permanecer aberta enquanto os snapshots React mudam.
+      // Compras e parcelas são relidas imediatamente antes da remoção.
+      const [purchaseSnapshot, installmentSnapshot] = await Promise.all([
+        getDocs(collectionPath(db, 'financial_purchases')),
+        getDocs(collectionPath(db, 'financial_installments')),
+      ]);
 
-      const purchaseSnapshot = await getDocs(collectionPath(db, 'financial_purchases'));
       const pluggyPurchases = purchaseSnapshot.docs
         .map(item => ({ id: item.id, ...item.data() }))
-        .filter(item => item.companyId === companyId && pluggyCardIds.has(item.cardId));
+        .filter(item => item.companyId === companyId && safePluggyCardIds.has(item.cardId));
       const pluggyPurchaseIds = new Set(pluggyPurchases.map(item => item.id));
 
-      const installmentSnapshot = await getDocs(collectionPath(db, 'financial_installments'));
       const pluggyInstallments = installmentSnapshot.docs
         .map(item => ({ id: item.id, ...item.data() }))
         .filter(item => item.companyId === companyId && pluggyPurchaseIds.has(item.purchaseId));
@@ -3048,154 +3016,174 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const affectedPayableAmounts = new Map();
       const affectedReceivableAmounts = new Map();
 
-      pluggyTransactions.forEach(tx => {
-        const amount = Number(tx.amountCents || 0);
+      safePluggyTransactions.forEach(tx => {
+        const amount = Math.abs(Number(tx.amountCents || 0));
         if (!amount) return;
-        if (tx.billId) affectedBillAmounts.set(tx.billId, (affectedBillAmounts.get(tx.billId) || 0) + amount);
-        if (tx.payableId) affectedPayableAmounts.set(tx.payableId, (affectedPayableAmounts.get(tx.payableId) || 0) + amount);
-        if (tx.receivableId) affectedReceivableAmounts.set(tx.receivableId, (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount);
+
+        if (tx.billId) {
+          affectedBillAmounts.set(
+            tx.billId,
+            (affectedBillAmounts.get(tx.billId) || 0) + amount
+          );
+        }
+        if (tx.payableId) {
+          affectedPayableAmounts.set(
+            tx.payableId,
+            (affectedPayableAmounts.get(tx.payableId) || 0) + amount
+          );
+        }
+        if (tx.receivableId) {
+          affectedReceivableAmounts.set(
+            tx.receivableId,
+            (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount
+          );
+        }
       });
+
+      const updateOperations = [];
 
       for (const [billId, amount] of affectedBillAmounts.entries()) {
         const bill = bills.find(item => item.id === billId);
         if (!bill) continue;
+
+        const totalCents = Number(bill.totalCents || 0);
         const nextPaid = Math.max(0, Number(bill.paidCents || 0) - amount);
-        const billChange = {
-          paidCents: nextPaid,
-          status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(bill.totalCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
-          updatedAt: serverTimestamp(),
-        };
-        if (pluggyTransactionIds.has(bill.lastPaymentTransactionId)) {
-          billChange.lastPaymentTransactionId = null;
-          billChange.lastPaidAt = null;
-        }
-        await updateDoc(docPath(db, 'financial_bills', billId), billChange);
+        updateOperations.push({
+          collection: 'financial_bills',
+          id: billId,
+          kind: 'update',
+          data: {
+            paidCents: nextPaid,
+            status: nextPaid <= 0
+              ? 'OPEN'
+              : (nextPaid >= totalCents ? 'PAID' : 'PARTIALLY_PAID'),
+            ...(safePluggyTransactionIds.has(bill.lastPaymentTransactionId)
+              ? { lastPaymentTransactionId: null, lastPaidAt: null }
+              : {}),
+            updatedAt: serverTimestamp(),
+          },
+        });
       }
 
       for (const [payableId, amount] of affectedPayableAmounts.entries()) {
         const payable = payables.find(item => item.id === payableId);
         if (!payable) continue;
+
+        const totalCents = Number(payable.amountCents || 0);
         const nextPaid = Math.max(0, Number(payable.paidCents || 0) - amount);
-        const payableChange = {
-          paidCents: nextPaid,
-          status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(payable.amountCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
-          updatedAt: serverTimestamp(),
-        };
-        if (pluggyTransactionIds.has(payable.paymentTransactionId)) {
-          payableChange.paymentTransactionId = null;
-          payableChange.actualDate = null;
-        }
-        await updateDoc(docPath(db, 'financial_payables', payableId), payableChange);
+        updateOperations.push({
+          collection: 'financial_payables',
+          id: payableId,
+          kind: 'update',
+          data: {
+            paidCents: nextPaid,
+            status: nextPaid <= 0
+              ? 'OPEN'
+              : (nextPaid >= totalCents ? 'PAID' : 'PARTIALLY_PAID'),
+            ...(safePluggyTransactionIds.has(payable.paymentTransactionId)
+              ? { paymentTransactionId: null, actualDate: null }
+              : {}),
+            updatedAt: serverTimestamp(),
+          },
+        });
       }
 
       for (const [receivableId, amount] of affectedReceivableAmounts.entries()) {
         const receivable = receivables.find(item => item.id === receivableId);
         if (!receivable) continue;
+
+        const totalCents = Number(receivable.amountCents || 0);
         const nextReceived = Math.max(0, Number(receivable.receivedCents || 0) - amount);
-        const receivableChange = {
-          receivedCents: nextReceived,
-          status: nextReceived <= 0 ? 'OPEN' : (nextReceived >= Number(receivable.amountCents || 0) ? 'RECEIVED' : 'PARTIALLY_RECEIVED'),
-          updatedAt: serverTimestamp(),
-        };
-        if (pluggyTransactionIds.has(receivable.receiptTransactionId)) {
-          receivableChange.receiptTransactionId = null;
-          receivableChange.actualDate = null;
-        }
-        await updateDoc(docPath(db, 'financial_receivables', receivableId), receivableChange);
+        updateOperations.push({
+          collection: 'financial_receivables',
+          id: receivableId,
+          kind: 'update',
+          data: {
+            receivedCents: nextReceived,
+            status: nextReceived <= 0
+              ? 'OPEN'
+              : (nextReceived >= totalCents ? 'RECEIVED' : 'PARTIALLY_RECEIVED'),
+            ...(safePluggyTransactionIds.has(receivable.receiptTransactionId)
+              ? { receiptTransactionId: null, actualDate: null }
+              : {}),
+            updatedAt: serverTimestamp(),
+          },
+        });
       }
 
-      for (let start = 0; start < autoPluggyTransfers.length; start += 400) {
-        const batch = writeBatch(db);
-        autoPluggyTransfers.slice(start, start + 400).forEach(transfer => {
-          batch.delete(docPath(db, 'financial_transfers', transfer.id));
-        });
-        await batch.commit();
-      }
+      await commitCleanupOperations(
+        updateOperations,
+        'Vínculos automáticos revertidos. Excluindo dados sincronizados...'
+      );
 
-      const idsToDelete = pluggyTransactions.map(tx => tx.id);
-      for (let start = 0; start < idsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        idsToDelete.slice(start, start + 400).forEach(id => {
-          batch.delete(docPath(db, 'financial_transactions', id));
-        });
-        await batch.commit();
-      }
+      const deleteOperations = [
+        ...safeAutoPluggyTransfers
+          .map(item => ({ collection: 'financial_transfers', id: item.id, kind: 'delete' })),
+        ...safePluggyTransactions
+          .map(item => ({ collection: 'financial_transactions', id: item.id, kind: 'delete' })),
+        ...safePluggyBills
+          .map(item => ({ collection: 'financial_bills', id: item.id, kind: 'delete' })),
+        ...pluggyInstallments
+          .map(item => ({ collection: 'financial_installments', id: item.id, kind: 'delete' })),
+        ...pluggyPurchases
+          .map(item => ({ collection: 'financial_purchases', id: item.id, kind: 'delete' })),
+        ...safePluggyCards
+          .map(item => ({ collection: 'financial_cards', id: item.id, kind: 'delete' })),
+        ...safePluggyInbox
+          .map(item => ({ collection: 'financial_inbox', id: item.id, kind: 'delete' })),
+        ...safePluggyAccounts
+          .map(item => ({ collection: 'financial_accounts', id: item.id, kind: 'delete' })),
+      ];
 
-      const billIdsToDelete = pluggyBills.map(bill => bill.id);
-      for (let start = 0; start < billIdsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        billIdsToDelete.slice(start, start + 400).forEach(id => {
-          batch.delete(docPath(db, 'financial_bills', id));
-        });
-        await batch.commit();
-      }
-
-      const installmentIdsToDelete = pluggyInstallments.map(item => item.id);
-      for (let start = 0; start < installmentIdsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        pluggyInstallments.slice(start, start + 400).forEach(item => {
-          batch.delete(docPath(db, 'financial_installments', item.id));
-        });
-        await batch.commit();
-      }
-
-      const purchaseIdsToDelete = pluggyPurchases.map(item => item.id);
-      for (let start = 0; start < purchaseIdsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        pluggyPurchases.slice(start, start + 400).forEach(item => {
-          batch.delete(docPath(db, 'financial_purchases', item.id));
-        });
-        await batch.commit();
-      }
-
-      const cardIdsToDelete = pluggyCards.map(card => card.id);
-      for (let start = 0; start < cardIdsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        cardIdsToDelete.slice(start, start + 400).forEach(id => {
-          batch.delete(docPath(db, 'financial_cards', id));
-        });
-        await batch.commit();
-      }
-
-      const inboxIdsToDelete = pluggyInbox.map(item => item.id);
-      for (let start = 0; start < inboxIdsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        inboxIdsToDelete.slice(start, start + 400).forEach(id => {
-          batch.delete(docPath(db, 'financial_inbox', id));
-        });
-        await batch.commit();
-      }
-
-      const accountIdsToDelete = pluggyAccounts.map(account => account.id);
-      for (let start = 0; start < accountIdsToDelete.length; start += 400) {
-        const batch = writeBatch(db);
-        accountIdsToDelete.slice(start, start + 400).forEach(id => {
-          batch.delete(docPath(db, 'financial_accounts', id));
-        });
-        await batch.commit();
-      }
+      await commitCleanupOperations(
+        deleteOperations,
+        'Dados sincronizados removidos. Finalizando...'
+      );
 
       if (deleteRemote) {
-        await deleteDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`));
+        // Só revoga no Pluggy depois de concluir a remoção local.
+        const response = await fetch('/.netlify/functions/pluggy-delete-item', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            itemId: connection.itemId,
+            clientUserId: connection.clientUserId
+              || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Os dados locais foram removidos, mas não foi possível revogar a conexão no Pluggy.');
+        }
+
+        await deleteDoc(
+          docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`)
+        );
+
         setModal(null);
         setNotice(
-          `Conexão ${connection.connectorName || 'bancária'} excluída e autorização revogada no Pluggy. Os dados sincronizados desta conexão também foram removidos. Agora você pode reconectar o banco pelo Meu Pluggy.`
+          `Conexão ${connection.connectorName || 'bancária'} excluída. Os dados sincronizados foram removidos e a autorização no Pluggy foi revogada.`
         );
       } else {
         setModal(null);
         setNotice(
           `Dados sincronizados de ${connection.connectorName || 'este banco'} excluídos: ` +
-          `${pluggyTransactions.length} lançamento(s), ` +
-          `${pluggyBills.length} fatura(s), ` +
-          `${pluggyCards.length} cartão(ões), ` +
-          `${pluggyAccounts.length} conta(s), ` +
-          `${pluggyInbox.length} item(ns) de Atenção e ` +
-          `${autoPluggyTransfers.length} transferência(s) automática(s). ` +
+          `${safePluggyTransactions.length} lançamento(s), ` +
+          `${safePluggyBills.length} fatura(s), ` +
+          `${safePluggyCards.length} cartão(ões), ` +
+          `${safePluggyAccounts.length} conta(s), ` +
+          `${safePluggyInbox.length} item(ns) de Atenção e ` +
+          `${safeAutoPluggyTransfers.length} transferência(s) automática(s). ` +
           `Cadastros manuais de outros bancos foram preservados.`
         );
       }
     } catch (err) {
-      setNotice(err.message || 'Não foi possível excluir os dados sincronizados deste banco.');
+      console.error('[ArquiManager] Falha ao limpar dados Pluggy:', err);
+      setNotice(
+        err?.message
+          ? 'Falha na limpeza: ' + err.message
+          : 'Não foi possível excluir os dados sincronizados deste banco.'
+      );
     } finally {
       setBusy(false);
     }
@@ -3217,9 +3205,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       connection,
       pluggyTransactions: [],
       pluggyAccounts: [],
+      pluggyCards: [],
+      pluggyBills: [],
       pluggyInbox: [],
       autoPluggyTransfers: [],
       pluggyTransactionIds: new Set(),
+      pluggyCardIds: new Set(),
+      pluggyBillIds: new Set(),
     };
 
     await executeClearPluggyConnection(scope, { deleteRemote: true });

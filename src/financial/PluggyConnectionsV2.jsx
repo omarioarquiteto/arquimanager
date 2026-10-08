@@ -310,14 +310,33 @@ export default function PluggyConnectionsV2({
     const creditTransactions = Array.isArray(data.creditTransactions) ? data.creditTransactions : [];
     const rawBills = Array.isArray(data.bills) ? data.bills : [];
 
-    const [transactionSnapshot, rulesSnapshot] = await Promise.all([
-      getDocs(coll(db, 'financial_transactions')),
-      getDocs(coll(db, 'financial_rules')),
+    const [transactionSnapshot, rulesSnapshot, inboxSnapshot] = await Promise.all([
+      getDocs(query(
+        coll(db, 'financial_transactions'),
+        where('providerItemId', '==', itemId)
+      )),
+      getDocs(query(
+        coll(db, 'financial_rules'),
+        where('companyId', '==', companyId)
+      )),
+      getDocs(query(
+        coll(db, 'financial_inbox'),
+        where('source', '==', PLUGGY_SOURCE)
+      )),
     ]);
 
     const existingTransactions = transactionSnapshot.docs
       .map(item => ({ id: item.id, ...item.data() }))
-      .filter(item => item.companyId === companyId);
+      .filter(item =>
+        item.companyId === companyId
+        && (
+          item.providerItemId === itemId
+          || (
+            item.source === PLUGGY_SOURCE
+            && item.providerItemId === itemId
+          )
+        )
+      );
 
     const existingById = new Map(existingTransactions.map(item => [item.id, item]));
     const ruleMap = safeRuleMap(
@@ -507,7 +526,6 @@ export default function PluggyConnectionsV2({
 
     // Remove itens de Atenção criados pela nova integração quando o lançamento
     // agora tem classificação automática ou já não está mais pendente.
-    const inboxSnapshot = await getDocs(coll(db, 'financial_inbox'));
     const inboxOperations = [];
 
     inboxSnapshot.docs.forEach(item => {

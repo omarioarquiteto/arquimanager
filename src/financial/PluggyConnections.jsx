@@ -39,6 +39,8 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
   const [busyId, setBusyId] = useState('');
   const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState('');
+  const [syncProgress, setSyncProgress] = useState(null);
+  const [displayProgress, setDisplayProgress] = useState(0);
   const widgetRef = useRef(null);
 
   const appClientUserId = appUser?.id ? `arquimanager:${appUser.id}` : '';
@@ -56,6 +58,35 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
     try { widgetRef.current?.destroy?.(); } catch {}
     widgetRef.current = null;
   }, []);
+
+  useEffect(() => {
+    if (!syncProgress) {
+      setDisplayProgress(0);
+      return undefined;
+    }
+
+    const reported = Math.max(0, Math.min(100, Number(syncProgress.percent || 0)));
+    setDisplayProgress(current => Math.max(current, reported));
+
+    const target = Math.min(97, Math.max(reported, reported + 8));
+    if (reported >= 100 || displayProgress >= target) return undefined;
+
+    const timer = window.setInterval(() => {
+      setDisplayProgress(current => {
+        if (current >= target || current >= 97) {
+          window.clearInterval(timer);
+          return current;
+        }
+        return Math.min(target, current + 1);
+      });
+    }, 700);
+
+    return () => window.clearInterval(timer);
+  }, [syncProgress, displayProgress]);
+
+  const clearSyncProgressSoon = () => {
+    window.setTimeout(() => setSyncProgress(null), 900);
+  };
 
   const requestToken = async (itemId = null) => {
     const response = await fetch('/.netlify/functions/pluggy-connect-token', {
@@ -106,6 +137,13 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
   const refreshMeuPluggyConnections = async () => {
     setError('');
     setDiscovering(true);
+    setBusyId('refresh');
+    setSyncProgress({
+      percent: 0,
+      status: 'Localizando conexões do Meu Pluggy...',
+      connectionName: 'Meu Pluggy',
+    });
+    setDisplayProgress(0);
 
     try {
       const items = await discoverMeuPluggyConnections();
@@ -127,11 +165,20 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
       // Uma autorização por banco, mas sincronização de todos os proxy Items
       // já autorizados. Processamos sequencialmente para evitar concorrência
       // desnecessária com o Firestore e com os limites da API.
-      for (const item of items) {
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
         if (!item?.id) continue;
 
         const current = currentByItemId.get(item.id);
         const connectionData = connectionDataFromItem(item);
+        const basePercent = (index / items.length) * 100;
+        const itemSpan = 100 / items.length;
+
+        setSyncProgress({
+          percent: Math.round(basePercent + itemSpan * 0.02),
+          status: 'Preparando ' + (connectionData.connectorName || 'banco') + '...',
+          connectionName: connectionData.connectorName || 'Banco',
+        });
 
         await onSaveConnection?.({
           ...current,
@@ -141,16 +188,36 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         if (!current) newConnections += 1;
 
         if (onSyncConnection) {
-          await onSyncConnection(connectionData);
+          await onSyncConnection(connectionData, (progress) => {
+            const localPercent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
+            setSyncProgress({
+              percent: Math.round(basePercent + (localPercent / 100) * itemSpan),
+              status: progress?.status || 'Sincronizando...',
+              connectionName: connectionData.connectorName || 'Banco',
+            });
+          });
           syncedConnections += 1;
         }
+
+        setSyncProgress({
+          percent: Math.round(basePercent + itemSpan),
+          status: (connectionData.connectorName || 'Banco') + ' sincronizado.',
+          connectionName: connectionData.connectorName || 'Banco',
+        });
       }
 
       setError('');
       const newText = newConnections
         ? `${newConnections} conexão(ões) nova(s)`
         : 'nenhuma conexão nova';
+      setSyncProgress({
+        percent: 100,
+        status: 'Sincronização do Meu Pluggy concluída.',
+        connectionName: 'Meu Pluggy',
+      });
+      setDisplayProgress(100);
       setBusyId('');
+      clearSyncProgressSoon();
       // O parent grava o resultado no Firestore; o snapshot atualiza a lista.
       console.info('[ArquiManager] Meu Pluggy atualizado:', {
         total: items.length,
@@ -182,6 +249,40 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
       }
     } finally {
       setDiscovering(false);
+      setBusyId('');
+    }
+  };
+
+  const syncConnection = async (connection) => {
+    if (!connection?.itemId || !onSyncConnection) return;
+
+    setError('');
+    setBusyId(connection.itemId);
+    setSyncProgress({
+      percent: 0,
+      status: 'Preparando sincronização...',
+      connectionName: connection.connectorName || 'Banco',
+    });
+    setDisplayProgress(0);
+
+    try {
+      await onSyncConnection(connection, (progress) => {
+        setSyncProgress({
+          percent: Math.max(0, Math.min(100, Number(progress?.percent || 0))),
+          status: progress?.status || 'Sincronizando...',
+          connectionName: connection.connectorName || 'Banco',
+        });
+      });
+
+      setSyncProgress({
+        percent: 100,
+        status: 'Sincronização concluída.',
+        connectionName: connection.connectorName || 'Banco',
+      });
+      setDisplayProgress(100);
+    } finally {
+      setBusyId('');
+      clearSyncProgressSoon();
     }
   };
 
@@ -275,6 +376,34 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         <strong>Meu Pluggy:</strong> C6, Nubank, Mercado Pago e outros bancos podem coexistir. O Arksuper não assume que o primeiro banco conectado é o único; ele procura todos os proxy Items autorizados para o seu usuário.
       </div>
 
+      {syncProgress && (
+        <div className="p-4 rounded-2xl bg-blue-50 border border-blue-100">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="min-w-0">
+              <p className="text-xs font-black text-blue-900 truncate">
+                {syncProgress.connectionName || 'Meu Pluggy'}
+              </p>
+              <p className="text-[10px] font-bold text-blue-700 truncate">
+                {syncProgress.status || 'Sincronizando...'}
+              </p>
+            </div>
+            <span className="text-lg font-black text-blue-800 tabular-nums">
+              {Math.min(100, Math.max(0, Math.round(displayProgress)))}%
+            </span>
+          </div>
+          <div className="h-3 bg-white/80 border border-blue-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full bg-[#1e5aa0] transition-all duration-500 ease-out"
+              style={{ width: (Math.min(100, Math.max(0, displayProgress)) + '%') }}
+            />
+          </div>
+          <div className="flex items-center justify-between mt-2 text-[9px] font-bold text-blue-600">
+            <span>Processando dados do banco</span>
+            <span>Os controles serão liberados ao finalizar.</span>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-100 text-red-700 text-xs font-bold">
           <XCircle size={17} className="shrink-0 mt-0.5"/>
@@ -311,8 +440,8 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
                 </span>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => onSyncConnection?.(connection)}
-                    disabled={busyId !== '' || busy}
+                    onClick={() => syncConnection(connection)}
+                    disabled={busyId !== '' || discovering || busy}
                     className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
                   >
                     <RefreshCw size={14}/>

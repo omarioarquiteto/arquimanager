@@ -3174,28 +3174,45 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return scope;
   };
 
-  const requestClearPluggyConnection = (connection) => {
+  const requestClearPluggyConnection = async (connection) => {
     if (!connection?.itemId) {
       setNotice('Não foi possível identificar o banco selecionado.');
       return;
     }
 
-    // A abertura da confirmação usa o snapshot local, que já é instantâneo.
-    // A exclusão final relê o Firestore para garantir que o escopo esteja atual.
-    const scope = getPluggyCleanupScope(connection);
+    const hasData = (scope) => Boolean(
+      scope && (
+        scope.pluggyTransactions.length
+        || scope.pluggyAccounts.length
+        || scope.pluggyCards.length
+        || scope.pluggyBills.length
+        || scope.pluggyInbox.length
+        || scope.autoPluggyTransfers.length
+      )
+    );
+
+    let scope = getPluggyCleanupScope(connection);
+
+    // Na situação normal o snapshot local já está disponível e a confirmação
+    // abre imediatamente. Se ele estiver vazio/defasado, fazemos uma única
+    // releitura do Firestore para não declarar falsamente que o banco está vazio.
+    if (!hasData(scope)) {
+      setBusy(true);
+      try {
+        scope = await loadFreshPluggyCleanupScope(connection);
+      } catch (err) {
+        console.error('[ArquiManager] Falha ao reler dados para limpeza Pluggy:', err);
+      } finally {
+        setBusy(false);
+      }
+    }
+
     if (!scope) {
       setNotice('Não foi possível identificar os dados sincronizados deste banco.');
       return;
     }
 
-    if (
-      !scope.pluggyTransactions.length
-      && !scope.pluggyAccounts.length
-      && !scope.pluggyCards.length
-      && !scope.pluggyBills.length
-      && !scope.pluggyInbox.length
-      && !scope.autoPluggyTransfers.length
-    ) {
+    if (!hasData(scope)) {
       setNotice(`Não há dados sincronizados da Pluggy para ${connection.connectorName || 'este banco'}.`);
       return;
     }
@@ -3218,20 +3235,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     const connection = scope.connection;
     const deleteRemote = Boolean(options.deleteRemote);
-    const safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
-    const safePluggyCardIds = scope.pluggyCardIds instanceof Set
+    let safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
+    let safePluggyCardIds = scope.pluggyCardIds instanceof Set
       ? scope.pluggyCardIds
       : new Set(safePluggyCards.map(card => card.id).filter(Boolean));
-    const safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
+    let safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
       ? scope.pluggyTransactions
       : [];
-    const safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
+    let safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
       ? scope.pluggyTransactionIds
       : new Set(safePluggyTransactions.map(tx => tx.id).filter(Boolean));
-    const safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
-    const safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
-    const safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
-    const safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
+    let safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
+    let safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
+    let safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
+    let safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
       ? scope.autoPluggyTransfers
       : [];
 
@@ -3295,6 +3312,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         console.error('[ArquiManager] Falha ao reler escopo antes da limpeza Pluggy:', freshError);
         // Mantém o escopo já calculado como fallback.
       }
+
+      // Todos os conjuntos auxiliares precisam refletir o escopo fresco.
+      safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
+      safePluggyCardIds = scope.pluggyCardIds instanceof Set
+        ? scope.pluggyCardIds
+        : new Set(safePluggyCards.map(card => card.id).filter(Boolean));
+      safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
+        ? scope.pluggyTransactions
+        : [];
+      safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
+        ? scope.pluggyTransactionIds
+        : new Set(safePluggyTransactions.map(tx => tx.id).filter(Boolean));
+      safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
+      safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
+      safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
+      safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
+        ? scope.autoPluggyTransfers
+        : [];
 
       // O escopo fresco já contém compras/parcelas quando disponíveis.
       // Mantemos os snapshots abaixo apenas para compatibilidade com escopos legados.

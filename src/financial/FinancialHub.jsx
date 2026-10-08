@@ -1736,10 +1736,18 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           headers: { 'content-type': 'application/json' },
           signal: controller.signal,
           body: JSON.stringify({
-          itemId: connection.itemId,
-          clientUserId: connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
-        }),
-      });
+            itemId: connection.itemId,
+            clientUserId: connection.clientUserId || (appUser?.id ? `arquimanager:${appUser.id}` : ''),
+          }),
+        });
+      } catch (fetchError) {
+        if (fetchError?.name === 'AbortError') {
+          throw new Error('A sincronização excedeu 3 minutos. O processo foi interrompido para liberar os controles. Tente novamente; a sincronização é protegida contra duplicidades.');
+        }
+        throw fetchError;
+      } finally {
+        window.clearTimeout(syncTimeout);
+      }
 
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Não foi possível sincronizar o banco.');

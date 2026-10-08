@@ -2975,6 +2975,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         pluggyInbox,
         autoPluggyTransfers,
         pluggyTransactionIds,
+        pluggyCardIds,
       } = scope;
 
       const purchaseSnapshot = await getDocs(collectionPath(db, 'financial_purchases'));
@@ -3000,7 +3001,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         if (tx.receivableId) affectedReceivableAmounts.set(tx.receivableId, (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount);
       });
 
-      for (const [amount, billId] of affectedBillAmounts.entries()) {
+      for (const [billId, amount] of affectedBillAmounts.entries()) {
         const bill = bills.find(item => item.id === billId);
         if (!bill) continue;
         const nextPaid = Math.max(0, Number(bill.paidCents || 0) - amount);
@@ -3016,7 +3017,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         await updateDoc(docPath(db, 'financial_bills', billId), billChange);
       }
 
-      for (const [amount, payableId] of affectedPayableAmounts.entries()) {
+      for (const [payableId, amount] of affectedPayableAmounts.entries()) {
         const payable = payables.find(item => item.id === payableId);
         if (!payable) continue;
         const nextPaid = Math.max(0, Number(payable.paidCents || 0) - amount);
@@ -3032,7 +3033,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         await updateDoc(docPath(db, 'financial_payables', payableId), payableChange);
       }
 
-      for (const [amount, receivableId] of affectedReceivableAmounts.entries()) {
+      for (const [receivableId, amount] of affectedReceivableAmounts.entries()) {
         const receivable = receivables.find(item => item.id === receivableId);
         if (!receivable) continue;
         const nextReceived = Math.max(0, Number(receivable.receivedCents || 0) - amount);

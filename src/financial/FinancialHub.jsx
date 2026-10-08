@@ -899,6 +899,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     const currentBill = tx.billId ? bills.find(item => item.id === tx.billId) : null;
     const baseChanges = {
+      description: data.description?.trim() || tx.description || '',
+      merchant: data.merchant?.trim() || tx.merchant || data.description?.trim() || tx.description || '',
+      normalizedMerchant: normalizeText(data.merchant?.trim() || tx.merchant || data.description?.trim() || tx.description || ''),
       categoryId: data.categoryId || null,
       projectId: data.projectId || null,
       clientId: data.clientId || null,
@@ -1361,6 +1364,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           updatedAt: serverTimestamp(),
         }, { merge: true });
       }
+    }
+
+    // Propaga a última classificação/observação do lançamento para as
+    // parcelas futuras que já foram projetadas na mesma série.
+    const retainedSeries = existingSeries.filter(item => {
+      const installment = Number(item.creditCardInstallmentNumber || 0);
+      return installment > currentNumber && installment <= total;
+    });
+    for (const projected of retainedSeries) {
+      await updateDoc(docPath(db, 'financial_transactions', projected.id), {
+        description: description || projected.description || 'Compra parcelada',
+        merchant: merchant || projected.merchant || description || 'Compra parcelada',
+        normalizedMerchant: normalizeText(merchant || projected.merchant || description || 'Compra parcelada'),
+        categoryId: categoryId || null,
+        projectId: projectId || null,
+        notes: notes || '',
+        updatedAt: serverTimestamp(),
+      });
     }
 
     await updateDoc(docPath(db, 'financial_transactions', tx.id), {

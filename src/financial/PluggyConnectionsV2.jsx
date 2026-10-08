@@ -113,6 +113,101 @@ const batchWrite = async (db, operations, chunkSize = 350) => {
   }
 };
 
+const purgePreviousPluggyIntegration = async (db, companyId, itemId) => {
+  const legacyQueries = await Promise.all([
+    getDocs(query(coll(db, 'financial_accounts'), where('providerItemId', '==', itemId))),
+    getDocs(query(coll(db, 'financial_cards'), where('providerItemId', '==', itemId))),
+    getDocs(query(coll(db, 'financial_bills'), where('providerItemId', '==', itemId))),
+    getDocs(query(coll(db, 'financial_transactions'), where('providerItemId', '==', itemId))),
+    getDocs(query(coll(db, 'financial_purchases'), where('providerItemId', '==', itemId))),
+    getDocs(query(coll(db, 'financial_sync_runs'), where('itemId', '==', itemId))),
+  ]);
+
+  const [accountSnapshot, cardSnapshot, billSnapshot, transactionSnapshot, purchaseSnapshot, syncRunSnapshot] = legacyQueries;
+  const legacy = (snapshot) => snapshot.docs
+    .map(item => ({ id: item.id, ...item.data() }))
+    .filter(item => item.companyId === companyId && item.source !== PLUGGY_SOURCE);
+
+  const legacyAccounts = legacy(accountSnapshot);
+  const legacyCards = legacy(cardSnapshot);
+  const legacyBills = legacy(billSnapshot);
+  const legacyTransactions = legacy(transactionSnapshot).filter(item =>
+    item.source === 'PLUGGY' || item.source === 'PLUGGY_PROJECTION' || item.provider === 'PLUGGY'
+  );
+  const legacyPurchases = legacy(purchaseSnapshot);
+  const legacySyncRuns = syncRunSnapshot.docs
+    .map(item => ({ id: item.id, ...item.data() }))
+    .filter(item => item.companyId === companyId && item.source !== PLUGGY_SOURCE);
+
+  const transactionIds = new Set(legacyTransactions.map(item => String(item.id)));
+  const purchaseIds = new Set(legacyPurchases.map(item => String(item.id)));
+
+  const transactionIdGroups = [];
+  const transactionIdList = Array.from(transactionIds);
+  for (let index = 0; index < transactionIdList.length; index += 30) {
+    transactionIdGroups.push(transactionIdList.slice(index, index + 30));
+  }
+
+  const purchaseIdGroups = [];
+  const purchaseIdList = Array.from(purchaseIds);
+  for (let index = 0; index < purchaseIdList.length; index += 30) {
+    purchaseIdGroups.push(purchaseIdList.slice(index, index + 30));
+  }
+
+  const inboxSnapshots = transactionIdGroups.length
+    ? await Promise.all(transactionIdGroups.map(ids =>
+        getDocs(query(coll(db, 'financial_inbox'), where('transactionId', 'in', ids)))
+      ))
+    : [];
+  const transferOutgoingSnapshots = transactionIdGroups.length
+    ? await Promise.all(transactionIdGroups.map(ids =>
+        getDocs(query(coll(db, 'financial_transfers'), where('outgoingTransactionId', 'in', ids)))
+      ))
+    : [];
+  const transferIncomingSnapshots = transactionIdGroups.length
+    ? await Promise.all(transactionIdGroups.map(ids =>
+        getDocs(query(coll(db, 'financial_transfers'), where('incomingTransactionId', 'in', ids)))
+      ))
+    : [];
+  const installmentSnapshots = purchaseIdGroups.length
+    ? await Promise.all(purchaseIdGroups.map(ids =>
+        getDocs(query(coll(db, 'financial_installments'), where('purchaseId', 'in', ids)))
+      ))
+    : [];
+
+  const legacyInbox = inboxSnapshots.flatMap(snapshot =>
+    snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
+  ).filter(item => item.companyId === companyId);
+  const legacyTransfers = [
+    ...transferOutgoingSnapshots.flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() }))),
+    ...transferIncomingSnapshots.flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() }))),
+  ].filter(item => item.companyId === companyId && item.source === 'AUTO_RECONCILIATION')
+   .reduce((map, item) => map.set(item.id, item), new Map());
+  const legacyInstallments = installmentSnapshots.flatMap(snapshot =>
+    snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
+  ).filter(item => item.companyId === companyId);
+
+  const operations = [
+    ...legacyTransfers.keys().map(id => ({ collection: 'financial_transfers', id, type: 'delete' })),
+    ...legacyTransactions.map(item => ({ collection: 'financial_transactions', id: item.id, type: 'delete' })),
+    ...legacyBills.map(item => ({ collection: 'financial_bills', id: item.id, type: 'delete' })),
+    ...legacyInstallments.map(item => ({ collection: 'financial_installments', id: item.id, type: 'delete' })),
+    ...legacyPurchases.map(item => ({ collection: 'financial_purchases', id: item.id, type: 'delete' })),
+    ...legacyInbox.map(item => ({ collection: 'financial_inbox', id: item.id, type: 'delete' })),
+    ...legacyCards.map(item => ({ collection: 'financial_cards', id: item.id, type: 'delete' })),
+    ...legacyAccounts.map(item => ({ collection: 'financial_accounts', id: item.id, type: 'delete' })),
+    ...legacySyncRuns.map(item => ({ collection: 'financial_sync_runs', id: item.id, type: 'delete' })),
+  ];
+
+  if (operations.length) await batchWrite(db, operations);
+  return {
+    transactions: legacyTransactions.length,
+    accounts: legacyAccounts.length,
+    cards: legacyCards.length,
+    bills: legacyBills.length,
+  };
+};
+
 const financialAmount = (transaction) =>
   Math.abs(Number(transaction?.amountInAccountCurrency ?? transaction?.amount ?? 0));
 
@@ -303,6 +398,7 @@ export default function PluggyConnectionsV2({
   };
 
   const materialize = async (connection, data) => {
+    await purgePreviousPluggyIntegration(db, companyId, connection.itemId);
     const itemId = connection.itemId;
     const bankAccounts = Array.isArray(data.bankAccounts) ? data.bankAccounts : [];
     const creditAccounts = Array.isArray(data.creditAccounts) ? data.creditAccounts : [];

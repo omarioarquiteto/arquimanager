@@ -106,7 +106,7 @@ export const pluggyRequest = async ({
 const sanitize = (value, key = '') => {
   const normalizedKey = String(key)
     .normalize('NFD')
-    .replace(/[\\u0300-\\u036f]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
 
@@ -128,12 +128,12 @@ const sanitize = (value, key = '') => {
     for (const [childKey, childValue] of Object.entries(value)) {
       const childNormalized = String(childKey)
         .normalize('NFD')
-        .replace(/[\\u0300-\\u036f]/g, '')
+        .replace(/[\u0300-\u036f]/g, '')
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '');
 
       if (childNormalized === 'cardnumber' || childNormalized === 'card_number') {
-        const digits = String(childValue || '').replace(/\\D/g, '');
+        const digits = String(childValue || '').replace(/\D/g, '');
         output[childKey] = digits ? digits.slice(-4) : null;
         continue;
       }

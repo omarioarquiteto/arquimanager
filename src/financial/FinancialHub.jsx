@@ -5,7 +5,7 @@ import {
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
-  ChevronRight, CircleAlert, FileUp, Filter, Landmark, Pencil, Plus, RefreshCw, Search,
+  ChevronRight, CircleAlert, DollarSign, FileUp, Filter, Landmark, Pencil, Plus, RefreshCw, Search,
   Sparkles, Tags, Trash2, WalletCards, X
 } from 'lucide-react';
 import {

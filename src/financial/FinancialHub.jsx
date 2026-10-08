@@ -2835,17 +2835,35 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       && account.providerItemId === connection.itemId
     );
 
-    const bankAccountIds = new Set(
+    const providerAccountIds = new Set(
       pluggyAccounts.map(account => account.providerAccountId).filter(Boolean)
     );
     const financialAccountIds = new Set(pluggyAccounts.map(account => account.id));
+
+    const pluggyCards = cards.filter(card =>
+      card.companyId === companyId
+      && card.provider === 'PLUGGY'
+      && card.providerItemId === connection.itemId
+    );
+    const pluggyCardIds = new Set(pluggyCards.map(card => card.id));
+
+    const pluggyBills = bills.filter(bill =>
+      bill.companyId === companyId
+      && (
+        bill.providerItemId === connection.itemId
+        || pluggyCardIds.has(bill.cardId)
+      )
+    );
+    const pluggyBillIds = new Set(pluggyBills.map(bill => bill.id));
 
     const pluggyTransactions = transactions.filter(tx =>
       tx.companyId === companyId
       && (
         tx.providerItemId === connection.itemId
-        || (tx.providerAccountId && bankAccountIds.has(tx.providerAccountId))
+        || (tx.providerAccountId && providerAccountIds.has(tx.providerAccountId))
         || (tx.accountId && financialAccountIds.has(tx.accountId))
+        || (tx.cardId && pluggyCardIds.has(tx.cardId))
+        || (tx.billId && pluggyBillIds.has(tx.billId))
       )
     );
 
@@ -2869,9 +2887,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       connection,
       pluggyTransactions,
       pluggyAccounts,
+      pluggyCards,
+      pluggyBills,
       pluggyInbox,
       autoPluggyTransfers,
       pluggyTransactionIds,
+      pluggyCardIds,
+      pluggyBillIds,
     };
   };
 
@@ -2885,6 +2907,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (
       !scope.pluggyTransactions.length
       && !scope.pluggyAccounts.length
+      && !scope.pluggyCards.length
+      && !scope.pluggyBills.length
       && !scope.pluggyInbox.length
       && !scope.autoPluggyTransfers.length
     ) {
@@ -2929,6 +2953,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         connection,
         pluggyTransactions,
         pluggyAccounts,
+        pluggyCards,
+        pluggyBills,
         pluggyInbox,
         autoPluggyTransfers,
         pluggyTransactionIds,
@@ -3007,6 +3033,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const batch = writeBatch(db);
         idsToDelete.slice(start, start + 400).forEach(id => {
           batch.delete(docPath(db, 'financial_transactions', id));
+        });
+        await batch.commit();
+      }
+
+      const billIdsToDelete = pluggyBills.map(bill => bill.id);
+      for (let start = 0; start < billIdsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        billIdsToDelete.slice(start, start + 400).forEach(id => {
+          batch.delete(docPath(db, 'financial_bills', id));
+        });
+        await batch.commit();
+      }
+
+      const cardIdsToDelete = pluggyCards.map(card => card.id);
+      for (let start = 0; start < cardIdsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        cardIdsToDelete.slice(start, start + 400).forEach(id => {
+          batch.delete(docPath(db, 'financial_cards', id));
         });
         await batch.commit();
       }

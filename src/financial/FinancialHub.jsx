@@ -1264,8 +1264,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       && item?.cardId === card.id
     );
 
-    const existingSeriesByInstallment = new Map(existingSeries.map(item => [Number(item.creditCardInstallmentNumber || 0), item]));
-
     for (let installment = currentNumber + 1; installment <= total; installment += 1) {
       const offset = installment - currentNumber;
       const dueDate = addMonthsToIsoDate(baseDueDate, offset);
@@ -1285,10 +1283,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const projectionSnap = await getDoc(projectionRef);
       const existingProjection = projectionSnap.exists() ? { id: projectionId, ...projectionSnap.data() } : null;
 
-      const projectedCents = Number(existingBill?.projectedCents || 0);
+      const hasBillBreakdown = existingBill && (
+        Object.prototype.hasOwnProperty.call(existingBill, 'officialTotalCents')
+        || Object.prototype.hasOwnProperty.call(existingBill, 'projectedCents')
+      );
+      const legacyTotal = Number(existingBill?.totalCents || 0);
+      const officialTotal = Number(
+        existingBill?.officialTotalCents
+        ?? (existingBill?.provisional === false ? legacyTotal : 0)
+      );
+      const projectedCents = Number(
+        existingBill?.projectedCents
+        ?? (hasBillBreakdown ? 0 : (existingBill?.provisional === false ? 0 : legacyTotal))
+      );
       const delta = existingProjection ? 0 : Number(amountCents || 0);
       const nextProjected = projectedCents + delta;
-      const officialTotal = Number(existingBill?.officialTotalCents || 0);
       const totalCents = officialTotal + nextProjected;
 
       await setDoc(billRef, {
@@ -1557,7 +1566,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       await setDoc(docPath(db, 'financial_transactions', localTransactionId), {
         ...normalized,
-        id: undefined,
         accountId: card.id,
         financialAccountId: card.id,
         cardId: card.id,

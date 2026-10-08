@@ -856,6 +856,7 @@ export default function PluggyConnectionsV2({
       transactionsSnapshot,
       inboxSnapshot,
       purchasesSnapshot,
+      syncRunsSnapshot,
       connectionSnapshot,
     ] = await Promise.all([
       getDocs(query(coll(db, 'financial_accounts'), where('providerItemId', '==', itemId))),
@@ -864,6 +865,7 @@ export default function PluggyConnectionsV2({
       getDocs(query(coll(db, 'financial_transactions'), where('providerItemId', '==', itemId))),
       getDocs(query(coll(db, 'financial_inbox'), where('source', '==', PLUGGY_SOURCE))),
       getDocs(query(coll(db, 'financial_purchases'), where('providerItemId', '==', itemId))),
+      getDocs(query(coll(db, 'financial_sync_runs'), where('itemId', '==', itemId))),
       getDoc(itemRef),
     ]);
 
@@ -1002,6 +1004,10 @@ export default function PluggyConnectionsV2({
         ).filter(item => item.companyId === companyId)
       : [];
 
+    const syncRuns = syncRunsSnapshot.docs
+      .map(item => ({ id: item.id, ...item.data() }))
+      .filter(item => item.companyId === companyId && String(item.itemId || '') === itemId);
+
     // Registros antigos da integração anterior só entram na limpeza quando
     // possuem o mesmo providerItemId ou estão encadeados por uma entidade
     // claramente pertencente a este Item. A nova integração nunca depende deles.
@@ -1028,6 +1034,7 @@ export default function PluggyConnectionsV2({
       providerConnections,
       purchases,
       installments,
+      syncRuns,
     };
   };
 
@@ -1149,6 +1156,11 @@ export default function PluggyConnectionsV2({
         id: item.id,
         type: 'delete',
       })),
+      ...(scope.syncRuns || []).map(item => ({
+        collection: 'financial_sync_runs',
+        id: item.id,
+        type: 'delete',
+      })),
     ];
 
     await batchWrite(db, deleteOps);
@@ -1159,6 +1171,7 @@ export default function PluggyConnectionsV2({
       accounts: scope.providerAccounts.length,
       inbox: scope.providerInbox.length,
       purchases: scope.purchases.length,
+      syncRuns: (scope.syncRuns || []).length,
     };
   };
 

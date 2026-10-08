@@ -2094,7 +2094,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }
       }
 
-      const TRANSACTION_CHUNK_SIZE = 50;
+      const TRANSACTION_CHUNK_SIZE = 20;
+      const TRANSACTION_CONCURRENCY = 4;
       const TRANSACTION_COMMIT_TIMEOUT = 30000;
 
       const commitBatchWithTimeout = async (batch, timeoutMs = TRANSACTION_COMMIT_TIMEOUT) => {
@@ -2117,34 +2118,66 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }
       };
 
+      const commitTransactionChunk = async (chunk) => {
+        if (!chunk.length) return;
+
+        let lastError = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const transactionBatch = writeBatch(db);
+          chunk.forEach(item => transactionBatch.set(item.ref, item.data));
+
+          try {
+            await commitBatchWithTimeout(transactionBatch);
+            return;
+          } catch (err) {
+            lastError = err;
+            const code = String(err?.code || '').toLowerCase();
+            const message = String(err?.message || '').toLowerCase();
+            const retryable = attempt === 1 && (
+              /unavailable|deadline|aborted|internal|resource-exhausted/.test(code)
+              || /unavailable|deadline|aborted|internal|resource-exhausted|temporarily|network/.test(message)
+            );
+            if (!retryable) break;
+            await yieldToBrowser();
+          }
+        }
+
+        throw lastError || new Error('Falha ao gravar movimentações no Firestore.');
+      };
+
       let committedTransactions = 0;
-      for (let startIndex = 0; startIndex < pendingTransactionWrites.length; startIndex += TRANSACTION_CHUNK_SIZE) {
-        const chunk = pendingTransactionWrites.slice(
-          startIndex,
-          startIndex + TRANSACTION_CHUNK_SIZE
+      const groupSize = TRANSACTION_CHUNK_SIZE * TRANSACTION_CONCURRENCY;
+
+      for (let groupStart = 0; groupStart < pendingTransactionWrites.length; groupStart += groupSize) {
+        const group = [];
+        for (let offset = 0; offset < TRANSACTION_CONCURRENCY; offset += 1) {
+          const startIndex = groupStart + (offset * TRANSACTION_CHUNK_SIZE);
+          if (startIndex >= pendingTransactionWrites.length) break;
+          group.push(pendingTransactionWrites.slice(startIndex, startIndex + TRANSACTION_CHUNK_SIZE));
+        }
+
+        const groupNumber = Math.floor(groupStart / groupSize) + 1;
+        const totalGroups = Math.ceil(pendingTransactionWrites.length / groupSize);
+        reportProgress(
+          48 + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18,
+          'Gravando movimentações: lote ' + groupNumber + '/' + totalGroups + '...'
         );
-        const transactionBatch = writeBatch(db);
-        chunk.forEach(item => transactionBatch.set(item.ref, item.data));
 
-        await commitBatchWithTimeout(transactionBatch);
+        await Promise.all(group.map(chunk => commitTransactionChunk(chunk)));
+        committedTransactions += group.reduce((sum, chunk) => sum + chunk.length, 0);
 
-        committedTransactions += chunk.length;
         const writeProgress = 48
           + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18;
         reportProgress(
           writeProgress,
-          'Gravando movimentações bancárias: ' +
-          committedTransactions + '/' + pendingTransactionWrites.length + '...'
+          'Movimentações gravadas: ' + committedTransactions + '/' + pendingTransactionWrites.length + '...'
         );
         await yieldToBrowser();
       }
 
-      console.info('[ArquiManager] Pluggy import prepared:', {
-        received: Array.isArray(data.transactions) ? data.transactions.length : 0,
-        newImported,
-        alreadyPresent,
+      console.info('[ArquiManager] Pluggy transactions committed:', {
+        total: committedTransactions,
       });
-
       reportProgress(66, 'Movimentações importadas. Processando conciliações...');
 
       // O pool local já contém os lançamentos novos, mesmo antes do onSnapshot

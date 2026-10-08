@@ -43,9 +43,24 @@ const getPluggyApiKey = async () => {
 };
 
 const pluggyGet = async (path, apiKey) => {
-  const response = await fetch(PLUGGY_API + path, {
-    headers: { 'X-API-KEY': apiKey },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  let response;
+
+  try {
+    response = await fetch(PLUGGY_API + path, {
+      headers: { 'X-API-KEY': apiKey },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`A Pluggy demorou mais de 30 segundos para responder à consulta ${path}. A sincronização foi interrompida para evitar travamento.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(data.message || data.codeDescription || `Falha Pluggy (${response.status}).`);

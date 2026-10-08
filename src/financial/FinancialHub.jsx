@@ -3788,7 +3788,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {modal?.type === 'billDetails' && modal.billId && <BillDetailsModal
         bill={bills.find(item => item.id === modal.billId)}
         card={cards.find(item => item.id === bills.find(bill => bill.id === modal.billId)?.cardId)}
-        transactions={transactions.filter(item => item.billId === modal.billId)}
+        transactions={transactions}
         categories={categories}
         onEditTransaction={openEditTransaction}
         onClose={() => setModal(null)}
@@ -4156,10 +4156,59 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
   );
 }
 
-function BillDetailsModal({ bill, card, transactions: billTransactions, categories, onEditTransaction, onClose }) {
+function BillDetailsModal({ bill, card, transactions: allTransactions, categories, onEditTransaction, onClose }) {
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
 
-  const sortedTransactions = [...billTransactions]
+  const providerBillId = String(bill.providerBillId || '').trim();
+  const isTransactionForThisBill = (tx = {}) => {
+    if (!isCreditCardTransaction(tx)) return false;
+
+    // Associação forte: id local da fatura.
+    if (tx.billId === bill.id) return true;
+
+    // Compatibilidade com registros que guardaram o id da fatura
+    // diretamente da Pluggy, em vez do id local do ArquiManager.
+    const txProviderBillId = String(
+      tx.providerBillId
+      || tx.creditCardBillId
+      || tx.providerRawData?.creditCardMetadata?.billId
+      || tx.providerRawData?.billId
+      || ''
+    ).trim();
+    if (providerBillId && txProviderBillId === providerBillId) return true;
+
+    const sameCard =
+      tx.cardId === card?.id
+      || tx.accountId === card?.id
+      || tx.providerAccountId === card?.providerAccountId;
+
+    if (!sameCard) return false;
+
+    // Antes da fatura oficial existir, a Pluggy pode informar somente a
+    // previsão do ciclo. Esse vínculo também deve continuar abrindo a linha
+    // correta da fatura depois que ela for sincronizada.
+    const forecastDate =
+      tx.creditCardBillForecastDate
+      || tx.providerRawData?.creditCardMetadata?.billForecastDate
+      || tx.providerRawData?.billForecastDate
+      || '';
+    if (monthFromIso(syncDateOnly(forecastDate)) === monthFromIso(bill.referenceMonth)) return true;
+
+    // Último fallback para projeções/lançamentos antigos que só possuem a
+    // data da compra e a referência mensal da fatura.
+    if (
+      bill.provisional
+      && !providerBillId
+      && monthFromIso(tx.creditCardPurchaseDate || tx.date) === monthFromIso(bill.referenceMonth)
+    ) {
+      return true;
+    }
+
+    return false;
+  };
+
+  const sortedTransactions = (Array.isArray(allTransactions) ? allTransactions : [])
+    .filter(isTransactionForThisBill)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 
   const total = Number(bill.totalCents || 0);

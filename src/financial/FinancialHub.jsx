@@ -1753,7 +1753,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       if (explicit) return explicit;
 
       const billId = String(tx?.billId || '');
-      const match = billId.match(/(\\d{4}-\\d{2})$/);
+      const match = billId.match(/(\d{4}-\d{2})$/);
       return match ? match[1] : '';
     };
 

@@ -2465,9 +2465,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       setNotice(
         `Pluggy sincronizado: ${detail}.${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`
       );
+      return { ok: true, detail };
     } catch (err) {
+      const errorMessage = err.message || 'Falha ao sincronizar a conexão Pluggy.';
       reportProgress(100, 'Sincronização interrompida.');
-      setNotice(err.message || 'Falha ao sincronizar a conexão Pluggy.');
+      setNotice(errorMessage);
+      return { ok: false, error: errorMessage };
     } finally {
       setBusy(false);
     }

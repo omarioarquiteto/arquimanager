@@ -1601,24 +1601,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       || ''
     ));
 
-    const rawTotalAmountCents = raw => {
-      const credit = raw?.creditCardMetadata || {};
-      const totalAmount = Number(
-        credit.totalAmount
-        ?? raw?.totalAmount
-        ?? 0
-      );
-      return totalAmount > 0 ? String(toCents(totalAmount)) : '';
-    };
-
     const creditSeriesKeyFromRaw = raw => [
       String(raw?.accountId || ''),
       rawCardLast4(raw),
       rawPurchaseDate(raw),
+      rawTransactionDateTime(raw),
       rawMerchantName(raw),
       String(rawTotalInstallments(raw)),
       rawPaymentType(raw) || (rawTotalInstallments(raw) > 1 ? 'INSTALLMENT' : 'SINGLE'),
-      rawTotalAmountCents(raw),
     ].join('|');
 
     const creditLooseSeriesKeyFromRaw = raw => [
@@ -1649,25 +1639,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ?? raw?.creditCardMetadata?.totalInstallments
         ?? 0
       );
-      const rawTotalAmount = Number(
-        tx?.creditCardTotalAmountCents
-        ?? (
-          Number(
-            raw?.creditCardTotalAmount
-            ?? raw?.creditCardMetadata?.totalAmount
-            ?? 0
-          ) > 0
-            ? toCents(
-                raw?.creditCardTotalAmount
-                ?? raw?.creditCardMetadata?.totalAmount
-              )
-            : 0
-        )
-      );
       return [
         String(tx?.providerAccountId || raw?.accountId || tx?.accountId || ''),
         String(tx?.creditCardLast4 || rawCardLast4(raw) || '').replace(/\D/g, '').slice(-4),
         syncDateOnly(tx?.creditCardPurchaseDate || raw?.creditCardMetadata?.purchaseDate || raw?.date || tx?.date),
+        String(tx?.creditCardTransactionDateTime || raw?.creditCardMetadata?.transactionDateTime || '').trim(),
         normalizeText(tx?.merchant || raw?.merchant?.name || raw?.merchant?.businessName || raw?.description || tx?.description || ''),
         String(total),
         String(
@@ -1677,7 +1653,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ).trim().toUpperCase().match(/INSTALL|A_PRAZO|PARCEL/)
           ? 'INSTALLMENT'
           : 'SINGLE',
-        rawTotalAmount > 0 ? String(rawTotalAmount) : '',
       ].join('|');
     };
 
@@ -1688,21 +1663,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ?? raw?.creditCardMetadata?.totalInstallments
         ?? 0
       );
-      const rawTotalAmount = Number(
-        tx?.creditCardTotalAmountCents
-        ?? (
-          Number(
-            raw?.creditCardTotalAmount
-            ?? raw?.creditCardMetadata?.totalAmount
-            ?? 0
-          ) > 0
-            ? toCents(
-                raw?.creditCardTotalAmount
-                ?? raw?.creditCardMetadata?.totalAmount
-              )
-            : 0
-        )
-      );
       return [
         String(tx?.providerAccountId || raw?.accountId || tx?.accountId || ''),
         String(tx?.creditCardLast4 || rawCardLast4(raw) || '').replace(/\D/g, '').slice(-4),
@@ -1716,7 +1676,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ).trim().toUpperCase().match(/INSTALL|A_PRAZO|PARCEL/)
           ? 'INSTALLMENT'
           : 'SINGLE',
-        rawTotalAmount > 0 ? String(rawTotalAmount) : '',
       ].join('|');
     };
 
@@ -2031,7 +1990,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         creditCardPaymentType: paymentType,
         creditCardPurchaseDate: purchaseDate || null,
         creditCardTransactionDateTime: rawTransaction.creditCardMetadata?.transactionDateTime || rawTransaction.transactionDateTime || null,
-        creditCardTotalAmountCents: normalized.creditCardTotalAmountCents || null,
         notes: existingClassification.notes || '',
         source: 'PLUGGY',
         externalId: `pluggy:${rawTransaction.id}`,

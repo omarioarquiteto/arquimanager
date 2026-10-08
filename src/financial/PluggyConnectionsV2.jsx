@@ -886,7 +886,14 @@ export default function PluggyConnectionsV2({
     const providerBillList = Array.from(providerBills.values()).filter(item =>
       String(item.providerItemId || '') === itemId
       || providerAccountIds.has(String(item.providerAccountId || ''))
-      || cardIds.has(String(item.cardId || ''))
+      || (
+        cardIds.has(String(item.cardId || ''))
+        && (
+          item.source === PLUGGY_SOURCE
+          || item.source === 'PLUGGY'
+          || item.provider === 'PLUGGY'
+        )
+      )
     );
     const billIds = new Set(providerBillList.map(item => String(item.id)));
 
@@ -895,26 +902,64 @@ export default function PluggyConnectionsV2({
       .filter(item => item.companyId === companyId);
 
     const providerTransactionIds = new Set(providerTransactions.map(item => String(item.id)));
-    const providerInbox = inboxSnapshot.docs
-      .map(item => ({ id: item.id, ...item.data() }))
-      .filter(item =>
-        item.companyId === companyId
-        && providerTransactionIds.has(String(item.transactionId || ''))
-      );
 
-    const transfersSnapshot = providerTransactionIds.size
-      ? await getDocs(query(coll(db, 'financial_transfers'), where('source', '==', 'AUTO_RECONCILIATION')))
-      : { docs: [] };
-    const providerTransfers = transfersSnapshot.docs
-      .map(item => ({ id: item.id, ...item.data() }))
-      .filter(item =>
-        item.companyId === companyId
-        && (
-          providerTransactionIds.has(String(item.outgoingTransactionId || ''))
-          || providerTransactionIds.has(String(item.incomingTransactionId || ''))
+    const idGroups = (values, size = 30) => {
+      const list = Array.from(values);
+      const groups = [];
+      for (let index = 0; index < list.length; index += size) {
+        groups.push(list.slice(index, index + size));
+      }
+      return groups;
+    };
+
+    const inboxSnapshots = providerTransactionIds.size
+      ? await Promise.all(
+          idGroups(providerTransactionIds).map(ids =>
+            getDocs(query(coll(db, 'financial_inbox'), where('transactionId', 'in', ids)))
+          )
         )
-      );
+      : [];
 
+    const providerInbox = inboxSnapshots
+      .flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() })))
+      .filter(item =>
+        item.companyId === companyId
+        && item.source === PLUGGY_SOURCE
+        && providerTransactionIds.has(String(item.transactionId || ''))
+      )
+      .reduce((unique, item) => unique.set(item.id, item), new Map());
+
+    const transactionIdList = Array.from(providerTransactionIds);
+    const outgoingSnapshots = transactionIdList.length
+      ? await Promise.all(
+          idGroups(transactionIdList).map(ids =>
+            getDocs(query(coll(db, 'financial_transfers'), where('outgoingTransactionId', 'in', ids)))
+          )
+        )
+      : [];
+    const incomingSnapshots = transactionIdList.length
+      ? await Promise.all(
+          idGroups(transactionIdList).map(ids =>
+            getDocs(query(coll(db, 'financial_transfers'), where('incomingTransactionId', 'in', ids)))
+          )
+        )
+      : [];
+
+    const providerTransfers = [
+      ...outgoingSnapshots.flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() }))),
+      ...incomingSnapshots.flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() }))),
+    ]
+      .filter(item =>
+        item.companyId === companyId
+        && item.source === 'AUTO_RECONCILIATION'
+      )
+      .reduce((unique, item) => unique.set(item.id, item), new Map());
+
+    const providerInboxList = Array.from(providerInbox.values());
+    const providerTransfersList = Array.from(providerTransfers.values());
+
+    // O restante da limpeza trabalha apenas com registros já associados
+    // ao itemId escolhido. Não fazemos leitura global de Atenção/transferências.
     const providerConnections = connectionSnapshot.exists()
       ? [{ id: connectionSnapshot.id, ...connectionSnapshot.data() }]
       : [];
@@ -960,8 +1005,8 @@ export default function PluggyConnectionsV2({
       providerCards: providerCardList,
       providerBills: providerBillList,
       providerTransactions: finalTransactions,
-      providerInbox,
-      providerTransfers,
+      providerInbox: providerInboxList,
+      providerTransfers: providerTransfersList,
       providerConnections,
       purchases,
       installments,

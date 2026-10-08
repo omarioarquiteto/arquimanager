@@ -95,7 +95,6 @@ export const pluggyTransactionDetailsToFinancial = (transaction = {}) => {
     creditCardPurchaseDate: safeText(credit.purchaseDate || transaction.purchaseDate) || null,
     creditCardBillForecastDate: safeText(credit.billForecastDate || transaction.billForecastDate) || null,
     creditCardBillPostDate: safeText(credit.billPostDate || transaction.billPostDate) || null,
-    creditCardTransactionDateTime: safeText(credit.transactionDateTime || transaction.transactionDateTime) || null,
     creditCardPaymentType: safeText(credit.paymentType || transaction.paymentType) || null,
 
     providerType: safeText(transaction.type) || null,

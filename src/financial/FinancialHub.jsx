@@ -1679,16 +1679,30 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       ].join('|');
     };
 
+    const storedForecastMonth = tx => {
+      const explicit = monthFromIso(syncDateOnly(
+        tx?.creditCardBillForecastDate
+        || tx?.providerRawData?.creditCardMetadata?.billForecastDate
+        || tx?.billForecastDate
+        || ''
+      ));
+      if (explicit) return explicit;
+
+      const billId = String(tx?.billId || '');
+      const match = billId.match(/(\\d{4}-\\d{2})$/);
+      return match ? match[1] : '';
+    };
+
     const creditOccurrenceKeyFromStored = tx => [
       creditSeriesKeyFromStored(tx),
       String(Number(tx?.creditCardInstallmentNumber ?? tx?.providerRawData?.creditCardMetadata?.installmentNumber ?? 0)),
-      monthFromIso(syncDateOnly(tx?.creditCardBillForecastDate || tx?.providerRawData?.creditCardMetadata?.billForecastDate || tx?.billForecastDate || '')),
+      storedForecastMonth(tx),
     ].join('|');
 
     const creditLooseOccurrenceKeyFromStored = tx => [
       creditLooseSeriesKeyFromStored(tx),
       String(Number(tx?.creditCardInstallmentNumber ?? tx?.providerRawData?.creditCardMetadata?.installmentNumber ?? 0)),
-      monthFromIso(syncDateOnly(tx?.creditCardBillForecastDate || tx?.providerRawData?.creditCardMetadata?.billForecastDate || tx?.billForecastDate || '')),
+      storedForecastMonth(tx),
     ].join('|');
 
     const rawAmountCents = raw => Math.abs(toCents(

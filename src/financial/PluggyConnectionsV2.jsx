@@ -57,7 +57,7 @@ const refDoc = (db, name, id) => doc(db, 'artifacts/arquimanager-producao/public
 const normalizeText = (value = '') =>
   String(value)
     .normalize('NFD')
-    .replace(/[\\u0300-\\u036f]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
@@ -65,7 +65,7 @@ const normalizeText = (value = '') =>
 const toCents = (value) => {
   if (value == null || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value * 100) : 0;
-  let text = String(value).trim().replace(/R\$|\\s/g, '');
+  let text = String(value).trim().replace(/R\$|\s/g, '');
   if (text.includes(',') && text.includes('.')) text = text.replace(/\./g, '').replace(',', '.');
   else if (text.includes(',')) text = text.replace(',', '.');
   const number = Number(text);

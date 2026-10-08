@@ -1008,19 +1008,7 @@ export default function PluggyConnectionsV2({
       .map(item => ({ id: item.id, ...item.data() }))
       .filter(item => item.companyId === companyId && String(item.itemId || '') === itemId);
 
-    // Registros antigos da integração anterior só entram na limpeza quando
-    // possuem o mesmo providerItemId ou estão encadeados por uma entidade
-    // claramente pertencente a este Item. A nova integração nunca depende deles.
-    const legacyTransactions = await getDocs(
-      query(coll(db, 'financial_transactions'), where('providerItemId', '==', itemId))
-    );
-
-    const mergedTransactions = new Map(
-      providerTransactions.map(item => [item.id, item])
-    );
-    legacyTransactions.docs.forEach(item => mergedTransactions.set(item.id, { id: item.id, ...item.data() }));
-
-    const finalTransactions = Array.from(mergedTransactions.values())
+    const finalTransactions = providerTransactions
       .filter(item => item.companyId === companyId);
 
     return {

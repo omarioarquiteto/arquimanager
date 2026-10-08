@@ -2511,22 +2511,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         </div>
       )}
 
-      {modal?.type === 'pluggyClearConfirm' && modal.scope && (
-        <PluggyClearConfirmModal
-          scope={modal.scope}
-          onClose={() => setModal(null)}
-          onContinue={() => confirmClearPluggyConnection(modal.scope)}
-          busy={busy}
-        />
-      )}
-      {modal?.type === 'pluggyClearFinal' && modal.scope && (
-        <PluggyClearFinalModal
-          scope={modal.scope}
-          onClose={() => setModal(null)}
-          onConfirm={() => executeClearPluggyConnection(modal.scope)}
-          busy={busy}
-        />
-      )}
       {modal?.type === 'category' && <CategoryModal
         initial={modal.initial}
         onClose={()=>setModal(null)}
@@ -2558,89 +2542,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   );
 }
 
-function PluggyClearConfirmModal({ scope, onClose, onContinue, busy }) {
-  const bankName = scope?.connection?.connectorName || 'este banco';
-  return (
-    <Modal title="Limpar dados sincronizados" onClose={onClose}>
-      <div className="space-y-4">
-        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200">
-          <p className="text-xs font-black uppercase tracking-wide text-amber-800">Banco selecionado</p>
-          <p className="text-lg font-black text-slate-800 mt-1">{bankName}</p>
-          <p className="text-xs text-slate-500 mt-1">Somente os dados sincronizados desta conexão serão afetados.</p>
-        </div>
-
-        <div className="grid sm:grid-cols-3 gap-3">
-          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-[10px] font-black uppercase text-slate-400">Movimentações</p>
-            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyTransactions.length}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-[10px] font-black uppercase text-slate-400">Contas</p>
-            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyAccounts.length}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-            <p className="text-[10px] font-black uppercase text-slate-400">Atenção</p>
-            <p className="text-xl font-black text-slate-800 mt-1">{scope.pluggyInbox.length}</p>
-          </div>
-        </div>
-
-        <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800 font-medium">
-          Os lançamentos, faturas, cartões de crédito, contas bancárias sincronizadas e vínculos automáticos deste banco serão removidos.
-          Cadastros manuais de outros bancos permanecem intactos.
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} disabled={busy} className="px-4 py-2.5 border rounded-xl text-xs font-bold">
-            Cancelar
-          </button>
-          <button onClick={onContinue} disabled={busy} className="px-4 py-2.5 bg-amber-500 text-white rounded-xl text-xs font-black hover:bg-amber-600">
-            Continuar
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function PluggyClearFinalModal({ scope, onClose, onConfirm, busy }) {
-  const bankName = scope?.connection?.connectorName || 'este banco';
-  return (
-    <Modal title="Confirmação final" onClose={onClose}>
-      <div className="space-y-4">
-        <div className="p-5 rounded-2xl bg-red-50 border-2 border-red-200">
-          <p className="text-sm font-black text-red-800 uppercase leading-relaxed">
-            TEM CERTEZA QUE DESEJA EXCLUIR TUDO QUE FOI SINCRONIZADO DESTE BANCO?
-          </p>
-          <p className="text-sm font-black text-red-700 uppercase mt-2">
-            ESSA AÇÃO NÃO PODERÁ SER DESFEITA.
-          </p>
-        </div>
-
-        <div className="text-sm text-slate-700">
-          Banco: <strong>{bankName}</strong>
-        </div>
-
-        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-          Serão removidos {scope.pluggyTransactions.length} lançamento(s), {scope.pluggyBills.length} fatura(s), {scope.pluggyCards.length} cartão(ões), {scope.pluggyAccounts.length} conta(s) e {scope.pluggyInbox.length} item(ns) de Atenção deste banco.
-          As transferências automáticas vinculadas também serão removidas. Cadastros manuais de outros bancos serão preservados.
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} disabled={busy} className="px-4 py-2.5 border rounded-xl text-xs font-bold">
-            NÃO, CANCELAR
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={busy}
-            className="px-4 py-2.5 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 disabled:opacity-50"
-          >
-            {busy ? 'EXCLUINDO...' : 'SIM, EXCLUIR TUDO DESTE BANCO'}
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
 function CategoryModal({ initial, onClose, onSave, busy }) {
   const [name, setName] = useState(initial?.name || '');
 

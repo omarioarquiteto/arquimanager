@@ -88,6 +88,42 @@ const listTransactionsForAccount = async (accountId, apiKey) => {
   return results.slice(0, 10000);
 };
 
+const listBillsForAccount = async (accountId, apiKey) => {
+  const bills = [];
+  let page = 1;
+
+  while (true) {
+    const query = new URLSearchParams({
+      accountId,
+      page: String(page),
+      pageSize: '500',
+    });
+    const data = await pluggyGet('/bills?' + query.toString(), apiKey);
+    bills.push(...(Array.isArray(data.results) ? data.results : []));
+
+    const totalPages = Number(data.totalPages || 1);
+    if (page >= totalPages) break;
+    page += 1;
+  }
+
+  return bills;
+};
+
+const sanitizeBill = (bill, accountId, itemId) => ({
+  id: bill.id,
+  accountId,
+  itemId,
+  dueDate: bill.dueDate || null,
+  billClosingDate: bill.billClosingDate || bill.closingDate || null,
+  billForecastDate: bill.billForecastDate || null,
+  totalAmount: bill.totalAmount ?? 0,
+  totalAmountCurrencyCode: bill.totalAmountCurrencyCode || 'BRL',
+  minimumPaymentAmount: bill.minimumPaymentAmount ?? null,
+  allowsInstallments: Boolean(bill.allowsInstallments),
+  financeCharges: Array.isArray(bill.financeCharges) ? bill.financeCharges : [],
+  payments: Array.isArray(bill.payments) ? bill.payments : [],
+});
+
 const sanitizeAccount = (account) => ({
   id: account.id,
   itemId: account.itemId || null,
@@ -146,6 +182,25 @@ export default async function handler(request) {
       transactions.push(...accountTransactions);
     }
 
+    // Contas CREDIT possuem transações próprias do cartão. Elas não devem
+    // entrar no fluxo de caixa bancário, mas são indispensáveis para montar
+    // cada fatura e para reconhecer parcelamentos.
+    const creditTransactions = [];
+    const bills = [];
+    for (const account of creditAccounts) {
+      const accountTransactions = await listTransactionsForAccount(account.id, apiKey);
+      creditTransactions.push(...accountTransactions);
+
+      try {
+        const accountBills = await listBillsForAccount(account.id, apiKey);
+        bills.push(...accountBills.map(bill => sanitizeBill(bill, account.id, itemId)));
+      } catch (billError) {
+        // Algumas instituições/conexões não expõem o produto Bills. Isso não
+        // impede a sincronização das transações do cartão nem a projeção local.
+        console.warn('Pluggy bills indisponíveis para a conta de crédito:', account.id, billError.message);
+      }
+    }
+
     return json({
       item: {
         id: item.id,
@@ -158,7 +213,9 @@ export default async function handler(request) {
       bankAccounts: bankAccounts.map(sanitizeAccount),
       creditAccounts: creditAccounts.map(sanitizeAccount),
       transactions,
-      truncated: transactions.length >= 10000,
+      creditTransactions,
+      bills,
+      truncated: transactions.length >= 10000 || creditTransactions.length >= 10000,
       syncedAt: new Date().toISOString(),
     });
   } catch (error) {

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  getFirestore, collection, doc, onSnapshot, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
+  getFirestore, collection, doc, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
   serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {
@@ -49,6 +49,50 @@ const syncDateOnly = (value) => {
     String(parsed.getMonth() + 1).padStart(2, '0'),
     String(parsed.getDate()).padStart(2, '0'),
   ].join('-');
+};
+
+const isCreditCardTransaction = (tx = {}) =>
+  tx?.accountType === 'CREDIT_CARD'
+  || tx?.isCreditCardTransaction === true
+  || Boolean(tx?.cardId && (tx?.creditCardInstallmentNumber || tx?.creditCardBillForecastDate || tx?.creditCardPaymentType));
+
+const hasCashImpact = (tx = {}) => tx?.cashImpact !== false && !isCreditCardTransaction(tx);
+
+const addMonthsToIsoDate = (value, months = 0) => {
+  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  const base = new Date(year, month - 1, 1);
+  base.setMonth(base.getMonth() + Number(months || 0));
+  const lastDay = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+  const finalDay = Math.min(day, lastDay);
+  return [
+    base.getFullYear(),
+    String(base.getMonth() + 1).padStart(2, '0'),
+    String(finalDay).padStart(2, '0'),
+  ].join('-');
+};
+
+const dateForMonthDay = (yearMonth, day = 1) => {
+  const [year, month] = String(yearMonth || '').slice(0, 7).split('-').map(Number);
+  if (!year || !month) return '';
+  const lastDay = new Date(year, month, 0).getDate();
+  return [
+    year,
+    String(month).padStart(2, '0'),
+    String(Math.min(Math.max(1, Number(day || 1)), lastDay)).padStart(2, '0'),
+  ].join('-');
+};
+
+const monthFromIso = (value) => String(value || '').slice(0, 7);
+
+const billStatusFromValues = ({ totalCents = 0, paidCents = 0, dueDate = '', provisional = false }) => {
+  const total = Number(totalCents || 0);
+  const paid = Number(paidCents || 0);
+  if (!total && provisional) return 'OPEN';
+  if (paid >= total && total > 0) return 'PAID';
+  if (paid > 0) return 'PARTIALLY_PAID';
+  if (dueDate && dueDate < todayLocal()) return 'OVERDUE';
+  return 'OPEN';
 };
 
 function Card({ children, className = '' }) {
@@ -195,7 +239,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const totals = useMemo(() => {
     let income = 0, expense = 0;
     monthTransactions.forEach(t => {
-      if (t.status === 'CANCELLED') return;
+      if (t.status === 'CANCELLED' || !hasCashImpact(t)) return;
       if (t.type === 'INCOME') income += Number(t.amountCents || 0);
       if (t.type === 'EXPENSE') expense += Number(t.amountCents || 0);
     });
@@ -269,17 +313,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
 
     const scored = bills
-      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > Number(b.paidCents || 0))
+      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > 0)
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
-        const remaining = Number(b.totalCents || 0) - Number(b.paidCents || 0);
+        const remaining = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
+        const alreadyPaid = Number(b.paidCents || 0) >= Number(b.totalCents || 0) && Number(b.totalCents || 0) > 0;
         const cardName = normalizeText(card.name || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
         let score = 0;
-        if (amountCents === remaining) score += 100;
-        else if (amountCents < remaining) score += 40;
+        if (amountCents === remaining && remaining > 0) score += 100;
+        else if (alreadyPaid && amountCents === Number(b.totalCents || 0)) score += 90;
+        else if (remaining > 0 && amountCents < remaining) score += 40;
         if (card.paymentAccountId && card.paymentAccountId === accountId) score += 40;
         if (cardName && normalizedDescription.includes(cardName)) score += 30;
         if (cardInstitution && normalizedDescription.includes(cardInstitution)) score += 10;
@@ -301,17 +347,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const reconcileCardPayment = async ({ transactionId, amountCents, date, description, accountId }) => {
     const match = findCardBillForPayment({ amountCents, date, description, accountId });
     if (match.status !== 'MATCH') return match;
-    const paidCents = Number(match.bill.paidCents || 0) + amountCents;
+    const currentPaidCents = Number(match.bill.paidCents || 0);
     const totalCents = Number(match.bill.totalCents || 0);
-    await updateDoc(docPath(db, 'financial_bills', match.bill.id), {
-      paidCents, status: paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID',
-      lastPaymentTransactionId: transactionId, lastPaidAt: date, updatedAt: serverTimestamp(),
-    });
+    const alreadyPaid = currentPaidCents >= totalCents && totalCents > 0;
+    const paidCents = alreadyPaid ? currentPaidCents : currentPaidCents + amountCents;
+    if (!alreadyPaid) {
+      await updateDoc(docPath(db, 'financial_bills', match.bill.id), {
+        paidCents, status: paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID',
+        lastPaymentTransactionId: transactionId, lastPaidAt: date, updatedAt: serverTimestamp(),
+      });
+    }
     await updateDoc(docPath(db, 'financial_transactions', transactionId), {
       status: 'RECONCILED', reconciliationType: 'CARD_BILL_PAYMENT',
       billId: match.bill.id, cardId: match.bill.cardId, updatedAt: serverTimestamp(),
     });
-    return { ...match, paidCents, status: 'MATCHED' };
+    return { ...match, paidCents, status: 'MATCHED', alreadyPaid };
   };
   const matchPlannedItem = ({ items, amountCents, date, description, type }) => {
     const normalizedDescription = normalizeText(description);
@@ -795,8 +845,95 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         billId: tx.billId || null,
         payableId: tx.payableId || null,
         receivableId: tx.receivableId || null,
+        creditCardEdit: isCreditCardTransaction(tx),
+        creditCardPaymentType: tx.creditCardPaymentType || (Number(tx.creditCardTotalInstallments || 0) > 1 ? 'INSTALLMENT' : 'SINGLE'),
+        creditCardInstallmentNumber: tx.creditCardInstallmentNumber || 1,
+        creditCardTotalInstallments: tx.creditCardTotalInstallments || 1,
+        creditCardPurchaseDate: tx.creditCardPurchaseDate || tx.date || todayLocal(),
       }
     });
+  };
+
+  const updateCreditCardInstallmentPlan = async (tx, data) => {
+    const card = cards.find(item => item.id === tx.cardId);
+    if (!card) throw new Error('Cartão não encontrado.');
+
+    const paymentType = String(data.creditCardPaymentType || 'SINGLE').toUpperCase();
+    const currentInstallment = Math.max(1, Number(data.creditCardInstallmentNumber || 1));
+    const totalInstallments = Math.max(currentInstallment, Math.min(48, Number(data.creditCardTotalInstallments || 1)));
+    const purchaseDate = data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || todayLocal();
+    const seriesId = tx.parcelSeriesId || `series_${stableHash(`${card.id}|${tx.id}`)}`;
+
+    const serverSnapshot = await getDocs(collectionPath(db, 'financial_transactions'));
+    const seriesProjections = serverSnapshot.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(item => item.companyId === companyId && item.source === 'PLUGGY_PROJECTION' && item.parcelSeriesId === seriesId && item.cardId === card.id);
+
+    for (const projection of seriesProjections) {
+      const shouldRemove = paymentType === 'SINGLE'
+        || Number(projection.creditCardInstallmentNumber || 0) <= currentInstallment
+        || Number(projection.creditCardInstallmentNumber || 0) > totalInstallments;
+      if (!shouldRemove) continue;
+
+      const oldBill = projection.billId ? bills.find(item => item.id === projection.billId) : null;
+      const oldBillSnap = projection.billId ? await getDoc(docPath(db, 'financial_bills', projection.billId)) : null;
+      if (oldBillSnap?.exists()) {
+        const bill = oldBillSnap.data();
+        if (bill.provisional !== false) {
+          const nextProjected = Math.max(0, Number(bill.projectedCents || 0) - Number(projection.amountCents || 0));
+          const nextTotal = Number(bill.officialTotalCents || 0) + nextProjected;
+          await updateDoc(docPath(db, 'financial_bills', projection.billId), {
+            projectedCents: nextProjected,
+            totalCents: nextTotal,
+            status: billStatusFromValues({ totalCents: nextTotal, paidCents: Number(bill.paidCents || 0), dueDate: bill.dueDate, provisional: true }),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } else if (oldBill?.provisional !== false) {
+        const nextProjected = Math.max(0, Number(oldBill.projectedCents || 0) - Number(projection.amountCents || 0));
+        const nextTotal = Number(oldBill.officialTotalCents || 0) + nextProjected;
+        await updateDoc(docPath(db, 'financial_bills', projection.billId), { projectedCents: nextProjected, totalCents: nextTotal, updatedAt: serverTimestamp() });
+      }
+      await deleteDoc(docPath(db, 'financial_transactions', projection.id));
+    }
+
+    const currentBill = tx.billId ? bills.find(item => item.id === tx.billId) : null;
+    const baseChanges = {
+      description: data.description?.trim() || tx.description || '',
+      merchant: data.merchant?.trim() || tx.merchant || data.description?.trim() || tx.description || '',
+      normalizedMerchant: normalizeText(data.merchant?.trim() || tx.merchant || data.description?.trim() || tx.description || ''),
+      categoryId: data.categoryId || null,
+      projectId: data.projectId || null,
+      clientId: data.clientId || null,
+      notes: data.notes?.trim() || '',
+      parcelSeriesId: paymentType === 'INSTALLMENT' && totalInstallments > currentInstallment ? seriesId : null,
+      creditCardInstallmentNumber: paymentType === 'INSTALLMENT' ? currentInstallment : 1,
+      creditCardTotalInstallments: paymentType === 'INSTALLMENT' ? totalInstallments : 1,
+      creditCardPaymentType: paymentType === 'INSTALLMENT' ? 'INSTALLMENT' : 'SINGLE',
+      creditCardPurchaseDate: purchaseDate,
+      isCreditCardTransaction: true,
+      cashImpact: false,
+      accountType: 'CREDIT_CARD',
+      updatedAt: serverTimestamp(),
+    };
+    await updateDoc(docPath(db, 'financial_transactions', tx.id), baseChanges);
+
+    if (paymentType === 'INSTALLMENT' && totalInstallments > currentInstallment) {
+      await createOrUpdateProjectedInstallments({
+        tx: { ...tx, ...baseChanges, id: tx.id, billId: tx.billId, parcelSeriesId: seriesId },
+        card,
+        currentBill,
+        currentInstallment,
+        totalInstallments,
+        amountCents: Number(tx.amountCents || 0),
+        description: tx.description,
+        merchant: tx.merchant || tx.description,
+        categoryId: data.categoryId || tx.categoryId || null,
+        projectId: data.projectId || tx.projectId || null,
+        notes: data.notes || tx.notes || '',
+        purchaseDate,
+      });
+    }
   };
 
   const updateTransaction = async (data) => {
@@ -838,6 +975,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     setBusy(true);
     try {
+      if (isCreditCardTransaction(tx)) {
+        await updateCreditCardInstallmentPlan(tx, data);
+        setModal(null);
+        setNotice('Lançamento do cartão atualizado e parcelas futuras recalculadas.');
+        return;
+      }
+
       if (tx.reconciliationType === 'TRANSFER' && tx.transferId) {
         const transfer = transfers.find(t => t.id === tx.transferId);
         const batch = writeBatch(db);
@@ -1092,6 +1236,471 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }, { merge: true });
 
     setNotice(`Banco conectado: ${connection.connectorName || 'instituição financeira'}.`);
+  };
+
+  const createOrUpdateProjectedInstallments = async ({
+    tx,
+    card,
+    currentBill,
+    currentInstallment,
+    totalInstallments,
+    amountCents,
+    description,
+    merchant,
+    categoryId,
+    projectId,
+    notes,
+    purchaseDate,
+  }) => {
+    if (!tx?.id || !card?.id) return;
+    const currentNumber = Math.max(1, Number(currentInstallment || 1));
+    const total = Math.max(currentNumber, Math.min(48, Number(totalInstallments || currentNumber)));
+    if (total <= currentNumber) return;
+
+    const baseDueDate = currentBill?.dueDate
+      || dateForMonthDay(monthFromIso(currentBill?.referenceMonth || todayLocal()), Number(card.dueDay || 10))
+      || todayLocal();
+
+    const baseClosingDate = currentBill?.closingDate
+      || dateForMonthDay(monthFromIso(currentBill?.referenceMonth || baseDueDate), Number(card.closingDay || 1));
+
+    const seriesId = tx.parcelSeriesId || `series_${stableHash(`${card.id}|${tx.id}`)}`;
+    const serverTransactionsSnapshot = await getDocs(collectionPath(db, 'financial_transactions'));
+    const companyTransactions = serverTransactionsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(item => item.companyId === companyId);
+    const existingSeries = companyTransactions.filter(item =>
+      item?.source === 'PLUGGY_PROJECTION'
+      && item?.parcelSeriesId === seriesId
+      && item?.cardId === card.id
+    );
+
+    for (let installment = currentNumber + 1; installment <= total; installment += 1) {
+      const offset = installment - currentNumber;
+      const dueDate = addMonthsToIsoDate(baseDueDate, offset);
+      const closingDate = baseClosingDate ? addMonthsToIsoDate(baseClosingDate, offset) : '';
+      const referenceMonth = monthFromIso(closingDate || dueDate);
+      const billId = `${companyId}_${card.id}_${referenceMonth}`;
+      const billRef = docPath(db, 'financial_bills', billId);
+      const billSnap = await getDoc(billRef);
+      const existingBill = billSnap.exists() ? { id: billId, ...billSnap.data() } : null;
+
+      // Se a fatura daquele mês já é oficial, a fonte de verdade passa a ser
+      // a Pluggy e não criamos uma segunda parcela projetada nela.
+      if (existingBill?.provisional === false && existingBill?.providerBillId) continue;
+
+      const projectionId = `${companyId}_pluggy_projection_${seriesId}_${installment}`;
+      const projectionRef = docPath(db, 'financial_transactions', projectionId);
+      const projectionSnap = await getDoc(projectionRef);
+      const existingProjection = projectionSnap.exists() ? { id: projectionId, ...projectionSnap.data() } : null;
+
+      const hasBillBreakdown = existingBill && (
+        Object.prototype.hasOwnProperty.call(existingBill, 'officialTotalCents')
+        || Object.prototype.hasOwnProperty.call(existingBill, 'projectedCents')
+      );
+      const legacyTotal = Number(existingBill?.totalCents || 0);
+      const officialTotal = Number(
+        existingBill?.officialTotalCents
+        ?? (existingBill?.provisional === false ? legacyTotal : 0)
+      );
+      const projectedCents = Number(
+        existingBill?.projectedCents
+        ?? (hasBillBreakdown ? 0 : (existingBill?.provisional === false ? 0 : legacyTotal))
+      );
+      const delta = existingProjection ? 0 : Number(amountCents || 0);
+      const nextProjected = projectedCents + delta;
+      const totalCents = officialTotal + nextProjected;
+
+      await setDoc(billRef, {
+        companyId,
+        cardId: card.id,
+        referenceMonth,
+        closingDate: closingDate || null,
+        dueDate,
+        source: existingBill?.source === 'PLUGGY' ? 'PLUGGY' : 'PLUGGY_PROJECTION',
+        provisional: existingBill?.provisional === false ? false : true,
+        officialTotalCents: officialTotal,
+        projectedCents: nextProjected,
+        totalCents,
+        paidCents: Number(existingBill?.paidCents || 0),
+        status: billStatusFromValues({ totalCents, paidCents: Number(existingBill?.paidCents || 0), dueDate, provisional: true }),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      if (!existingProjection) {
+        const projectedDate = purchaseDate || dueDate;
+        await setDoc(projectionRef, {
+          companyId,
+          source: 'PLUGGY_PROJECTION',
+          externalId: `projection:${seriesId}:${installment}`,
+          projectionKey: `credit-card-installment:${seriesId}:${installment}`,
+          financialAccountId: null,
+          accountId: card.id,
+          cardId: card.id,
+          billId,
+          accountType: 'CREDIT_CARD',
+          isCreditCardTransaction: true,
+          cashImpact: false,
+          date: projectedDate,
+          actualDate: null,
+          expectedDate: dueDate,
+          description: description || 'Compra parcelada',
+          descriptionRaw: description || null,
+          merchant: merchant || description || 'Compra parcelada',
+          normalizedMerchant: normalizeText(merchant || description || 'Compra parcelada'),
+          amountCents: Math.abs(Number(amountCents || 0)),
+          type: 'EXPENSE',
+          status: 'SCHEDULED',
+          categoryId: categoryId || null,
+          projectId: projectId || null,
+          clientId: null,
+          supplierId: null,
+          notes: notes || '',
+          parcelSeriesId: seriesId,
+          creditCardInstallmentNumber: installment,
+          creditCardTotalInstallments: total,
+          creditCardPaymentType: 'INSTALLMENT',
+          creditCardPurchaseDate: purchaseDate || null,
+          installmentProjectedFrom: tx.id,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+    }
+
+    // Propaga a última classificação/observação do lançamento para as
+    // parcelas futuras que já foram projetadas na mesma série.
+    const retainedSeries = existingSeries.filter(item => {
+      const installment = Number(item.creditCardInstallmentNumber || 0);
+      return installment > currentNumber && installment <= total;
+    });
+    for (const projected of retainedSeries) {
+      await updateDoc(docPath(db, 'financial_transactions', projected.id), {
+        description: description || projected.description || 'Compra parcelada',
+        merchant: merchant || projected.merchant || description || 'Compra parcelada',
+        normalizedMerchant: normalizeText(merchant || projected.merchant || description || 'Compra parcelada'),
+        categoryId: categoryId || null,
+        projectId: projectId || null,
+        notes: notes || '',
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    await updateDoc(docPath(db, 'financial_transactions', tx.id), {
+      parcelSeriesId: seriesId,
+      creditCardInstallmentNumber: currentNumber,
+      creditCardTotalInstallments: total,
+      creditCardPaymentType: 'INSTALLMENT',
+      creditCardPurchaseDate: purchaseDate || tx.creditCardPurchaseDate || tx.date || null,
+      cashImpact: false,
+      isCreditCardTransaction: true,
+      accountType: 'CREDIT_CARD',
+      updatedAt: serverTimestamp(),
+    });
+
+    // Remove projeções que ficaram fora do novo limite de parcelas.
+    const obsolete = existingSeries.filter(item => Number(item.creditCardInstallmentNumber || 0) > total);
+    for (const item of obsolete) {
+      const oldBillId = item.billId;
+      const oldBillSnap = oldBillId ? await getDoc(docPath(db, 'financial_bills', oldBillId)) : null;
+      if (oldBillSnap?.exists()) {
+        const oldBill = oldBillSnap.data();
+        if (oldBill.provisional !== false) {
+          const nextProjected = Math.max(0, Number(oldBill.projectedCents || 0) - Number(item.amountCents || 0));
+          const officialTotal = Number(oldBill.officialTotalCents || 0);
+          const nextTotal = officialTotal + nextProjected;
+          await updateDoc(docPath(db, 'financial_bills', oldBillId), {
+            projectedCents: nextProjected,
+            totalCents: nextTotal,
+            status: billStatusFromValues({ totalCents: nextTotal, paidCents: Number(oldBill.paidCents || 0), dueDate: oldBill.dueDate, provisional: true }),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+      await deleteDoc(docPath(db, 'financial_transactions', item.id));
+    }
+  };
+
+  const syncCreditCardData = async ({ data, connection }) => {
+    const creditAccounts = Array.isArray(data.creditAccounts) ? data.creditAccounts : [];
+    if (!creditAccounts.length) return;
+
+    const cardByProviderAccount = new Map();
+    for (const account of creditAccounts) {
+      const cardId = `${companyId}_pluggy_card_${account.id}`;
+      const creditData = account.creditData || {};
+      const closingDate = syncDateOnly(creditData.balanceCloseDate);
+      const dueDate = syncDateOnly(creditData.balanceDueDate);
+      const cardData = {
+        companyId,
+        name: account.name || account.marketingName || 'Cartão de crédito',
+        institution: connection.connectorName || 'Instituição financeira',
+        source: 'PLUGGY',
+        provider: 'PLUGGY',
+        providerCardId: account.id,
+        providerAccountId: account.id,
+        providerItemId: connection.itemId,
+        brand: creditData.brand || null,
+        limitCents: toCents(creditData.creditLimit),
+        availableCreditCents: creditData.availableCreditLimit == null ? null : toCents(creditData.availableCreditLimit),
+        balanceCents: Math.abs(toCents(account.balance)),
+        closingDay: closingDate ? Number(closingDate.slice(8, 10)) : 1,
+        dueDay: dueDate ? Number(dueDate.slice(8, 10)) : 10,
+        creditStatus: creditData.status || null,
+        lastBalanceSyncAt: data.syncedAt || new Date().toISOString(),
+        active: true,
+        updatedAt: serverTimestamp(),
+      };
+      await setDoc(docPath(db, 'financial_cards', cardId), cardData, { merge: true });
+      cardByProviderAccount.set(account.id, { id: cardId, ...cardData });
+    }
+
+    const providerBillToLocal = new Map();
+    const rawBills = Array.isArray(data.bills) ? data.bills : [];
+    for (const rawBill of rawBills) {
+      const card = cardByProviderAccount.get(rawBill.accountId);
+      if (!card || !rawBill.id) continue;
+      const closingDate = syncDateOnly(rawBill.billClosingDate || rawBill.billForecastDate || rawBill.dueDate);
+      const dueDate = syncDateOnly(rawBill.dueDate);
+      const referenceMonth = monthFromIso(closingDate || dueDate);
+      const billId = `${companyId}_${card.id}_${referenceMonth}`;
+      providerBillToLocal.set(String(rawBill.id), billId);
+      const existingSnap = await getDoc(docPath(db, 'financial_bills', billId));
+      const existing = existingSnap.exists() ? existingSnap.data() : {};
+      const officialTotalCents = Math.abs(toCents(rawBill.totalAmount));
+      const paidCents = (Array.isArray(rawBill.payments) ? rawBill.payments : [])
+        .reduce((sum, payment) => sum + Math.abs(toCents(payment?.amount)), 0);
+      const projectedCents = Number(existing.projectedCents || 0);
+      const totalCents = officialTotalCents + projectedCents;
+      const status = billStatusFromValues({ totalCents, paidCents, dueDate, provisional: false });
+
+      await setDoc(docPath(db, 'financial_bills', billId), {
+        companyId,
+        cardId: card.id,
+        source: 'PLUGGY',
+        provisional: false,
+        providerBillId: rawBill.id,
+        providerAccountId: rawBill.accountId,
+        providerItemId: connection.itemId,
+        referenceMonth,
+        closingDate: closingDate || null,
+        dueDate: dueDate || null,
+        officialTotalCents,
+        projectedCents,
+        totalCents,
+        paidCents,
+        minimumPaymentCents: rawBill.minimumPaymentAmount == null ? null : toCents(rawBill.minimumPaymentAmount),
+        allowsInstallments: Boolean(rawBill.allowsInstallments),
+        financeCharges: Array.isArray(rawBill.financeCharges) ? rawBill.financeCharges : [],
+        payments: Array.isArray(rawBill.payments) ? rawBill.payments : [],
+        providerRawData: rawBill,
+        status,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    }
+
+    const creditTransactions = Array.isArray(data.creditTransactions) ? data.creditTransactions : [];
+    for (const rawTransaction of creditTransactions) {
+      if (!rawTransaction?.id) continue;
+      const rawAmount = Number(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0);
+      if (!Number.isFinite(rawAmount) || rawAmount === 0) continue;
+
+      const rawCredit = rawTransaction.creditCardMetadata || {};
+      const paymentText = normalizeText(`${rawTransaction.description || ''} ${rawTransaction.operationType || ''}`);
+      const isBillPayment = rawCredit.paymentType === 'PAYMENT'
+        || rawCredit.otherCreditsType === 'BILL_PAYMENT'
+        || /(pagamento|pagto|fatura)/.test(paymentText) && rawAmount < 0;
+
+      // O pagamento da fatura é fato da conta bancária e já é conciliado
+      // pelo fluxo BANK. No CREDIT armazenamos somente compras/estornos.
+      if (isBillPayment) continue;
+
+      const card = cardByProviderAccount.get(rawTransaction.accountId);
+      if (!card) continue;
+
+      const providerBillId = String(rawCredit.billId || rawTransaction.billId || '').trim();
+      const billForecastDate = syncDateOnly(rawCredit.billForecastDate || rawTransaction.billForecastDate);
+      let localBillId = providerBillToLocal.get(providerBillId) || null;
+
+      if (!localBillId && billForecastDate) {
+        const referenceMonth = monthFromIso(billForecastDate);
+        localBillId = `${companyId}_${card.id}_${referenceMonth}`;
+        const forecastBillSnap = await getDoc(docPath(db, 'financial_bills', localBillId));
+        const forecastBill = forecastBillSnap.exists() ? forecastBillSnap.data() : {};
+        const dueDate = forecastBill.dueDate
+          || dateForMonthDay(referenceMonth, Number(card.dueDay || 10));
+        const closingDate = forecastBill.closingDate
+          || dateForMonthDay(referenceMonth, Number(card.closingDay || 1));
+        await setDoc(docPath(db, 'financial_bills', localBillId), {
+          companyId,
+          cardId: card.id,
+          source: forecastBill.source || 'PLUGGY_PROJECTION',
+          provisional: forecastBill.provisional === false ? false : true,
+          referenceMonth,
+          closingDate,
+          dueDate,
+          officialTotalCents: Number(forecastBill.officialTotalCents || 0),
+          projectedCents: Number(forecastBill.projectedCents || 0),
+          totalCents: Number(forecastBill.totalCents || 0),
+          paidCents: Number(forecastBill.paidCents || 0),
+          status: forecastBill.status || 'OPEN',
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+
+      const normalizedMerchant = normalizeText(rawTransaction.merchant?.name || rawTransaction.merchant?.businessName || rawTransaction.description || '');
+      const amountCents = Math.abs(toCents(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0));
+      const installmentNumber = Number(rawCredit.installmentNumber ?? rawTransaction.installmentNumber ?? 0);
+      const totalInstallments = Number(rawCredit.totalInstallments ?? rawTransaction.totalInstallments ?? 0);
+      const paymentType = String(rawCredit.paymentType || rawTransaction.paymentType || '').trim().toUpperCase();
+      const purchaseDate = syncDateOnly(rawCredit.purchaseDate || rawTransaction.purchaseDate || rawTransaction.date);
+
+      const localBillSnapshot = localBillId ? await getDoc(docPath(db, 'financial_bills', localBillId)) : null;
+      const localBillData = localBillSnapshot?.exists() ? localBillSnapshot.data() : null;
+
+      const serverTransactions = (await getDocs(collectionPath(db, 'financial_transactions'))).docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(item => item.companyId === companyId);
+
+      const existing = serverTransactions.find(item =>
+        item.providerTransactionId === rawTransaction.id
+        || item.externalId === `pluggy:${rawTransaction.id}`
+      );
+
+      const projectionMatch = !existing && installmentNumber > 0
+        ? serverTransactions.find(item =>
+            item.source === 'PLUGGY_PROJECTION'
+            && item.cardId === card.id
+            && Number(item.creditCardInstallmentNumber || 0) === installmentNumber
+            && Number(item.creditCardTotalInstallments || 0) === totalInstallments
+            && Number(item.amountCents || 0) === amountCents
+            && normalizeText(item.merchant || item.description || '') === normalizedMerchant
+            && (!purchaseDate || !item.creditCardPurchaseDate || monthFromIso(item.creditCardPurchaseDate) === monthFromIso(purchaseDate))
+          )
+        : null;
+
+      const localTransactionId = existing?.id || projectionMatch?.id || `${companyId}_pluggy_card_tx_${stableHash(`pluggy:${rawTransaction.id}`)}`;
+      const normalizedType = rawAmount < 0 ? 'INCOME' : 'EXPENSE';
+      const existingClassification = existing || projectionMatch || {};
+      const remember = findRememberedRule(normalizedMerchant || rawTransaction.description || 'Cartão');
+      const categoryId = existingClassification.categoryId || (remember.status === 'MATCH' ? remember.rule.categoryId : null);
+      const projectId = existingClassification.projectId || null;
+      const status = existingClassification.status && existingClassification.status !== 'SCHEDULED'
+        ? existingClassification.status
+        : (categoryId ? 'CLASSIFIED' : 'IDENTIFICATION_REQUIRED');
+
+      const normalized = pluggyTransactionToFinancial({
+        transaction: rawTransaction,
+        companyId,
+        financialAccountId: card.id,
+        financialCardId: card.id,
+      });
+
+      const creditLast4 = String(rawCredit.cardNumber || rawTransaction.cardNumber || '').replace(/\D/g, '').slice(-4);
+      if (creditLast4 && (!card.last4 || card.last4 !== creditLast4)) {
+        await updateDoc(docPath(db, 'financial_cards', card.id), {
+          last4: creditLast4,
+          updatedAt: serverTimestamp(),
+        });
+        card.last4 = creditLast4;
+      }
+
+      await setDoc(docPath(db, 'financial_transactions', localTransactionId), {
+        ...normalized,
+        accountId: card.id,
+        financialAccountId: card.id,
+        cardId: card.id,
+        accountType: 'CREDIT_CARD',
+        isCreditCardTransaction: true,
+        cashImpact: false,
+        type: normalizedType,
+        amountCents,
+        date: syncDateOnly(rawTransaction.date || rawCredit.purchaseDate),
+        actualDate: null,
+        expectedDate: localBillData?.dueDate || null,
+        billId: localBillId,
+        providerBillId: providerBillId || null,
+        categoryId,
+        projectId,
+        status,
+        parcelSeriesId: existingClassification.parcelSeriesId || (installmentNumber > 0 ? `series_${stableHash(`${card.id}|${normalizedMerchant}|${purchaseDate || rawTransaction.date || ''}|${amountCents}|${totalInstallments}`)}` : null),
+        creditCardInstallmentNumber: installmentNumber || null,
+        creditCardTotalInstallments: totalInstallments || null,
+        creditCardPaymentType: paymentType || (totalInstallments > 1 ? 'INSTALLMENT' : 'SINGLE'),
+        creditCardPurchaseDate: purchaseDate || null,
+        notes: existingClassification.notes || '',
+        source: 'PLUGGY',
+        externalId: `pluggy:${rawTransaction.id}`,
+        providerTransactionId: rawTransaction.id,
+        updatedAt: serverTimestamp(),
+        ...(existing ? {} : { createdAt: serverTimestamp() }),
+      }, { merge: true });
+
+      // Quando a linha projetada se torna oficial, removemos a projeção
+      // somente se a fatura daquele mês já tiver sido transformada em oficial
+      // ou se a linha tiver migrado para outra fatura.
+      if (projectionMatch?.billId) {
+        const projectionBillSnap = await getDoc(docPath(db, 'financial_bills', projectionMatch.billId));
+        if (projectionBillSnap.exists()) {
+          const projectionBill = projectionBillSnap.data();
+          const sameBill = projectionMatch.billId === localBillId;
+          const shouldRemoveProjection = projectionBill.provisional === false || !sameBill;
+          if (shouldRemoveProjection && Number(projectionBill.projectedCents || 0) > 0) {
+            const nextProjected = Math.max(0, Number(projectionBill.projectedCents || 0) - Number(projectionMatch.amountCents || 0));
+            const nextTotal = Number(projectionBill.officialTotalCents || 0) + nextProjected;
+            await updateDoc(docPath(db, 'financial_bills', projectionMatch.billId), {
+              projectedCents: nextProjected,
+              totalCents: nextTotal,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      }
+
+      // Se ainda não existe fatura oficial, cada compra/estorno recebido pelo
+      // cartão passa a compor o valor conhecido da fatura projetada. O valor
+      // oficial nunca é recalculado por lançamentos individuais.
+      if (localBillId && !existing && !projectionMatch && localBillData?.provisional !== false) {
+        const signedDelta = rawAmount < 0 ? -amountCents : amountCents;
+        const currentProjected = Number(localBillData.projectedCents ?? localBillData.totalCents ?? 0);
+        const officialTotal = Number(localBillData.officialTotalCents || 0);
+        const nextProjected = Math.max(0, currentProjected + signedDelta);
+        const nextTotal = officialTotal + nextProjected;
+        await updateDoc(docPath(db, 'financial_bills', localBillId), {
+          projectedCents: nextProjected,
+          totalCents: nextTotal,
+          status: billStatusFromValues({
+            totalCents: nextTotal,
+            paidCents: Number(localBillData.paidCents || 0),
+            dueDate: localBillData.dueDate || null,
+            provisional: true,
+          }),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (installmentNumber > 0 && totalInstallments > installmentNumber) {
+        const currentBillSnap = localBillId ? await getDoc(docPath(db, 'financial_bills', localBillId)) : null;
+        const currentBill = currentBillSnap?.exists() ? { id: localBillId, ...currentBillSnap.data() } : null;
+        await createOrUpdateProjectedInstallments({
+          tx: {
+            id: localTransactionId,
+            ...existingClassification,
+            billId: localBillId,
+            parcelSeriesId: existingClassification.parcelSeriesId || `series_${stableHash(`${card.id}|${normalizedMerchant}|${purchaseDate || rawTransaction.date || ''}|${amountCents}|${totalInstallments}`)}`,
+          },
+          card,
+          currentBill,
+          currentInstallment: installmentNumber,
+          totalInstallments,
+          amountCents,
+          description: rawTransaction.description || 'Compra parcelada',
+          merchant: rawTransaction.merchant?.name || rawTransaction.merchant?.businessName || rawTransaction.description || 'Compra parcelada',
+          categoryId,
+          projectId,
+          notes: existingClassification.notes || '',
+          purchaseDate,
+        });
+      }
+    }
   };
 
   const syncPluggyConnection = async (connection) => {
@@ -1754,6 +2363,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           .forEach(item => batch.set(item.ref, item.data));
         await batch.commit();
       }
+
+      await syncCreditCardData({ data, connection });
 
       await setDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`), {
         companyId,
@@ -2655,8 +3266,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               {days.map((day, idx) => {
                 const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
                 const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day) : [];
-                const income = dayTx.filter(t => t.type === 'INCOME').reduce((s,t)=>s+Number(t.amountCents||0),0);
-                const expense = dayTx.filter(t => t.type === 'EXPENSE').reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const income = dayTx.filter(t => t.type === 'INCOME' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const expense = dayTx.filter(t => t.type === 'EXPENSE' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const plannedIncome = dayPlanned.filter(t => t.type === 'RECEIVABLE').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const plannedExpense = dayPlanned.filter(t => t.type === 'PAYABLE' || t.type === 'CARD_BILL').reduce((s,t)=>s+Number(t.amountCents||0),0);
                 return <div key={`${day || 'blank'}-${idx}`} className="min-h-[76px] bg-slate-50 border border-slate-100 rounded-lg p-2">
@@ -2712,10 +3323,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <div className="grid grid-cols-7 gap-1">
               {days.map((day, idx) => {
                 const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
-                const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day) : [];
+                const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day && t.kind !== 'CARD_BILL') : [];
+                const dayBills = day ? bills.filter(b => (b.dueDate || '') === day) : [];
                 const dayProjection = day ? projection.byDate[day] : null;
-                const actualIncome = dayTx.filter(t => t.type === 'INCOME').reduce((s,t)=>s+Number(t.amountCents||0),0);
-                const actualExpense = dayTx.filter(t => t.type === 'EXPENSE').reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const actualIncome = dayTx.filter(t => t.type === 'INCOME' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
+                const actualExpense = dayTx.filter(t => t.type === 'EXPENSE' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
 
                 return <div key={`${day || 'blank2'}-${idx}`} className="min-h-[142px] border border-slate-100 rounded-lg p-2 bg-white">
                   {day && (
@@ -2729,9 +3341,23 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     {actualIncome > 0 && <div className="text-[9px] px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-bold">+ real {formatBRL(actualIncome)}</div>}
                     {actualExpense > 0 && <div className="text-[9px] px-2 py-1 rounded-lg bg-red-50 text-red-700 font-bold">− real {formatBRL(actualExpense)}</div>}
 
+                    {dayBills.slice(0, 4).map(bill => {
+                      const card = cards.find(item => item.id === bill.cardId);
+                      const remaining = Math.max(0, Number(bill.totalCents || 0) - Number(bill.paidCents || 0));
+                      const paid = bill.status === 'PAID' || (remaining === 0 && Number(bill.totalCents || 0) > 0);
+                      return <button
+                        key={`bill_${bill.id}`}
+                        type="button"
+                        onClick={() => setModal({ type: 'billDetails', billId: bill.id })}
+                        className={`w-full text-left text-[9px] px-2 py-1 rounded-lg border font-bold ${paid ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : bill.status === 'OVERDUE' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}
+                      >
+                        {paid ? '✓' : '↘'} fatura · {card?.name || 'Cartão'} · {formatBRL(bill.totalCents)} {bill.provisional ? '· estimada' : ''}
+                      </button>;
+                    })}
+                    {dayBills.length > 4 && <div className="text-[9px] text-slate-400">+{dayBills.length - 4} faturas</div>}
                     {dayPlanned.slice(0, 4).map(event => {
                       const isIncome = event.type === 'RECEIVABLE';
-                      const label = event.type === 'CARD_BILL' ? 'fatura' : event.type === 'PAYABLE' ? 'a pagar' : 'a receber';
+                      const label = event.type === 'PAYABLE' ? 'a pagar' : 'a receber';
                       return <div key={event.id} className="text-[9px] px-2 py-1 rounded-lg border border-dashed border-slate-200 bg-blue-50 text-blue-700 font-bold">
                         {isIncome ? '↗' : '↘'} {label} {formatBRL(event.amountCents)} · {event.description}
                       </div>;
@@ -3085,7 +3711,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {cards.map(card => {
-                const openBills = bills.filter(b => b.cardId === card.id && b.status !== 'PAID');
+                const openBills = bills.filter(b => b.cardId === card.id && b.status !== 'PAID' && Number(b.totalCents || 0) > Number(b.paidCents || 0));
                 const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
@@ -3126,10 +3752,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const card = cards.find(c=>c.id===b.cardId);
                 const remaining = Math.max(0, Number(b.totalCents||0) - Number(b.paidCents||0));
                 const paid = remaining === 0 && Number(b.totalCents||0) > 0;
-                return <div key={b.id} className="flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50">
-                  <div className="flex-1"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.closingDate)} · Vencimento {dateLabel(b.dueDate)}</p></div>
-                  <div className="text-right"><p className="font-black text-slate-800">{formatBRL(b.totalCents)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
-                </div>;
+                return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
+                  <div className="flex-1"><div className="flex items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p>{b.provisional && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">estimada</span>}</div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.closingDate)} · Vencimento {dateLabel(b.dueDate)} · {b.source === 'PLUGGY' ? 'sincronizada' : 'local'}</p></div>
+                  <div className="text-right"><p className="font-black text-slate-800">{formatBRL(b.totalCents)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                </button>;
               })}
               {!bills.length && <EmptyState text="As faturas aparecerão aqui quando você lançar compras no cartão."/>}
             </div>
@@ -3158,6 +3784,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         onClose={()=>setModal(null)}
         onSave={saveCategory}
         busy={busy}
+      />}
+      {modal?.type === 'billDetails' && modal.billId && <BillDetailsModal
+        bill={bills.find(item => item.id === modal.billId)}
+        card={cards.find(item => item.id === bills.find(bill => bill.id === modal.billId)?.cardId)}
+        transactions={transactions.filter(item => item.billId === modal.billId)}
+        categories={categories}
+        onEditTransaction={openEditTransaction}
+        onClose={() => setModal(null)}
       />}
       {modal?.type === 'transaction' && <TransactionModal
         initial={modal.initial} accounts={accounts} cards={cards} categories={categories}
@@ -3522,12 +4156,119 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
   );
 }
 
+function BillDetailsModal({ bill, card, transactions: billTransactions, categories, onEditTransaction, onClose }) {
+  if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
+
+  const sortedTransactions = [...billTransactions]
+    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+
+  const total = Number(bill.totalCents || 0);
+  const paid = Number(bill.paidCents || 0);
+  const remaining = Math.max(0, total - paid);
+  const status = bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.dueDate, provisional: bill.provisional });
+  const statusLabel = status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
+
+  return (
+    <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>
+      <div className="space-y-5">
+        <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-lg font-black text-slate-800">{card?.institution || 'Instituição financeira'}</p>
+                {card?.brand && <span className="text-[10px] font-black uppercase text-slate-500">{card.brand}</span>}
+                {bill.provisional && <span className="text-[9px] font-black uppercase px-2 py-1 rounded-lg bg-blue-100 text-blue-700">Fatura estimada</span>}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">{card?.name || 'Cartão'} · referência {bill.referenceMonth || '—'}</p>
+              <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.closingDate)} · vencimento {dateLabel(bill.dueDate)}</p>
+            </div>
+            <span className={`text-xs font-black uppercase px-3 py-2 rounded-xl ${status === 'PAID' ? 'bg-emerald-100 text-emerald-700' : status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{statusLabel}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Metric label="Total" value={formatBRL(total)} icon={<WalletCards size={16}/>} tone="slate"/>
+          <Metric label="Pago" value={formatBRL(paid)} icon={<Check size={16}/>} tone="green"/>
+          <Metric label="Restante" value={formatBRL(remaining)} icon={<CircleAlert size={16}/>} tone={remaining > 0 ? 'red' : 'green'}/>
+          <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
+        </div>
+
+        {bill.provisional && (
+          <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800">
+            Esta fatura é uma <strong>projeção do ArquiManager</strong>. Ela será atualizada para uma fatura oficial quando a instituição disponibilizar o ciclo pela Pluggy.
+          </div>
+        )}
+
+        {Array.isArray(bill.payments) && bill.payments.length > 0 && (
+          <div className="border border-slate-200 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div><h4 className="font-black text-slate-800">Pagamentos</h4><p className="text-[10px] text-slate-400">Pagamentos informados pela instituição.</p></div>
+              <span className="text-[10px] font-black text-emerald-600">{formatBRL(paid)}</span>
+            </div>
+            <div className="space-y-2">
+              {bill.payments.map((payment, index) => (
+                <div key={payment.id || index} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50">
+                  <Check className="text-emerald-600 shrink-0" size={16}/>
+                  <div className="flex-1"><p className="font-bold text-slate-700">{payment.valueType || 'Pagamento'}</p><p className="text-[10px] text-slate-400">{dateLabel(syncDateOnly(payment.paymentDate))} · {payment.paymentMode || '—'}</p></div>
+                  <span className="font-black text-emerald-600 text-sm">{formatBRL(toCents(payment.amount))}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {Array.isArray(bill.financeCharges) && bill.financeCharges.length > 0 && (
+          <div className="border border-amber-100 bg-amber-50 rounded-2xl p-4">
+            <h4 className="font-black text-amber-900">Encargos financeiros</h4>
+            <div className="mt-2 space-y-1">{bill.financeCharges.map((charge, index) => <div key={charge.id || index} className="flex items-center justify-between text-xs text-amber-800"><span>{charge.type || 'Encargo'}</span><strong>{formatBRL(toCents(charge.amount))}</strong></div>)}</div>
+          </div>
+        )}
+
+        <div className="border border-slate-200 rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <div><h4 className="font-black text-slate-800">Lançamentos</h4><p className="text-[10px] text-slate-400">{sortedTransactions.length} lançamento(s) nesta fatura</p></div>
+            <span className="text-[10px] font-black text-slate-400">{formatBRL(sortedTransactions.reduce((sum, tx) => sum + (tx.type === 'INCOME' ? -Number(tx.amountCents || 0) : Number(tx.amountCents || 0)), 0))}</span>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {sortedTransactions.map(tx => {
+              const category = categories.find(item => item.id === tx.categoryId);
+              const installment = Number(tx.creditCardInstallmentNumber || 0);
+              const installments = Number(tx.creditCardTotalInstallments || 0);
+              return (
+                <div key={tx.id} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
+                  <div className="w-12 shrink-0"><p className="text-[10px] font-black text-slate-500">{dateLabel(tx.date)}</p></div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p>{tx.source === 'PLUGGY_PROJECTION' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">projetada</span>}{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>
+                    <p className="text-[10px] text-slate-400 truncate">{tx.description}{category ? ` · ${category.nome}` : ' · categoria não definida'}{tx.notes ? ` · ${tx.notes}` : ''}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-black text-sm ${tx.type === 'INCOME' ? 'text-emerald-600' : 'text-red-600'}`}>{tx.type === 'INCOME' ? '+' : '-'}{formatBRL(tx.amountCents)}</span>
+                    <button type="button" onClick={() => onEditTransaction(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Reclassificar / editar parcelamento">
+                      <Pencil size={15}/>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {!sortedTransactions.length && <div className="p-8"><EmptyState text="Nenhum lançamento vinculado a esta fatura ainda."/></div>}
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <button onClick={onClose} className="px-5 py-2.5 border rounded-xl text-xs font-bold">Fechar</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function TransactionModal({ initial, accounts, cards, categories, projects, clients, onClose, onSave, busy }) {
   const [data, setData] = useState(initial);
   const update = (k,v) => setData(prev=>({...prev,[k]:v}));
   const editing = !!data.editing;
   const lockedCore = !!data.lockedCore;
   const isTransfer = data.reconciliationType === 'TRANSFER';
+  const creditCardEdit = Boolean(data.creditCardEdit || data.isCreditCardTransaction || data.cardId && (data.creditCardInstallmentNumber || data.creditCardTotalInstallments));
   return (
     <Modal title={editing ? 'Editar movimentação' : (data.type === 'INCOME' ? 'Nova entrada' : 'Nova despesa')} onClose={onClose}>
       <div className="grid sm:grid-cols-2 gap-4">
@@ -3538,6 +4279,38 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
           </select>
         </Field>}
         <Field label="Descrição *"><input value={data.description||''} onChange={e=>update('description',e.target.value)} className={inputCls}/></Field>
+        {creditCardEdit && (
+          <div className="sm:col-span-2 p-4 rounded-2xl bg-blue-50 border border-blue-100">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-blue-800">Cobrança no cartão</p>
+                <p className="text-[10px] text-blue-600 mt-0.5">Ajuste o parcelamento sem alterar o fato bancário original.</p>
+              </div>
+              <WalletCards size={18} className="text-blue-700"/>
+            </div>
+            <Field label="Tipo de cobrança">
+              <select value={data.creditCardPaymentType || 'SINGLE'} onChange={e=>update('creditCardPaymentType',e.target.value)} className={inputCls}>
+                <option value="SINGLE">Crédito à vista</option>
+                <option value="INSTALLMENT">Compra parcelada</option>
+              </select>
+            </Field>
+            {String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT' && (
+              <div className="grid sm:grid-cols-2 gap-3 mt-3">
+                <Field label="Parcela atual">
+                  <input value={data.creditCardInstallmentNumber || 1} onChange={e=>update('creditCardInstallmentNumber',e.target.value)} type="number" min="1" max="48" className={inputCls}/>
+                </Field>
+                <Field label="Quantidade total de parcelas">
+                  <input value={data.creditCardTotalInstallments || 1} onChange={e=>update('creditCardTotalInstallments',e.target.value)} type="number" min="1" max="48" className={inputCls}/>
+                </Field>
+              </div>
+            )}
+            {String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT' && Number(data.creditCardTotalInstallments || 1) > Number(data.creditCardInstallmentNumber || 1) && (
+              <p className="mt-3 text-[10px] font-bold text-blue-700">
+                Serão projetadas {Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)} parcelas futuras e elas serão somadas às faturas existentes dos meses correspondentes.
+              </p>
+            )}
+          </div>
+        )}
         <Field label="Valor (R$) *">
           <input value={data.amount||''} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" disabled={lockedCore} className={inputCls}/>
         </Field>

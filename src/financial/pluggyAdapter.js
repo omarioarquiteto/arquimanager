@@ -93,6 +93,9 @@ export const pluggyTransactionDetailsToFinancial = (transaction = {}) => {
     creditCardLast4: safeText(credit.cardNumber || transaction.cardNumber).replace(/\\D/g, '').slice(-4) || null,
     creditCardBillId: safeText(credit.billId || transaction.billId) || null,
     creditCardPurchaseDate: safeText(credit.purchaseDate || transaction.purchaseDate) || null,
+    creditCardBillForecastDate: safeText(credit.billForecastDate || transaction.billForecastDate) || null,
+    creditCardBillPostDate: safeText(credit.billPostDate || transaction.billPostDate) || null,
+    creditCardPaymentType: safeText(credit.paymentType || transaction.paymentType) || null,
 
     providerType: safeText(transaction.type) || null,
     providerStatus: safeText(transaction.status) || null,
@@ -148,6 +151,9 @@ export const pluggyTransactionToFinancial = ({
     financialAccountId,
     accountId: financialAccountId,
     cardId: financialCardId,
+    accountType: financialCardId ? 'CREDIT_CARD' : 'BANK_ACCOUNT',
+    isCreditCardTransaction: Boolean(financialCardId),
+    cashImpact: financialCardId ? false : true,
 
     date,
     actualDate: date,

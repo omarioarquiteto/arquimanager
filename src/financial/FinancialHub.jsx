@@ -313,17 +313,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
 
     const scored = bills
-      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > Number(b.paidCents || 0))
+      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > 0)
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
-        const remaining = Number(b.totalCents || 0) - Number(b.paidCents || 0);
+        const remaining = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
+        const alreadyPaid = Number(b.paidCents || 0) >= Number(b.totalCents || 0) && Number(b.totalCents || 0) > 0;
         const cardName = normalizeText(card.name || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
         let score = 0;
-        if (amountCents === remaining) score += 100;
-        else if (amountCents < remaining) score += 40;
+        if (amountCents === remaining && remaining > 0) score += 100;
+        else if (alreadyPaid && amountCents === Number(b.totalCents || 0)) score += 90;
+        else if (remaining > 0 && amountCents < remaining) score += 40;
         if (card.paymentAccountId && card.paymentAccountId === accountId) score += 40;
         if (cardName && normalizedDescription.includes(cardName)) score += 30;
         if (cardInstitution && normalizedDescription.includes(cardInstitution)) score += 10;
@@ -345,17 +347,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const reconcileCardPayment = async ({ transactionId, amountCents, date, description, accountId }) => {
     const match = findCardBillForPayment({ amountCents, date, description, accountId });
     if (match.status !== 'MATCH') return match;
-    const paidCents = Number(match.bill.paidCents || 0) + amountCents;
+    const currentPaidCents = Number(match.bill.paidCents || 0);
     const totalCents = Number(match.bill.totalCents || 0);
-    await updateDoc(docPath(db, 'financial_bills', match.bill.id), {
-      paidCents, status: paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID',
-      lastPaymentTransactionId: transactionId, lastPaidAt: date, updatedAt: serverTimestamp(),
-    });
+    const alreadyPaid = currentPaidCents >= totalCents && totalCents > 0;
+    const paidCents = alreadyPaid ? currentPaidCents : currentPaidCents + amountCents;
+    if (!alreadyPaid) {
+      await updateDoc(docPath(db, 'financial_bills', match.bill.id), {
+        paidCents, status: paidCents >= totalCents ? 'PAID' : 'PARTIALLY_PAID',
+        lastPaymentTransactionId: transactionId, lastPaidAt: date, updatedAt: serverTimestamp(),
+      });
+    }
     await updateDoc(docPath(db, 'financial_transactions', transactionId), {
       status: 'RECONCILED', reconciliationType: 'CARD_BILL_PAYMENT',
       billId: match.bill.id, cardId: match.bill.cardId, updatedAt: serverTimestamp(),
     });
-    return { ...match, paidCents, status: 'MATCHED' };
+    return { ...match, paidCents, status: 'MATCHED', alreadyPaid };
   };
   const matchPlannedItem = ({ items, amountCents, date, description, type }) => {
     const normalizedDescription = normalizeText(description);
@@ -1566,6 +1572,15 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         financialAccountId: card.id,
         financialCardId: card.id,
       });
+
+      const creditLast4 = String(rawCredit.cardNumber || rawTransaction.cardNumber || '').replace(/\D/g, '').slice(-4);
+      if (creditLast4 && (!card.last4 || card.last4 !== creditLast4)) {
+        await updateDoc(docPath(db, 'financial_cards', card.id), {
+          last4: creditLast4,
+          updatedAt: serverTimestamp(),
+        });
+        card.last4 = creditLast4;
+      }
 
       await setDoc(docPath(db, 'financial_transactions', localTransactionId), {
         ...normalized,

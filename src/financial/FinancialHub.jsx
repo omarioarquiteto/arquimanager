@@ -3174,51 +3174,36 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return scope;
   };
 
-  const requestClearPluggyConnection = async (connection) => {
+  const requestClearPluggyConnection = (connection) => {
     if (!connection?.itemId) {
       setNotice('Não foi possível identificar o banco selecionado.');
       return;
     }
 
-    setBusy(true);
-    try {
-      let scope;
-      try {
-        scope = await loadFreshPluggyCleanupScope(connection);
-      } catch (freshError) {
-        console.error('[ArquiManager] Falha ao ler dados atuais para limpeza Pluggy:', freshError);
-        scope = getPluggyCleanupScope(connection);
-      }
-
-      if (!scope) {
-        setNotice('Não foi possível identificar os dados sincronizados deste banco.');
-        return;
-      }
-
-      if (
-        !scope.pluggyTransactions.length
-        && !scope.pluggyAccounts.length
-        && !scope.pluggyCards.length
-        && !scope.pluggyBills.length
-        && !(scope.pluggyPurchases || []).length
-        && !(scope.pluggyInstallments || []).length
-        && !scope.pluggyInbox.length
-        && !scope.autoPluggyTransfers.length
-      ) {
-        setNotice(`Não há dados sincronizados da Pluggy para ${connection.connectorName || 'este banco'}.`);
-        return;
-      }
-
-      setModal({
-        type: 'pluggyClearConfirm',
-        scope,
-      });
-    } catch (err) {
-      console.error('[ArquiManager] Falha ao preparar limpeza Pluggy:', err);
-      setNotice(err?.message || 'Não foi possível preparar a limpeza dos dados sincronizados deste banco.');
-    } finally {
-      setBusy(false);
+    // A abertura da confirmação usa o snapshot local, que já é instantâneo.
+    // A exclusão final relê o Firestore para garantir que o escopo esteja atual.
+    const scope = getPluggyCleanupScope(connection);
+    if (!scope) {
+      setNotice('Não foi possível identificar os dados sincronizados deste banco.');
+      return;
     }
+
+    if (
+      !scope.pluggyTransactions.length
+      && !scope.pluggyAccounts.length
+      && !scope.pluggyCards.length
+      && !scope.pluggyBills.length
+      && !scope.pluggyInbox.length
+      && !scope.autoPluggyTransfers.length
+    ) {
+      setNotice(`Não há dados sincronizados da Pluggy para ${connection.connectorName || 'este banco'}.`);
+      return;
+    }
+
+    setModal({
+      type: 'pluggyClearConfirm',
+      scope,
+    });
   };
 
   const confirmClearPluggyConnection = (scope) => {
@@ -3300,6 +3285,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     setBusy(true);
     try {
+      // O escopo recebido da confirmação pode estar defasado enquanto o
+      // usuário lia a mensagem. Sempre refazemos a leitura imediatamente
+      // antes da exclusão para trabalhar com o estado real do Firestore.
+      try {
+        const freshScope = await loadFreshPluggyCleanupScope(connection);
+        if (freshScope) scope = freshScope;
+      } catch (freshError) {
+        console.error('[ArquiManager] Falha ao reler escopo antes da limpeza Pluggy:', freshError);
+        // Mantém o escopo já calculado como fallback.
+      }
+
+      // O escopo fresco já contém compras/parcelas quando disponíveis.
+      // Mantemos os snapshots abaixo apenas para compatibilidade com escopos legados.
       // O escopo normalmente já foi relido diretamente do Firestore no
       // momento da confirmação. Mantemos a leitura como fallback para escopos
       // legados/antigos que não possuam os derivados.
@@ -3540,15 +3538,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     );
     if (!confirmed) return;
 
-    let scope = null;
-    try {
-      scope = await loadFreshPluggyCleanupScope(connection);
-    } catch (err) {
-      console.error('[ArquiManager] Falha ao reler dados antes da exclusão:', err);
-      scope = getPluggyCleanupScope(connection);
-    }
-
-    scope = scope || {
+    const scope = getPluggyCleanupScope(connection) || {
       connection,
       pluggyTransactions: [],
       pluggyAccounts: [],

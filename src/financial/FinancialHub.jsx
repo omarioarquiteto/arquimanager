@@ -2960,6 +2960,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         pluggyTransactionIds,
       } = scope;
 
+      const purchaseSnapshot = await getDocs(collectionPath(db, 'financial_purchases'));
+      const pluggyPurchases = purchaseSnapshot.docs
+        .map(item => ({ id: item.id, ...item.data() }))
+        .filter(item => item.companyId === companyId && pluggyCardIds.has(item.cardId));
+      const pluggyPurchaseIds = new Set(pluggyPurchases.map(item => item.id));
+
+      const installmentSnapshot = await getDocs(collectionPath(db, 'financial_installments'));
+      const pluggyInstallments = installmentSnapshot.docs
+        .map(item => ({ id: item.id, ...item.data() }))
+        .filter(item => item.companyId === companyId && pluggyPurchaseIds.has(item.purchaseId));
+
       const affectedBillAmounts = new Map();
       const affectedPayableAmounts = new Map();
       const affectedReceivableAmounts = new Map();
@@ -3042,6 +3053,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const batch = writeBatch(db);
         billIdsToDelete.slice(start, start + 400).forEach(id => {
           batch.delete(docPath(db, 'financial_bills', id));
+        });
+        await batch.commit();
+      }
+
+      const installmentIdsToDelete = pluggyInstallments.map(item => item.id);
+      for (let start = 0; start < installmentIdsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        pluggyInstallments.slice(start, start + 400).forEach(item => {
+          batch.delete(docPath(db, 'financial_installments', item.id));
+        });
+        await batch.commit();
+      }
+
+      const purchaseIdsToDelete = pluggyPurchases.map(item => item.id);
+      for (let start = 0; start < purchaseIdsToDelete.length; start += 400) {
+        const batch = writeBatch(db);
+        pluggyPurchases.slice(start, start + 400).forEach(item => {
+          batch.delete(docPath(db, 'financial_purchases', item.id));
         });
         await batch.commit();
       }

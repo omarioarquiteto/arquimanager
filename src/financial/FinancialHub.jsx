@@ -1969,8 +1969,46 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       let newImported = 0;
       let alreadyPresent = 0;
 
-      (data.transactions || []).forEach(rawTransaction => {
-        if (!rawTransaction?.id) return;
+      const yieldToBrowser = () => new Promise(resolve => {
+        window.setTimeout(resolve, 0);
+      });
+
+      const commitTransactionChunk = async (chunk, committed, total) => {
+        if (!chunk.length) return;
+
+        const transactionBatch = writeBatch(db);
+        chunk.forEach(item => transactionBatch.set(item.ref, item.data));
+
+        const timeoutPromise = new Promise((_, reject) => {
+          window.setTimeout(() => reject(
+            new Error(
+              'A gravação de movimentações no Firestore demorou mais de 45 segundos. ' +
+              'A sincronização foi interrompida para evitar que permaneça travada em 56%.'
+            )
+          ), 45000);
+        });
+
+        await Promise.race([
+          transactionBatch.commit(),
+          timeoutPromise,
+        ]);
+
+        const nextCommitted = committed + chunk.length;
+        const writeProgress = 48 + (nextCommitted / Math.max(1, total)) * 18;
+        reportProgress(
+          writeProgress,
+          'Gravando movimentações bancárias: ' + nextCommitted + '/' + total + '...'
+        );
+      };
+
+      let newImported = 0;
+      let alreadyPresent = 0;
+      let preparedTransactions = 0;
+
+      // Processamento incremental: evita um forEach síncrono gigante bloquear
+      // a UI enquanto os lançamentos são preparados.
+      for (const rawTransaction of (data.transactions || [])) {
+        if (!rawTransaction?.id) continue;
 
         const externalId = `pluggy:${rawTransaction.id}`;
         const financialAccountId = `${companyId}_pluggy_account_${rawTransaction.accountId}`;
@@ -1982,9 +2020,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           amountCents: Math.abs(toCents(
             rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0
           )),
-          type: rawTransaction.type === 'credit' ? 'INCOME' : rawTransaction.type === 'debit' ? 'EXPENSE' : (Number(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0) < 0 ? 'EXPENSE' : 'INCOME'),
+          type: rawTransaction.type === 'credit'
+            ? 'INCOME'
+            : rawTransaction.type === 'debit'
+              ? 'EXPENSE'
+              : (
+                Number(rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0) < 0
+                  ? 'EXPENSE'
+                  : 'INCOME'
+              ),
           description: rawTransaction.description || rawTransaction.descriptionRaw || '',
-          merchant: rawTransaction.merchant?.name || rawTransaction.merchant?.businessName || rawTransaction.description || '',
+          merchant: rawTransaction.merchant?.name
+            || rawTransaction.merchant?.businessName
+            || rawTransaction.description
+            || '',
         });
 
         const existing = existingByExternalId.get(externalId)
@@ -1993,10 +2042,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         if (existing) {
           alreadyPresent += 1;
 
-          // Mantém a classificação existente, mas garante que o vínculo com
-          // o lançamento original da Pluggy esteja gravado de forma estável.
-          // A atualização é aplicada depois, no processamento assíncrono da
-          // sincronização, porque este callback não é async.
           const existingData = {
             ...existing,
             ...pluggyTransactionDetailsToFinancial(rawTransaction),
@@ -2016,68 +2061,78 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             isNew: false,
             refreshIdentity: true,
           });
-          return;
+        } else {
+          try {
+            const normalized = pluggyTransactionToFinancial({
+              transaction: rawTransaction,
+              companyId,
+              financialAccountId,
+            });
+
+            const deterministicKey = stableHash(externalId);
+            const ref = docPath(
+              db,
+              'financial_transactions',
+              `${companyId}_pluggy_tx_${deterministicKey}`
+            );
+            const item = {
+              ref,
+              id: ref.id,
+              data: {
+                ...normalized,
+                importedAt: serverTimestamp(),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              },
+              rawTransaction,
+              isNew: true,
+            };
+
+            pendingTransactionWrites.push({
+              ref,
+              data: item.data,
+            });
+            importedItems.push(item);
+
+            const indexedItem = {
+              ...item.data,
+              id: ref.id,
+            };
+            existingByExternalId.set(externalId, indexedItem);
+            const indexedFingerprint = transactionFingerprint(indexedItem);
+            if (indexedFingerprint) existingByFingerprint.set(indexedFingerprint, indexedItem);
+            newImported += 1;
+          } catch (err) {
+            console.error('Transação Pluggy ignorada:', err);
+          }
         }
 
-        try {
-          const normalized = pluggyTransactionToFinancial({
-            transaction: rawTransaction,
-            companyId,
-            financialAccountId,
-          });
+        preparedTransactions += 1;
 
-          // O id do documento é derivado do identificador da Pluggy.
-          // O externalId/providerTransactionId continuam gravados para auditoria
-          // e para localizar o mesmo lançamento em sincronizações futuras.
-          const deterministicKey = stableHash(externalId);
-          const ref = docPath(db, 'financial_transactions', `${companyId}_pluggy_tx_${deterministicKey}`);
-          const item = {
-            ref,
-            id: ref.id,
-            data: {
-              ...normalized,
-              importedAt: serverTimestamp(),
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            },
-            rawTransaction,
-            isNew: true,
-          };
-
-          pendingTransactionWrites.push({
-            ref,
-            data: item.data,
-          });
-          importedItems.push(item);
-          const indexedItem = {
-            ...item.data,
-            id: ref.id,
-          };
-          existingByExternalId.set(externalId, indexedItem);
-          const indexedFingerprint = transactionFingerprint(indexedItem);
-          if (indexedFingerprint) existingByFingerprint.set(indexedFingerprint, indexedItem);
-          newImported += 1;
-        } catch (err) {
-          console.error('Transação Pluggy ignorada:', err);
+        if (preparedTransactions % 50 === 0) {
+          const preparationProgress = 48
+            + (preparedTransactions / Math.max(1, data.transactions?.length || preparedTransactions)) * 3;
+          reportProgress(
+            Math.min(51, preparationProgress),
+            'Preparando movimentações bancárias: ' + preparedTransactions + '/' + (data.transactions?.length || preparedTransactions) + '...'
+          );
+          await yieldToBrowser();
         }
-      });
+      }
 
-      // O Firestore permite no máximo 500 operações por writeBatch. Além
-      // desse limite, um lote único deixa a sincronização vulnerável a travas
-      // perceptíveis no navegador. Gravamos em blocos menores e atualizamos
-      // o progresso a cada commit.
-      for (let start = 0; start < pendingTransactionWrites.length; start += 400) {
-        const chunk = pendingTransactionWrites.slice(start, start + 400);
-        const transactionBatch = writeBatch(db);
-        chunk.forEach(item => transactionBatch.set(item.ref, item.data));
-        await transactionBatch.commit();
-
-        const committed = start + chunk.length;
-        const writeProgress = 48 + (committed / Math.max(1, pendingTransactionWrites.length)) * 18;
-        reportProgress(
-          writeProgress,
-          'Gravando movimentações bancárias: ' + committed + '/' + pendingTransactionWrites.length + '...'
+      // O Firestore tem limite de tamanho de requisição além do limite de
+      // operações. Usamos blocos de 50 para evitar lotes pesados com
+      // providerRawData da Pluggy.
+      let committedTransactions = 0;
+      for (let start = 0; start < pendingTransactionWrites.length; start += 50) {
+        const chunk = pendingTransactionWrites.slice(start, start + 50);
+        await commitTransactionChunk(
+          chunk,
+          committedTransactions,
+          pendingTransactionWrites.length
         );
+        committedTransactions += chunk.length;
+        await yieldToBrowser();
       }
 
       reportProgress(66, 'Movimentações importadas. Processando conciliações...');

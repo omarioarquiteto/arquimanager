@@ -3083,11 +3083,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         setModal(null);
         setNotice(
           `Dados sincronizados de ${connection.connectorName || 'este banco'} excluídos: ` +
-          `${pluggyTransactions.length} movimentação(ões), ` +
+          `${pluggyTransactions.length} lançamento(s), ` +
+          `${pluggyBills.length} fatura(s), ` +
+          `${pluggyCards.length} cartão(ões), ` +
           `${pluggyAccounts.length} conta(s), ` +
           `${pluggyInbox.length} item(ns) de Atenção e ` +
           `${autoPluggyTransfers.length} transferência(s) automática(s). ` +
-          `Cadastros manuais foram preservados.`
+          `Cadastros manuais de outros bancos foram preservados.`
         );
       }
     } catch (err) {
@@ -3954,8 +3956,8 @@ function PluggyClearConfirmModal({ scope, onClose, onContinue, busy }) {
         </div>
 
         <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800 font-medium">
-          As movimentações, contas bancárias sincronizadas e vínculos automáticos deste banco serão removidos.
-          Cadastros manuais permanecem intactos.
+          Os lançamentos, faturas, cartões de crédito, contas bancárias sincronizadas e vínculos automáticos deste banco serão removidos.
+          Cadastros manuais de outros bancos permanecem intactos.
         </div>
 
         <div className="flex justify-end gap-2">
@@ -3990,8 +3992,8 @@ function PluggyClearFinalModal({ scope, onClose, onConfirm, busy }) {
         </div>
 
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-          Serão removidos {scope.pluggyTransactions.length} movimentação(ões), {scope.pluggyAccounts.length} conta(s) e {scope.pluggyInbox.length} item(ns) de Atenção sincronizados por este banco.
-          Transferências automáticas vinculadas também serão removidas. Cadastros manuais não serão excluídos.
+          Serão removidos {scope.pluggyTransactions.length} lançamento(s), {scope.pluggyBills.length} fatura(s), {scope.pluggyCards.length} cartão(ões), {scope.pluggyAccounts.length} conta(s) e {scope.pluggyInbox.length} item(ns) de Atenção deste banco.
+          As transferências automáticas vinculadas também serão removidas. Cadastros manuais de outros bancos serão preservados.
         </div>
 
         <div className="flex justify-end gap-2">

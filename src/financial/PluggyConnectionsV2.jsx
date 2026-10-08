@@ -1173,28 +1173,25 @@ export default function PluggyConnectionsV2({
     try {
       const scope = await loadFreshScope(connection);
 
-      if (
-        !scope.providerTransactions.length
-        && !scope.providerAccounts.length
-        && !scope.providerCards.length
-        && !scope.providerBills.length
-        && !scope.providerInbox.length
-        && !scope.providerTransfers.length
-      ) {
+      const hasLocalData = Boolean(
+        scope.providerTransactions.length
+        || scope.providerAccounts.length
+        || scope.providerCards.length
+        || scope.providerBills.length
+        || scope.providerInbox.length
+        || scope.providerTransfers.length
+        || scope.purchases.length
+        || scope.installments.length
+      );
+
+      if (!revokeRemote && !hasLocalData) {
         showNotice(`Não existem dados sincronizados para ${connection.connectorName || 'este banco'}.`);
         return;
       }
 
-      setProgress({
-        percent: 25,
-        status: 'Removendo somente os dados deste banco...',
-      });
-
-      const summary = await clearLocalData(scope);
-
       if (revokeRemote) {
         setProgress({
-          percent: 78,
+          percent: 20,
           status: 'Revogando a autorização no Pluggy...',
         });
 
@@ -1202,6 +1199,24 @@ export default function PluggyConnectionsV2({
           itemId: connection.itemId,
           clientUserId,
         });
+      }
+
+      let summary = {
+        transactions: 0,
+        bills: 0,
+        cards: 0,
+        accounts: 0,
+      };
+
+      if (hasLocalData) {
+        setProgress({
+          percent: revokeRemote ? 40 : 25,
+          status: 'Removendo somente os dados deste banco...',
+        });
+
+        summary = await clearLocalData(scope);
+      } else {
+        await deleteDoc(refDoc(db, 'financial_connections', `${companyId}_${connection.itemId}`));
       }
 
       setProgress({
@@ -1213,7 +1228,7 @@ export default function PluggyConnectionsV2({
 
       showNotice(
         revokeRemote
-          ? `Conexão ${connection.connectorName || 'bancária'} removida do ArquiManager e revogada na Pluggy.`
+          ? `Conexão ${connection.connectorName || 'bancária'} removida e dados locais limpos.`
           : `Dados de ${connection.connectorName || 'este banco'} removidos: ${summary.transactions} lançamento(s), ${summary.bills} fatura(s), ${summary.cards} cartão(ões) e ${summary.accounts} conta(s).`
       );
 

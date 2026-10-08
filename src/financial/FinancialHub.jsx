@@ -1966,9 +1966,133 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const pendingTransactionWrites = [];
       reportProgress(48, 'Base preparada. Importando movimentações bancárias...');
 
+      let newImported = 0;
+      let alreadyPresent = 0;
+      let preparedTransactions = 0;
+
       const yieldToBrowser = () => new Promise(resolve => {
         window.setTimeout(resolve, 0);
       });
+
+      // Prepara as transações fora de callbacks assíncronos gigantes.
+      // A escrita no Firestore acontece em lotes pequenos logo depois.
+      for (const rawTransaction of (data.transactions || [])) {
+        if (!rawTransaction?.id || !rawTransaction?.accountId) continue;
+
+        const externalId = 'pluggy:' + rawTransaction.id;
+        const financialAccountId = `${companyId}_pluggy_account_${rawTransaction.accountId}`;
+
+        const rawAmount = Number(
+          rawTransaction.amountInAccountCurrency ?? rawTransaction.amount ?? 0
+        );
+        if (!Number.isFinite(rawAmount) || rawAmount === 0) continue;
+
+        const rawFingerprint = transactionFingerprint({
+          providerAccountId: rawTransaction.accountId,
+          accountId: rawTransaction.accountId,
+          date: syncDateOnly(rawTransaction.date),
+          amountCents: Math.abs(toCents(rawAmount)),
+          type: rawTransaction.type === 'credit'
+            ? 'INCOME'
+            : rawTransaction.type === 'debit'
+              ? 'EXPENSE'
+              : (rawAmount < 0 ? 'EXPENSE' : 'INCOME'),
+          description: rawTransaction.description || rawTransaction.descriptionRaw || '',
+          merchant: rawTransaction.merchant?.name
+            || rawTransaction.merchant?.businessName
+            || rawTransaction.description
+            || '',
+        });
+
+        const existing = existingByExternalId.get(externalId)
+          || (rawFingerprint ? existingByFingerprint.get(rawFingerprint) : null);
+
+        if (existing) {
+          alreadyPresent += 1;
+
+          const existingData = {
+            ...existing,
+            ...pluggyTransactionDetailsToFinancial(rawTransaction),
+            companyId,
+            source: 'PLUGGY',
+            externalId,
+            providerTransactionId: rawTransaction.id,
+            providerAccountId: rawTransaction.accountId || existing.providerAccountId || null,
+            providerItemId: connection.itemId,
+            providerId: rawTransaction.providerId || existing.providerId || null,
+            providerCode: rawTransaction.providerCode || existing.providerCode || null,
+            financialAccountId: existing.financialAccountId || financialAccountId,
+            accountId: existing.accountId || financialAccountId,
+          };
+
+          importedItems.push({
+            ref: docPath(db, 'financial_transactions', existing.id),
+            id: existing.id,
+            data: existingData,
+            rawTransaction,
+            isNew: false,
+            refreshIdentity: true,
+          });
+        } else {
+          try {
+            const normalized = pluggyTransactionToFinancial({
+              transaction: rawTransaction,
+              companyId,
+              financialAccountId,
+            });
+
+            const deterministicKey = stableHash(externalId);
+            const ref = docPath(
+              db,
+              'financial_transactions',
+              `${companyId}_pluggy_tx_${deterministicKey}`
+            );
+            const item = {
+              ref,
+              id: ref.id,
+              data: {
+                ...normalized,
+                providerItemId: connection.itemId,
+                importedAt: serverTimestamp(),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              },
+              rawTransaction,
+              isNew: true,
+            };
+
+            pendingTransactionWrites.push({
+              ref,
+              data: item.data,
+            });
+            importedItems.push(item);
+
+            const indexedItem = {
+              ...item.data,
+              id: ref.id,
+            };
+            existingByExternalId.set(externalId, indexedItem);
+            const indexedFingerprint = transactionFingerprint(indexedItem);
+            if (indexedFingerprint) existingByFingerprint.set(indexedFingerprint, indexedItem);
+            newImported += 1;
+          } catch (transactionError) {
+            console.error('Transação Pluggy ignorada:', rawTransaction?.id, transactionError);
+          }
+        }
+
+        preparedTransactions += 1;
+
+        if (preparedTransactions % 100 === 0) {
+          const preparationProgress = 48
+            + (preparedTransactions / Math.max(1, data.transactions?.length || preparedTransactions)) * 3;
+          reportProgress(
+            Math.min(51, preparationProgress),
+            'Preparando movimentações bancárias: ' +
+            preparedTransactions + '/' + (data.transactions?.length || preparedTransactions) + '...'
+          );
+          await yieldToBrowser();
+        }
+      }
 
       const TRANSACTION_CHUNK_SIZE = 20;
       const TRANSACTION_CONCURRENCY = 4;
@@ -2011,9 +2135,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             const message = String(err?.message || '').toLowerCase();
             const retryable = attempt === 1 && (
               /unavailable|deadline|aborted|internal|resource-exhausted/.test(code)
-              || /unavailable|deadline|aborted|internal|resource-exhausted|temporarily/.test(message)
+              || /unavailable|deadline|aborted|internal|resource-exhausted|temporarily|network/.test(message)
             );
-
             if (!retryable) break;
             await yieldToBrowser();
           }
@@ -2023,41 +2146,38 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       };
 
       let committedTransactions = 0;
-      const transactionChunks = [];
-      for (let start = 0; start < pendingTransactionWrites.length; start += TRANSACTION_CHUNK_SIZE) {
-        transactionChunks.push(
-          pendingTransactionWrites.slice(start, start + TRANSACTION_CHUNK_SIZE)
-        );
-      }
+      const groupSize = TRANSACTION_CHUNK_SIZE * TRANSACTION_CONCURRENCY;
 
-      // Quatro lotes pequenos podem ser gravados em paralelo. Isso reduz
-      // drasticamente o tempo total sem criar um lote grande o suficiente para
-      // bloquear a sincronização ou estourar o payload.
-      for (let groupStart = 0; groupStart < transactionChunks.length; groupStart += TRANSACTION_CONCURRENCY) {
-        const group = transactionChunks.slice(
-          groupStart,
-          groupStart + TRANSACTION_CONCURRENCY
-        );
-        const groupTotal = group.reduce((sum, chunk) => sum + chunk.length, 0);
-        const groupEnd = committedTransactions + groupTotal;
-        const groupNumber = Math.floor(groupStart / TRANSACTION_CONCURRENCY) + 1;
-        const totalGroups = Math.ceil(transactionChunks.length / TRANSACTION_CONCURRENCY);
+      for (let groupStart = 0; groupStart < pendingTransactionWrites.length; groupStart += groupSize) {
+        const group = [];
+        for (let offset = 0; offset < TRANSACTION_CONCURRENCY; offset += 1) {
+          const startIndex = groupStart + (offset * TRANSACTION_CHUNK_SIZE);
+          if (startIndex >= pendingTransactionWrites.length) break;
+          group.push(pendingTransactionWrites.slice(startIndex, startIndex + TRANSACTION_CHUNK_SIZE));
+        }
 
+        const groupNumber = Math.floor(groupStart / groupSize) + 1;
+        const totalGroups = Math.ceil(pendingTransactionWrites.length / groupSize);
         reportProgress(
           48 + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18,
           'Gravando movimentações: lote ' + groupNumber + '/' + totalGroups + '...'
         );
 
         await Promise.all(group.map(chunk => commitTransactionChunk(chunk)));
+        committedTransactions += group.reduce((sum, chunk) => sum + chunk.length, 0);
 
-        committedTransactions = groupEnd;
+        const writeProgress = 48
+          + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18;
         reportProgress(
-          48 + (committedTransactions / Math.max(1, pendingTransactionWrites.length)) * 18,
+          writeProgress,
           'Movimentações gravadas: ' + committedTransactions + '/' + pendingTransactionWrites.length + '...'
         );
         await yieldToBrowser();
       }
 
+      console.info('[ArquiManager] Pluggy transactions committed:', {
+        total: committedTransactions,
+      });
       reportProgress(66, 'Movimentações importadas. Processando conciliações...');
 
       // O pool local já contém os lançamentos novos, mesmo antes do onSnapshot
@@ -2095,9 +2215,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             externalId: item.data.externalId,
             providerTransactionId: item.data.providerTransactionId,
             providerAccountId: item.data.providerAccountId || null,
+            providerItemId: item.data.providerItemId || connection.itemId,
             providerId: item.data.providerId || null,
             providerCode: item.data.providerCode || null,
             providerUpdatedAt: item.data.providerUpdatedAt || null,
+            financialAccountId: item.data.financialAccountId || null,
+            accountId: item.data.accountId || null,
             updatedAt: serverTimestamp(),
           });
         });
@@ -2824,48 +2947,70 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const getPluggyCleanupScope = (connection) => {
     if (!connection?.itemId) return null;
 
+    const providerItemId = String(connection.itemId);
     const pluggyAccounts = accounts.filter(account =>
       account.companyId === companyId
       && account.provider === 'PLUGGY'
-      && account.providerItemId === connection.itemId
+      && String(account.providerItemId || '') === providerItemId
     );
 
     const providerAccountIds = new Set(
-      pluggyAccounts.map(account => account.providerAccountId).filter(Boolean)
+      pluggyAccounts.map(account => account.providerAccountId).filter(Boolean).map(String)
     );
-    const financialAccountIds = new Set(pluggyAccounts.map(account => account.id));
+    const financialAccountIds = new Set(pluggyAccounts.map(account => account.id).filter(Boolean));
 
     const pluggyCards = cards.filter(card =>
       card.companyId === companyId
-      && card.provider === 'PLUGGY'
-      && card.providerItemId === connection.itemId
+      && (
+        card.provider === 'PLUGGY'
+        || card.source === 'PLUGGY'
+        || !!card.providerCardId
+      )
+      && (
+        String(card.providerItemId || '') === providerItemId
+        || providerAccountIds.has(String(card.providerAccountId || ''))
+      )
     );
-    const pluggyCardIds = new Set(pluggyCards.map(card => card.id));
+    const pluggyCardIds = new Set(pluggyCards.map(card => card.id).filter(Boolean));
 
     const pluggyBills = bills.filter(bill =>
       bill.companyId === companyId
       && (
-        bill.providerItemId === connection.itemId
-        || pluggyCardIds.has(bill.cardId)
+        String(bill.providerItemId || '') === providerItemId
+        || providerAccountIds.has(String(bill.providerAccountId || ''))
+        || (
+          (bill.source === 'PLUGGY' || bill.source === 'PLUGGY_PROJECTION')
+          && pluggyCardIds.has(bill.cardId)
+        )
       )
     );
     const pluggyBillIds = new Set(pluggyBills.map(bill => bill.id));
 
-    const pluggyTransactions = transactions.filter(tx =>
-      tx.companyId === companyId
-      && (
-        tx.providerItemId === connection.itemId
-        || (tx.providerAccountId && providerAccountIds.has(tx.providerAccountId))
-        || (tx.accountId && financialAccountIds.has(tx.accountId))
+    const pluggyTransactions = transactions.filter(tx => {
+      if (tx.companyId !== companyId) return false;
+
+      const providerOwned =
+        tx.source === 'PLUGGY'
+        || tx.source === 'PLUGGY_PROJECTION'
+        || !!tx.providerTransactionId
+        || !!tx.providerItemId;
+
+      if (!providerOwned) return false;
+
+      return (
+        String(tx.providerItemId || '') === providerItemId
+        || (tx.providerAccountId && providerAccountIds.has(String(tx.providerAccountId)))
+        || (tx.accountId && financialAccountIds.has(String(tx.accountId)))
         || (tx.cardId && pluggyCardIds.has(tx.cardId))
         || (tx.billId && pluggyBillIds.has(tx.billId))
-      )
-    );
+      );
+    });
 
     const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
 
     const pluggyInbox = inbox.filter(item =>
       item.companyId === companyId
+      && item.source === 'PLUGGY'
       && pluggyTransactionIds.has(item.transactionId)
     );
 
@@ -2892,21 +3037,182 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     };
   };
 
-  const requestClearPluggyConnection = (connection) => {
-    const scope = getPluggyCleanupScope(connection);
-    if (!scope) {
+  const loadFreshPluggyCleanupScope = async (connection) => {
+    if (!connection?.itemId) return null;
+
+    const [
+      accountsSnapshot,
+      cardsSnapshot,
+      billsSnapshot,
+      transactionsSnapshot,
+      inboxSnapshot,
+      transfersSnapshot,
+    ] = await Promise.all([
+      getDocs(collectionPath(db, 'financial_accounts')),
+      getDocs(collectionPath(db, 'financial_cards')),
+      getDocs(collectionPath(db, 'financial_bills')),
+      getDocs(collectionPath(db, 'financial_transactions')),
+      getDocs(collectionPath(db, 'financial_inbox')),
+      getDocs(collectionPath(db, 'financial_transfers')),
+    ]);
+
+    const freshAccounts = accountsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const freshCards = cardsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const freshBills = billsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const freshTransactions = transactionsSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const freshInbox = inboxSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const freshTransfers = transfersSnapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+
+    const providerItemId = String(connection.itemId);
+    const pluggyAccounts = freshAccounts.filter(account =>
+      account.companyId === companyId
+      && account.provider === 'PLUGGY'
+      && String(account.providerItemId || '') === providerItemId
+    );
+
+    const providerAccountIds = new Set(
+      pluggyAccounts.map(account => account.providerAccountId).filter(Boolean).map(String)
+    );
+    const financialAccountIds = new Set(pluggyAccounts.map(account => account.id).filter(Boolean));
+
+    const pluggyCards = freshCards.filter(card =>
+      card.companyId === companyId
+      && (
+        card.provider === 'PLUGGY'
+        || card.source === 'PLUGGY'
+        || !!card.providerCardId
+      )
+      && (
+        String(card.providerItemId || '') === providerItemId
+        || providerAccountIds.has(String(card.providerAccountId || ''))
+      )
+    );
+    const pluggyCardIds = new Set(pluggyCards.map(card => card.id).filter(Boolean));
+
+    const pluggyBills = freshBills.filter(bill =>
+      bill.companyId === companyId
+      && (
+        String(bill.providerItemId || '') === providerItemId
+        || providerAccountIds.has(String(bill.providerAccountId || ''))
+        || (
+          (bill.source === 'PLUGGY' || bill.source === 'PLUGGY_PROJECTION')
+          && pluggyCardIds.has(bill.cardId)
+        )
+      )
+    );
+    const pluggyBillIds = new Set(pluggyBills.map(bill => bill.id).filter(Boolean));
+
+    const pluggyTransactions = freshTransactions.filter(tx => {
+      if (tx.companyId !== companyId) return false;
+
+      const providerOwned =
+        tx.source === 'PLUGGY'
+        || tx.source === 'PLUGGY_PROJECTION'
+        || !!tx.providerTransactionId
+        || !!tx.providerItemId;
+
+      if (!providerOwned) return false;
+
+      return (
+        String(tx.providerItemId || '') === providerItemId
+        || (tx.providerAccountId && providerAccountIds.has(String(tx.providerAccountId)))
+        || (tx.accountId && financialAccountIds.has(String(tx.accountId)))
+        || (tx.cardId && pluggyCardIds.has(tx.cardId))
+        || (tx.billId && pluggyBillIds.has(tx.billId))
+      );
+    });
+
+    const pluggyTransactionIds = new Set(pluggyTransactions.map(tx => tx.id));
+
+    const pluggyInbox = freshInbox.filter(item =>
+      item.companyId === companyId
+      && item.source === 'PLUGGY'
+      && pluggyTransactionIds.has(item.transactionId)
+    );
+
+    const autoPluggyTransfers = freshTransfers.filter(transfer =>
+      transfer.companyId === companyId
+      && transfer.source === 'AUTO_RECONCILIATION'
+      && (
+        pluggyTransactionIds.has(transfer.outgoingTransactionId)
+        || pluggyTransactionIds.has(transfer.incomingTransactionId)
+      )
+    );
+
+    const scope = {
+      connection,
+      pluggyTransactions,
+      pluggyAccounts,
+      pluggyCards,
+      pluggyBills,
+      pluggyInbox,
+      autoPluggyTransfers,
+      pluggyTransactionIds,
+      pluggyCardIds,
+      pluggyBillIds,
+    };
+
+    const purchaseSnapshot = await getDocs(collectionPath(db, 'financial_purchases'));
+    const installmentSnapshot = await getDocs(collectionPath(db, 'financial_installments'));
+    scope.pluggyPurchases = purchaseSnapshot.docs
+      .map(item => ({ id: item.id, ...item.data() }))
+      .filter(item =>
+        item.companyId === companyId
+        && pluggyCardIds.has(item.cardId)
+        && (
+          item.source === 'PLUGGY'
+          || item.source === 'PLUGGY_PROJECTION'
+          || item.provider === 'PLUGGY'
+          || item.providerItemId === connection.itemId
+        )
+      );
+    const pluggyPurchaseIds = new Set(scope.pluggyPurchases.map(item => item.id));
+    scope.pluggyInstallments = installmentSnapshot.docs
+      .map(item => ({ id: item.id, ...item.data() }))
+      .filter(item => item.companyId === companyId && pluggyPurchaseIds.has(item.purchaseId));
+
+    return scope;
+  };
+
+  const requestClearPluggyConnection = async (connection) => {
+    if (!connection?.itemId) {
       setNotice('Não foi possível identificar o banco selecionado.');
       return;
     }
 
-    if (
-      !scope.pluggyTransactions.length
-      && !scope.pluggyAccounts.length
-      && !scope.pluggyCards.length
-      && !scope.pluggyBills.length
-      && !scope.pluggyInbox.length
-      && !scope.autoPluggyTransfers.length
-    ) {
+    const hasData = (scope) => Boolean(
+      scope && (
+        scope.pluggyTransactions.length
+        || scope.pluggyAccounts.length
+        || scope.pluggyCards.length
+        || scope.pluggyBills.length
+        || scope.pluggyInbox.length
+        || scope.autoPluggyTransfers.length
+      )
+    );
+
+    let scope = getPluggyCleanupScope(connection);
+
+    // Na situação normal o snapshot local já está disponível e a confirmação
+    // abre imediatamente. Se ele estiver vazio/defasado, fazemos uma única
+    // releitura do Firestore para não declarar falsamente que o banco está vazio.
+    if (!hasData(scope)) {
+      setBusy(true);
+      try {
+        scope = await loadFreshPluggyCleanupScope(connection);
+      } catch (err) {
+        console.error('[ArquiManager] Falha ao reler dados para limpeza Pluggy:', err);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    if (!scope) {
+      setNotice('Não foi possível identificar os dados sincronizados deste banco.');
+      return;
+    }
+
+    if (!hasData(scope)) {
       setNotice(`Não há dados sincronizados da Pluggy para ${connection.connectorName || 'este banco'}.`);
       return;
     }
@@ -2929,20 +3235,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     const connection = scope.connection;
     const deleteRemote = Boolean(options.deleteRemote);
-    const safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
-    const safePluggyCardIds = scope.pluggyCardIds instanceof Set
+    let safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
+    let safePluggyCardIds = scope.pluggyCardIds instanceof Set
       ? scope.pluggyCardIds
       : new Set(safePluggyCards.map(card => card.id).filter(Boolean));
-    const safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
+    let safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
       ? scope.pluggyTransactions
       : [];
-    const safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
+    let safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
       ? scope.pluggyTransactionIds
       : new Set(safePluggyTransactions.map(tx => tx.id).filter(Boolean));
-    const safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
-    const safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
-    const safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
-    const safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
+    let safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
+    let safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
+    let safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
+    let safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
       ? scope.autoPluggyTransfers
       : [];
 
@@ -2996,19 +3302,65 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     setBusy(true);
     try {
-      // A confirmação pode permanecer aberta enquanto os snapshots React mudam.
-      // Compras e parcelas são relidas imediatamente antes da remoção.
-      const [purchaseSnapshot, installmentSnapshot] = await Promise.all([
-        getDocs(collectionPath(db, 'financial_purchases')),
-        getDocs(collectionPath(db, 'financial_installments')),
-      ]);
+      // O escopo recebido da confirmação pode estar defasado enquanto o
+      // usuário lia a mensagem. Sempre refazemos a leitura imediatamente
+      // antes da exclusão para trabalhar com o estado real do Firestore.
+      try {
+        const freshScope = await loadFreshPluggyCleanupScope(connection);
+        if (freshScope) scope = freshScope;
+      } catch (freshError) {
+        console.error('[ArquiManager] Falha ao reler escopo antes da limpeza Pluggy:', freshError);
+        // Mantém o escopo já calculado como fallback.
+      }
 
-      const pluggyPurchases = purchaseSnapshot.docs
+      // Todos os conjuntos auxiliares precisam refletir o escopo fresco.
+      safePluggyCards = Array.isArray(scope.pluggyCards) ? scope.pluggyCards : [];
+      safePluggyCardIds = scope.pluggyCardIds instanceof Set
+        ? scope.pluggyCardIds
+        : new Set(safePluggyCards.map(card => card.id).filter(Boolean));
+      safePluggyTransactions = Array.isArray(scope.pluggyTransactions)
+        ? scope.pluggyTransactions
+        : [];
+      safePluggyTransactionIds = scope.pluggyTransactionIds instanceof Set
+        ? scope.pluggyTransactionIds
+        : new Set(safePluggyTransactions.map(tx => tx.id).filter(Boolean));
+      safePluggyAccounts = Array.isArray(scope.pluggyAccounts) ? scope.pluggyAccounts : [];
+      safePluggyBills = Array.isArray(scope.pluggyBills) ? scope.pluggyBills : [];
+      safePluggyInbox = Array.isArray(scope.pluggyInbox) ? scope.pluggyInbox : [];
+      safeAutoPluggyTransfers = Array.isArray(scope.autoPluggyTransfers)
+        ? scope.autoPluggyTransfers
+        : [];
+
+      // O escopo fresco já contém compras/parcelas quando disponíveis.
+      // Mantemos os snapshots abaixo apenas para compatibilidade com escopos legados.
+      // O escopo normalmente já foi relido diretamente do Firestore no
+      // momento da confirmação. Mantemos a leitura como fallback para escopos
+      // legados/antigos que não possuam os derivados.
+      const purchaseSnapshot = scope.pluggyPurchases
+        ? null
+        : await getDocs(collectionPath(db, 'financial_purchases'));
+      const installmentSnapshot = scope.pluggyInstallments
+        ? null
+        : await getDocs(collectionPath(db, 'financial_installments'));
+
+      const scopePurchases = Array.isArray(scope.pluggyPurchases) ? scope.pluggyPurchases : null;
+      const scopeInstallments = Array.isArray(scope.pluggyInstallments) ? scope.pluggyInstallments : null;
+
+      const pluggyPurchases = scopePurchases || (purchaseSnapshot?.docs || [])
         .map(item => ({ id: item.id, ...item.data() }))
-        .filter(item => item.companyId === companyId && safePluggyCardIds.has(item.cardId));
+        .filter(item =>
+          item.companyId === companyId
+          && safePluggyCardIds.has(item.cardId)
+          && (
+            item.source === 'PLUGGY'
+            || item.source === 'PLUGGY_PROJECTION'
+            || item.provider === 'PLUGGY'
+            || item.providerItemId === connection.itemId
+          )
+        );
       const pluggyPurchaseIds = new Set(pluggyPurchases.map(item => item.id));
 
-      const pluggyInstallments = installmentSnapshot.docs
+      const pluggyInstallments = scopeInstallments || (installmentSnapshot?.docs || [])
         .map(item => ({ id: item.id, ...item.data() }))
         .filter(item => item.companyId === companyId && pluggyPurchaseIds.has(item.purchaseId));
 
@@ -3020,19 +3372,39 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const amount = Math.abs(Number(tx.amountCents || 0));
         if (!amount) return;
 
-        if (tx.billId) {
+        // Somente lançamentos que efetivamente deram baixa em um título
+        // financeiro podem alterar os totais pagos/recebidos durante a limpeza.
+        // Compras do cartão possuem billId, mas cashImpact=false e não representam
+        // um pagamento da fatura.
+        const reconciliationType = String(tx.reconciliationType || '').toUpperCase();
+
+        if (
+          tx.billId
+          && hasCashImpact(tx)
+          && reconciliationType === 'CARD_BILL_PAYMENT'
+        ) {
           affectedBillAmounts.set(
             tx.billId,
             (affectedBillAmounts.get(tx.billId) || 0) + amount
           );
         }
-        if (tx.payableId) {
+
+        if (
+          tx.payableId
+          && hasCashImpact(tx)
+          && reconciliationType === 'PAYABLE_PAYMENT'
+        ) {
           affectedPayableAmounts.set(
             tx.payableId,
             (affectedPayableAmounts.get(tx.payableId) || 0) + amount
           );
         }
-        if (tx.receivableId) {
+
+        if (
+          tx.receivableId
+          && hasCashImpact(tx)
+          && reconciliationType === 'RECEIVABLE_RECEIPT'
+        ) {
           affectedReceivableAmounts.set(
             tx.receivableId,
             (affectedReceivableAmounts.get(tx.receivableId) || 0) + amount
@@ -3212,6 +3584,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       pluggyTransactionIds: new Set(),
       pluggyCardIds: new Set(),
       pluggyBillIds: new Set(),
+      pluggyPurchases: [],
+      pluggyInstallments: [],
     };
 
     await executeClearPluggyConnection(scope, { deleteRemote: true });

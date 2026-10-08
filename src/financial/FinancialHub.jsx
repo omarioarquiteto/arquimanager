@@ -1722,13 +1722,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }
   };
 
-  const syncPluggyConnection = async (connection) => {
+  const syncPluggyConnection = async (connection, onProgress) => {
     if (!connection?.itemId) return;
 
+    const reportProgress = (percent, status = '') => {
+      try {
+        onProgress?.({
+          percent: Math.max(0, Math.min(100, Math.round(percent))),
+          status,
+        });
+      } catch {}
+    };
+
     setBusy(true);
+    reportProgress(2, 'Preparando sincronização...');
     try {
       const controller = new AbortController();
       const syncTimeout = window.setTimeout(() => controller.abort(), 180000);
+      reportProgress(6, 'Conectando ao Pluggy e buscando dados...');
       let response;
       try {
         response = await fetch('/.netlify/functions/pluggy-sync-item', {
@@ -1752,6 +1763,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Não foi possível sincronizar o banco.');
 
+      reportProgress(24, 'Dados recebidos. Atualizando contas...');
+
       // 1) Atualiza/insere as contas bancárias vindas do Pluggy.
       const accountBatch = writeBatch(db);
       (data.bankAccounts || []).forEach(account => {
@@ -1773,6 +1786,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }, { merge: true });
       });
       await accountBatch.commit();
+      reportProgress(30, 'Contas atualizadas. Verificando histórico e duplicidades...');
 
       // 2) Descobre novas movimentações usando o estado REAL do Firestore.
       // Não usamos apenas o estado React, porque após uma sincronização grande
@@ -1911,6 +1925,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const duplicateInboxIds = new Set();
       const openInboxByTransactionServer = new Map();
 
+      reportProgress(38, 'Histórico analisado. Limpando registros duplicados quando necessário...');
+
       companyInbox
         .filter(item => item.status !== 'RESOLVED')
         .forEach(item => {
@@ -1947,6 +1963,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }
 
       const importedItems = [];
+      reportProgress(48, 'Base preparada. Importando movimentações bancárias...');
+
       const newTransactionsBatch = writeBatch(db);
       let newImported = 0;
       let alreadyPresent = 0;
@@ -2044,6 +2062,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       if (newImported > 0) {
         await newTransactionsBatch.commit();
       }
+
+      reportProgress(66, 'Movimentações importadas. Processando conciliações...');
 
       // O pool local já contém os lançamentos novos, mesmo antes do onSnapshot
       // do Firestore chegar ao React. Isso permite parear uma transferência
@@ -2343,9 +2363,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       // Processa em ordem. As duas pontas de uma transferência ficam no pool
       // e podem se reconciliar automaticamente sem depender de um novo snapshot.
-      for (const item of importedItems) {
+      for (let index = 0; index < importedItems.length; index += 1) {
+        const item = importedItems[index];
         try {
           await processPluggyTransaction(item);
+          if (importedItems.length) {
+            const processPercent = 66 + ((index + 1) / importedItems.length) * 18;
+            reportProgress(
+              processPercent,
+              'Processando lançamentos bancários: ' + (index + 1) + '/' + importedItems.length + '...'
+            );
+          }
         } catch (transactionError) {
           // Um lançamento problemático não pode interromper a sincronização
           // das demais movimentações do banco.
@@ -2396,11 +2424,15 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         await batch.commit();
       }
 
+      reportProgress(87, 'Conciliação bancária concluída. Sincronizando cartões e faturas...');
+
       await syncCreditCardData({
         data,
         connection,
         existingTransactions: companyTransactions,
       });
+
+      reportProgress(96, 'Cartões e faturas atualizados. Finalizando sincronização...');
 
       await setDoc(docPath(db, 'financial_connections', `${companyId}_${connection.itemId}`), {
         companyId,
@@ -2429,10 +2461,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         attentionQueued ? `${attentionQueued} item(ns) enviado(s) para Atenção` : 'nenhum novo item de Atenção',
       ].join(' · ');
 
+      reportProgress(100, 'Sincronização concluída.');
       setNotice(
         `Pluggy sincronizado: ${detail}.${data.truncated ? ' A sincronização atingiu o limite técnico de 10.000 movimentações.' : ''}`
       );
     } catch (err) {
+      reportProgress(100, 'Sincronização interrompida.');
       setNotice(err.message || 'Falha ao sincronizar a conexão Pluggy.');
     } finally {
       setBusy(false);

@@ -62,27 +62,16 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
   useEffect(() => {
     if (!syncProgress) {
       setDisplayProgress(0);
-      return undefined;
+      return;
     }
 
+    // A barra deve refletir o progresso real informado pela sincronização.
+    // Não avançamos artificialmente alguns pontos, pois isso mascarava a
+    // etapa que estava realmente aguardando e fazia o processo parecer
+    // travado em 56%.
     const reported = Math.max(0, Math.min(100, Number(syncProgress.percent || 0)));
-    setDisplayProgress(current => Math.max(current, reported));
-
-    const target = Math.min(97, Math.max(reported, reported + 8));
-    if (reported >= 100 || displayProgress >= target) return undefined;
-
-    const timer = window.setInterval(() => {
-      setDisplayProgress(current => {
-        if (current >= target || current >= 97) {
-          window.clearInterval(timer);
-          return current;
-        }
-        return Math.min(target, current + 1);
-      });
-    }, 700);
-
-    return () => window.clearInterval(timer);
-  }, [syncProgress, displayProgress]);
+    setDisplayProgress(reported);
+  }, [syncProgress]);
 
   const clearSyncProgressSoon = () => {
     window.setTimeout(() => setSyncProgress(null), 900);

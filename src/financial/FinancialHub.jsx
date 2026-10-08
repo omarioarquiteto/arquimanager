@@ -1526,6 +1526,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const paymentType = String(rawCredit.paymentType || rawTransaction.paymentType || '').trim().toUpperCase();
       const purchaseDate = syncDateOnly(rawCredit.purchaseDate || rawTransaction.purchaseDate || rawTransaction.date);
 
+      const localBillSnapshot = localBillId ? await getDoc(docPath(db, 'financial_bills', localBillId)) : null;
+      const localBillData = localBillSnapshot?.exists() ? localBillSnapshot.data() : null;
+
       const serverTransactions = (await getDocs(collectionPath(db, 'financial_transactions'))).docs
         .map(d => ({ id: d.id, ...d.data() }))
         .filter(item => item.companyId === companyId);
@@ -1576,7 +1579,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         amountCents,
         date: syncDateOnly(rawTransaction.date || rawCredit.purchaseDate),
         actualDate: null,
-        expectedDate: localBillId ? (await getDoc(docPath(db, 'financial_bills', localBillId))).data()?.dueDate || null : null,
+        expectedDate: localBillData?.dueDate || null,
         billId: localBillId,
         providerBillId: providerBillId || null,
         categoryId,
@@ -1595,20 +1598,47 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ...(existing ? {} : { createdAt: serverTimestamp() }),
       }, { merge: true });
 
-      // Quando a linha projetada se torna oficial, removemos somente a parcela
-      // projetada correspondente do total da fatura se a fatura já é oficial.
-      if (projectionMatch?.billId && projectionMatch.billId !== localBillId) {
+      // Quando a linha projetada se torna oficial, removemos a projeção
+      // somente se a fatura daquele mês já tiver sido transformada em oficial
+      // ou se a linha tiver migrado para outra fatura.
+      if (projectionMatch?.billId) {
         const projectionBillSnap = await getDoc(docPath(db, 'financial_bills', projectionMatch.billId));
         if (projectionBillSnap.exists()) {
           const projectionBill = projectionBillSnap.data();
-          const nextProjected = Math.max(0, Number(projectionBill.projectedCents || 0) - Number(projectionMatch.amountCents || 0));
-          const nextTotal = Number(projectionBill.officialTotalCents || 0) + nextProjected;
-          await updateDoc(docPath(db, 'financial_bills', projectionMatch.billId), {
-            projectedCents: nextProjected,
-            totalCents: nextTotal,
-            updatedAt: serverTimestamp(),
-          });
+          const sameBill = projectionMatch.billId === localBillId;
+          const shouldRemoveProjection = projectionBill.provisional === false || !sameBill;
+          if (shouldRemoveProjection && Number(projectionBill.projectedCents || 0) > 0) {
+            const nextProjected = Math.max(0, Number(projectionBill.projectedCents || 0) - Number(projectionMatch.amountCents || 0));
+            const nextTotal = Number(projectionBill.officialTotalCents || 0) + nextProjected;
+            await updateDoc(docPath(db, 'financial_bills', projectionMatch.billId), {
+              projectedCents: nextProjected,
+              totalCents: nextTotal,
+              updatedAt: serverTimestamp(),
+            });
+          }
         }
+      }
+
+      // Se ainda não existe fatura oficial, cada compra/estorno recebido pelo
+      // cartão passa a compor o valor conhecido da fatura projetada. O valor
+      // oficial nunca é recalculado por lançamentos individuais.
+      if (localBillId && !existing && !projectionMatch && localBillData?.provisional !== false) {
+        const signedDelta = rawAmount < 0 ? -amountCents : amountCents;
+        const currentProjected = Number(localBillData.projectedCents ?? localBillData.totalCents ?? 0);
+        const officialTotal = Number(localBillData.officialTotalCents || 0);
+        const nextProjected = Math.max(0, currentProjected + signedDelta);
+        const nextTotal = officialTotal + nextProjected;
+        await updateDoc(docPath(db, 'financial_bills', localBillId), {
+          projectedCents: nextProjected,
+          totalCents: nextTotal,
+          status: billStatusFromValues({
+            totalCents: nextTotal,
+            paidCents: Number(localBillData.paidCents || 0),
+            dueDate: localBillData.dueDate || null,
+            provisional: true,
+          }),
+          updatedAt: serverTimestamp(),
+        });
       }
 
       if (installmentNumber > 0 && totalInstallments > installmentNumber) {

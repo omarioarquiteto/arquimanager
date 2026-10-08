@@ -11,6 +11,7 @@ import {
   mapWithConcurrency,
   normalizeItem,
   readBody,
+  sleep,
 } from './_pluggy_v2.mjs';
 
 const assertClientOwnership = (item, clientUserId) => {
@@ -28,6 +29,27 @@ const assertClientOwnership = (item, clientUserId) => {
   }
 };
 
+const waitForReadyItem = async (itemId, apiKey, initialItem) => {
+  let item = initialItem;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const status = String(item?.status || '').toUpperCase();
+    const executionStatus = String(item?.executionStatus || '').toUpperCase();
+
+    if (status === 'LOGIN_ERROR' || (status === 'OUTDATED' && executionStatus === 'ERROR')) {
+      return item;
+    }
+
+    if (status === 'UPDATED') {
+      return item;
+    }
+
+    await sleep(2000);
+    item = await getItem(itemId, apiKey);
+  }
+
+  return item;
+};
+
 export default async function handler(request) {
   if (request.method !== 'POST') {
     return json({ error: 'Método não permitido.' }, 405);
@@ -41,7 +63,11 @@ export default async function handler(request) {
     if (!itemId) return json({ error: 'itemId é obrigatório.' }, 400);
 
     const apiKey = await getApiKey();
-    const item = await getItem(itemId, apiKey);
+    const initialItem = await getItem(itemId, apiKey);
+
+    assertClientOwnership(initialItem, clientUserId);
+
+    const item = await waitForReadyItem(itemId, apiKey, initialItem);
 
     assertClientOwnership(item, clientUserId);
 

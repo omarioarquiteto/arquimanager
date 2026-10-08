@@ -152,6 +152,13 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         setError(
           'Nenhuma conexão do Meu Pluggy está autorizada nesta aplicação. No Meu Pluggy você pode ter vários bancos; cada banco precisa de uma autorização uma única vez no Arksuper.'
         );
+        setSyncProgress({
+          percent: 100,
+          status: 'Nenhuma conexão autorizada foi encontrada.',
+          connectionName: 'Meu Pluggy',
+        });
+        setDisplayProgress(100);
+        clearSyncProgressSoon();
         return;
       }
 
@@ -227,6 +234,13 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         detail: { total: items.length, novas: newConnections, sincronizadas: syncedConnections, newText },
       }));
     } catch (err) {
+      setSyncProgress({
+        percent: 100,
+        status: 'Sincronização interrompida.',
+        connectionName: 'Meu Pluggy',
+      });
+      setDisplayProgress(100);
+
       // Mesmo sem a permissão opt-in de GET /v2/items, sincronizamos todas as
       // conexões que o Arksuper já conhece. A listagem só é necessária para
       // descobrir proxy Items ainda não registrados localmente.
@@ -244,9 +258,22 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
         } catch (syncError) {
           setError(syncError.message || err.message);
         }
+        setSyncProgress({
+          percent: 100,
+          status: known.length ? 'Sincronização concluída com aviso.' : 'Sincronização interrompida.',
+          connectionName: 'Meu Pluggy',
+        });
+        setDisplayProgress(100);
       } else {
         setError(err.message || 'Não foi possível atualizar as conexões do Meu Pluggy.');
+        setSyncProgress({
+          percent: 100,
+          status: 'Sincronização interrompida.',
+          connectionName: 'Meu Pluggy',
+        });
+        setDisplayProgress(100);
       }
+      clearSyncProgressSoon();
     } finally {
       setDiscovering(false);
       setBusyId('');
@@ -444,8 +471,8 @@ export default function PluggyConnections({ appUser, connections = [], onSaveCon
                     disabled={busyId !== '' || discovering || busy}
                     className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-black flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    <RefreshCw size={14}/>
-                    Sincronizar
+                    <RefreshCw size={14} className={busyId === connection.itemId ? 'animate-spin' : ''}/>
+                    {busyId === connection.itemId ? 'Sincronizando...' : 'Sincronizar'}
                   </button>
                   <button
                     onClick={() => startConnection(connection)}

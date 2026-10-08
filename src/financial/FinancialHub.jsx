@@ -1963,9 +1963,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }
 
       const importedItems = [];
+      const pendingTransactionWrites = [];
       reportProgress(48, 'Base preparada. Importando movimentações bancárias...');
 
-      const newTransactionsBatch = writeBatch(db);
       let newImported = 0;
       let alreadyPresent = 0;
 
@@ -2044,7 +2044,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             isNew: true,
           };
 
-          newTransactionsBatch.set(ref, item.data);
+          pendingTransactionWrites.push({
+            ref,
+            data: item.data,
+          });
           importedItems.push(item);
           const indexedItem = {
             ...item.data,
@@ -2059,8 +2062,22 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         }
       });
 
-      if (newImported > 0) {
-        await newTransactionsBatch.commit();
+      // O Firestore permite no máximo 500 operações por writeBatch. Além
+      // desse limite, um lote único deixa a sincronização vulnerável a travas
+      // perceptíveis no navegador. Gravamos em blocos menores e atualizamos
+      // o progresso a cada commit.
+      for (let start = 0; start < pendingTransactionWrites.length; start += 400) {
+        const chunk = pendingTransactionWrites.slice(start, start + 400);
+        const transactionBatch = writeBatch(db);
+        chunk.forEach(item => transactionBatch.set(item.ref, item.data));
+        await transactionBatch.commit();
+
+        const committed = start + chunk.length;
+        const writeProgress = 48 + (committed / Math.max(1, pendingTransactionWrites.length)) * 18;
+        reportProgress(
+          writeProgress,
+          'Gravando movimentações bancárias: ' + committed + '/' + pendingTransactionWrites.length + '...'
+        );
       }
 
       reportProgress(66, 'Movimentações importadas. Processando conciliações...');

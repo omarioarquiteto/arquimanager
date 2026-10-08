@@ -1579,11 +1579,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       ?? 0
     );
 
-    const rawPaymentType = raw => String(
-      raw?.creditCardMetadata?.paymentType
-      || raw?.paymentType
-      || ''
-    ).trim().toUpperCase();
+    const rawPaymentType = raw => {
+      const value = String(
+        raw?.creditCardMetadata?.paymentType
+        || raw?.paymentType
+        || ''
+      ).trim().toUpperCase();
+
+      if (!value) {
+        return rawTotalInstallments(raw) > 1 ? 'INSTALLMENT' : 'SINGLE';
+      }
+
+      if (/INSTALL|A_PRAZO|PARCEL/.test(value)) return 'INSTALLMENT';
+      if (/SINGLE|A_VISTA/.test(value)) return 'SINGLE';
+      return value;
+    };
 
     const rawForecastMonth = raw => monthFromIso(syncDateOnly(
       raw?.creditCardMetadata?.billForecastDate
@@ -1601,28 +1611,82 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       rawPaymentType(raw) || (rawTotalInstallments(raw) > 1 ? 'INSTALLMENT' : 'SINGLE'),
     ].join('|');
 
+    const creditLooseSeriesKeyFromRaw = raw => [
+      String(raw?.accountId || ''),
+      rawCardLast4(raw),
+      rawPurchaseDate(raw),
+      rawMerchantName(raw),
+      String(rawTotalInstallments(raw)),
+      rawPaymentType(raw),
+    ].join('|');
+
     const creditOccurrenceKeyFromRaw = raw => [
       creditSeriesKeyFromRaw(raw),
       String(rawInstallmentNumber(raw)),
       rawForecastMonth(raw),
     ].join('|');
 
+    const creditLooseOccurrenceKeyFromRaw = raw => [
+      creditLooseSeriesKeyFromRaw(raw),
+      String(rawInstallmentNumber(raw)),
+      rawForecastMonth(raw),
+    ].join('|');
+
     const creditSeriesKeyFromStored = tx => {
       const raw = tx?.providerRawData || {};
+      const total = Number(
+        tx?.creditCardTotalInstallments
+        ?? raw?.creditCardMetadata?.totalInstallments
+        ?? 0
+      );
       return [
         String(tx?.providerAccountId || raw?.accountId || tx?.accountId || ''),
         String(tx?.creditCardLast4 || rawCardLast4(raw) || '').replace(/\D/g, '').slice(-4),
         syncDateOnly(tx?.creditCardPurchaseDate || raw?.creditCardMetadata?.purchaseDate || raw?.date || tx?.date),
         String(tx?.creditCardTransactionDateTime || raw?.creditCardMetadata?.transactionDateTime || '').trim(),
         normalizeText(tx?.merchant || raw?.merchant?.name || raw?.merchant?.businessName || raw?.description || tx?.description || ''),
-        String(Number(tx?.creditCardTotalInstallments ?? raw?.creditCardMetadata?.totalInstallments ?? 0)),
-        String(tx?.creditCardPaymentType || raw?.creditCardMetadata?.paymentType || '').trim().toUpperCase()
-          || (Number(tx?.creditCardTotalInstallments || raw?.creditCardMetadata?.totalInstallments || 0) > 1 ? 'INSTALLMENT' : 'SINGLE'),
+        String(total),
+        String(
+          tx?.creditCardPaymentType
+          || raw?.creditCardMetadata?.paymentType
+          || ''
+        ).trim().toUpperCase().match(/INSTALL|A_PRAZO|PARCEL/)
+          ? 'INSTALLMENT'
+          : 'SINGLE',
+      ].join('|');
+    };
+
+    const creditLooseSeriesKeyFromStored = tx => {
+      const raw = tx?.providerRawData || {};
+      const total = Number(
+        tx?.creditCardTotalInstallments
+        ?? raw?.creditCardMetadata?.totalInstallments
+        ?? 0
+      );
+      return [
+        String(tx?.providerAccountId || raw?.accountId || tx?.accountId || ''),
+        String(tx?.creditCardLast4 || rawCardLast4(raw) || '').replace(/\D/g, '').slice(-4),
+        syncDateOnly(tx?.creditCardPurchaseDate || raw?.creditCardMetadata?.purchaseDate || raw?.date || tx?.date),
+        normalizeText(tx?.merchant || raw?.merchant?.name || raw?.merchant?.businessName || raw?.description || tx?.description || ''),
+        String(total),
+        String(
+          tx?.creditCardPaymentType
+          || raw?.creditCardMetadata?.paymentType
+          || ''
+        ).trim().toUpperCase().match(/INSTALL|A_PRAZO|PARCEL/)
+          ? 'INSTALLMENT'
+          : 'SINGLE',
       ].join('|');
     };
 
     const creditOccurrenceKeyFromStored = tx => [
       creditSeriesKeyFromStored(tx),
+      String(Number(tx?.creditCardInstallmentNumber ?? tx?.providerRawData?.creditCardMetadata?.installmentNumber ?? 0)),
+      monthFromIso(syncDateOnly(tx?.creditCardBillForecastDate || tx?.providerRawData?.creditCardMetadata?.billForecastDate || tx?.billForecastDate || '')),
+    ].join('|');
+
+    const creditLooseOccurrenceKeyFromStored = tx => [
+      creditLooseSeriesKeyFromStored(tx),
       String(Number(tx?.creditCardInstallmentNumber ?? tx?.providerRawData?.creditCardMetadata?.installmentNumber ?? 0)),
       monthFromIso(syncDateOnly(tx?.creditCardBillForecastDate || tx?.providerRawData?.creditCardMetadata?.billForecastDate || tx?.billForecastDate || '')),
     ].join('|');
@@ -1645,10 +1709,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const dedupedCreditTransactions = [];
     for (const raw of filteredRawCreditTransactions) {
       const key = creditOccurrenceKeyFromRaw(raw);
-      const previousIndex = rawByOccurrence.get(key);
+      const looseKey = creditLooseOccurrenceKeyFromRaw(raw);
+      const previousIndex = rawByOccurrence.get(key) ?? rawByOccurrence.get('loose:' + looseKey);
 
       if (previousIndex == null) {
         rawByOccurrence.set(key, dedupedCreditTransactions.length);
+        rawByOccurrence.set('loose:' + looseKey, dedupedCreditTransactions.length);
         dedupedCreditTransactions.push(raw);
         continue;
       }
@@ -1679,6 +1745,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           `${key}|amount:${rawAmountCents(raw)}|id:${raw.id}`,
           dedupedCreditTransactions.length
         );
+        rawByOccurrence.set(
+          `loose:${looseKey}|amount:${rawAmountCents(raw)}|id:${raw.id}`,
+          dedupedCreditTransactions.length
+        );
         dedupedCreditTransactions.push(raw);
       }
     }
@@ -1702,8 +1772,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     for (const tx of storedCreditTransactions) {
       const key = creditOccurrenceKeyFromStored(tx);
+      const looseKey = creditLooseOccurrenceKeyFromStored(tx);
       if (!storedGroups.has(key)) storedGroups.set(key, []);
       storedGroups.get(key).push(tx);
+      if (key !== looseKey && !storedGroups.has('loose:' + looseKey)) {
+        storedGroups.set('loose:' + looseKey, []);
+      }
+      if (key !== looseKey) storedGroups.get('loose:' + looseKey).push(tx);
     }
 
     for (const group of storedGroups.values()) {
@@ -1824,18 +1899,25 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         || transactionByExternalId.get(`pluggy:${rawTransaction.id}`)
         || null;
 
+      const looseRawOccurrenceKey = creditLooseOccurrenceKeyFromRaw(rawTransaction);
       const heuristicExisting = !directExisting
         ? serverTransactions.find(item =>
             item?.source === 'PLUGGY'
             && item?.cardId === card.id
-            && creditOccurrenceKeyFromStored(item) === rawOccurrenceKey
+            && (
+              creditOccurrenceKeyFromStored(item) === rawOccurrenceKey
+              || creditLooseOccurrenceKeyFromStored(item) === looseRawOccurrenceKey
+            )
             && Math.abs(Number(item.amountCents || 0) - amountCents) <= 2
           )
         : null;
 
       const projectionMatch = !directExisting && !heuristicExisting
         ? projectionTransactions.find(item =>
-            creditOccurrenceKeyFromStored(item) === rawOccurrenceKey
+            (
+              creditOccurrenceKeyFromStored(item) === rawOccurrenceKey
+              || creditLooseOccurrenceKeyFromStored(item) === looseRawOccurrenceKey
+            )
             && Math.abs(Number(item.amountCents || 0) - amountCents) <= 2
           )
         : null;
@@ -1968,12 +2050,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const realOccurrenceKeys = new Set(
       realCreditTransactions.map(item => creditOccurrenceKeyFromStored(item))
     );
+    const realLooseOccurrenceKeys = new Set(
+      realCreditTransactions.map(item => creditLooseOccurrenceKeyFromStored(item))
+    );
 
     const staleProjectionIds = [];
     freshTransactions
       .filter(item => item.source === 'PLUGGY_PROJECTION' && item.cardId)
       .forEach(projection => {
-        if (realOccurrenceKeys.has(creditOccurrenceKeyFromStored(projection))) {
+        const exactKey = creditOccurrenceKeyFromStored(projection);
+        const looseKey = creditLooseOccurrenceKeyFromStored(projection);
+        if (realOccurrenceKeys.has(exactKey) || realLooseOccurrenceKeys.has(looseKey)) {
           staleProjectionIds.push(projection.id);
           if (projection.billId) affectedBillIds.add(projection.billId);
         }

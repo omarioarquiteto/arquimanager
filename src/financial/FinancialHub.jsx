@@ -943,7 +943,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
   const persistForecastItems = async (bill, forecastItems) => {
     if (!bill?.id) throw new Error('Fatura prevista não encontrada.');
-    const totalCents = forecastItems.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    const totalCents = forecastItems.reduce((sum, item) => item?.excluded === true ? sum : sum + Number(item.amountCents || 0), 0);
     const official = Boolean(bill.providerBillId || bill.officialTotalCents != null);
     const forecastEditedAt = new Date().toISOString();
     const changes = {
@@ -1032,7 +1032,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     setBusy(true);
     try {
-      await persistForecastItems(bill, currentItems.filter(item => item.id !== itemId));
+      const itemToDelete = currentItems.find(item => item.id === itemId);
+      const nextItems = itemToDelete?.kind === 'INSTALLMENT_FORECAST'
+        ? currentItems.map(item => item.id === itemId ? { ...item, excluded: true, manualOverride: true } : item)
+        : currentItems.filter(item => item.id !== itemId);
+      await persistForecastItems(bill, nextItems);
       setNotice('Lançamento previsto removido da fatura.');
     } catch (error) {
       setNotice(error.message || 'Não foi possível remover o lançamento previsto.');
@@ -2576,7 +2580,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const remaining = Math.max(0, Number(b.totalCents||0) - Number(b.paidCents||0));
                 const paid = remaining === 0 && Number(b.totalCents||0) > 0;
                 return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                  <div className="flex-1"><div className="flex items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p>{b.provisional && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">estimada</span>}</div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.closingDate)} · Vencimento {dateLabel(b.dueDate)} · {b.source === 'PLUGGY' ? 'sincronizada' : 'local'}</p></div>
+                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p>{b.provisional && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">prevista</span>}{b.reconciliationStatus === 'NEEDS_REVIEW' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">não conciliada</span>}{['MATCHED_AUTO','MATCHED_MANUAL'].includes(b.reconciliationStatus) && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliada</span>}</div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.forecastClosingDate || b.closingDate)} · Vencimento {dateLabel(b.forecastDueDate || b.dueDate)} · {b.providerBillId || b.source === 'PLUGGY_REBUILT' || b.provider === 'PLUGGY' && !b.provisional ? 'sincronizada' : 'prevista/local'}</p></div>
                   <div className="text-right"><p className="font-black text-slate-800">{formatBRL(b.totalCents)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                 </button>;
               })}
@@ -2985,7 +2989,7 @@ function BillDetailsModal({
   const forecastDueDate = String(bill.forecastDueDate || (bill.provisional ? bill.dueDate : '') || '').slice(0, 10);
   const amountsMatch = hasOfficialBill && officialTotalCents === forecastTotalCents;
   const datesMatch = hasOfficialBill && Boolean(officialDueDate && forecastDueDate && officialDueDate === forecastDueDate);
-  const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && bill.reconciliationStatus !== 'MATCHED_MANUAL';
+  const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && !['MATCHED_MANUAL', 'MATCHED_AUTO'].includes(bill.reconciliationStatus);
   const reconciliationStatusLabel = bill.reconciliationStatus === 'MATCHED_AUTO'
     ? 'Conciliada automaticamente'
     : bill.reconciliationStatus === 'MATCHED_MANUAL'

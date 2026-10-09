@@ -77,6 +77,67 @@ const forecastTotal = (items = []) => items.reduce(
   0
 );
 
+const shiftDateByMonths = (value, months = 0) => {
+  const iso = dateOnly(value);
+  const match = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(iso);
+  if (!match) return '';
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const targetFirst = new Date(year, month - 1 + Number(months || 0), 1);
+  const lastDay = new Date(targetFirst.getFullYear(), targetFirst.getMonth() + 1, 0).getDate();
+  return dateForMonthDay(
+    `${targetFirst.getFullYear()}-${String(targetFirst.getMonth() + 1).padStart(2, '0')}`,
+    Math.min(day, lastDay)
+  );
+};
+
+const normalizeInstallmentDescription = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\\u0300-\\u036f]/g, '')
+  .toLowerCase()
+  .replace(/\\b(?:parcela|parc\\.?|prestacao|installment)\\s*#?\\s*\\d{1,2}\\s*[/-]\\s*\\d{1,2}\\b/g, ' ')
+  .replace(/\\b\\d{1,2}\\s*[/-]\\s*\\d{1,2}\\b/g, ' ')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim()
+  .replace(/\\s+/g, ' ');
+
+const isPluggyTransaction = (transaction = {}) => (
+  String(transaction.provider || '').toUpperCase() === 'PLUGGY'
+  || String(transaction.source || '').toUpperCase().startsWith('PLUGGY')
+  || Boolean(transaction.providerTransactionId)
+  || String(transaction.externalId || '').startsWith('pluggy-v2:')
+);
+
+const descriptionsMatch = (forecastItem, transaction) => {
+  const projected = new Set(
+    [forecastItem.description, forecastItem.merchant]
+      .map(normalizeInstallmentDescription)
+      .filter(value => value.length >= 3)
+  );
+  if (!projected.size) return false;
+  return [transaction.description, transaction.merchant, transaction.normalizedMerchant]
+    .map(normalizeInstallmentDescription)
+    .some(value => value.length >= 3 && projected.has(value));
+};
+
+const matchesOfficialInstallment = ({ item, cardId, transactions = [] }) => {
+  if (!item?.expectedTransactionDate || !Number(item.installmentNumber) || !Number(item.totalInstallments)) return false;
+  const expectedDate = dateOnly(item.expectedTransactionDate);
+  const expectedAmount = Math.abs(Number(item.amountCents || 0));
+  if (!expectedDate || !expectedAmount) return false;
+
+  return transactions.some(transaction => (
+    isPluggyTransaction(transaction)
+    && String(transaction.cardId || '') === String(cardId || '')
+    && Number(transaction.creditCardInstallmentNumber || 0) === Number(item.installmentNumber)
+    && Number(transaction.creditCardTotalInstallments || 0) === Number(item.totalInstallments)
+    && dateOnly(transaction.date) === expectedDate
+    && Math.abs(Number(transaction.amountCents || 0)) === expectedAmount
+    && descriptionsMatch(item, transaction)
+  ));
+};
+
 const currentMonthForTransaction = (transaction, card, bills) => {
   // A user-maintained anchor is explicit and can override provider heuristics.
   const manualAnchor = dateOnly(transaction.creditCardForecastAnchorDate || '');
@@ -136,6 +197,31 @@ export const buildInstallmentForecastWrites = ({
   const cardsById = new Map(cards.map(card => [card.id, card]));
   const billsById = new Map(bills.map(bill => [bill.id, bill]));
   const groups = new Map();
+  const registeredTotalsByBillId = new Map();
+
+  // Valores já registrados na fatura são contabilizados separadamente das
+  // previsões pendentes. Assim, remover uma previsão substituída por um
+  // lançamento real não reduz artificialmente a estimativa total da fatura.
+  for (const transaction of transactions) {
+    const card = cardsById.get(transaction.cardId);
+    if (!card) continue;
+
+    let targetBillId = transaction.billId && billsById.has(transaction.billId)
+      ? transaction.billId
+      : '';
+    if (!targetBillId) {
+      const referenceMonth = currentMonthForTransaction(transaction, card, bills);
+      if (!referenceMonth) continue;
+      targetBillId = billIdForCycle({ companyId, card, referenceMonth, bills });
+    }
+
+    const amount = Math.abs(Number(transaction.amountCents || 0));
+    const signedAmount = String(transaction.type || '').toUpperCase() === 'INCOME' ? -amount : amount;
+    registeredTotalsByBillId.set(
+      targetBillId,
+      Number(registeredTotalsByBillId.get(targetBillId) || 0) + signedAmount
+    );
+  }
 
   const ensureGroup = ({ billId, card, referenceMonth }) => {
     const key = billId;
@@ -178,6 +264,13 @@ export const buildInstallmentForecastWrites = ({
     ));
     if (!perInstallmentCents) continue;
 
+    const currentTransactionDate = dateOnly(transaction.date)
+      || shiftDateByMonths(
+        transaction.creditCardPurchaseDate
+          || transaction.providerRawData?.creditCardMetadata?.purchaseDate,
+        currentNumber - 1
+      );
+
     for (let offset = 1; offset <= totalInstallments - currentNumber; offset += 1) {
       const installmentNumber = currentNumber + offset;
       const referenceMonth = addMonths(currentMonth, offset);
@@ -208,17 +301,26 @@ export const buildInstallmentForecastWrites = ({
         ? {
             ...defaultItem,
             ...previousItem,
-            // Values edited inside an individual forecast invoice remain in
-            // place until the source installment plan itself is changed.
+            // Valores corrigidos manualmente permanecem até a correspondência
+            // exata com a transação oficial ou até mudar o plano da compra.
             description: previousItem.manualOverride ? previousItem.description : defaultItem.description,
             merchant: previousItem.manualOverride ? previousItem.merchant : defaultItem.merchant,
             amountCents: previousItem.manualOverride ? Number(previousItem.amountCents || 0) : defaultItem.amountCents,
           }
         : defaultItem;
 
+      const expectedTransactionDate = shiftDateByMonths(currentTransactionDate, offset)
+        || previousItem?.expectedTransactionDate
+        || '';
+      const candidate = { ...item, expectedTransactionDate };
+      // A transação oficial só substitui a previsão quando cartão, descrição,
+      // data prevista, valor e número/total da parcela conferem exatamente.
+      // Se o valor divergir por centavos, a previsão continua editável.
+      if (matchesOfficialInstallment({ item: candidate, cardId: card.id, transactions })) continue;
+
       const group = ensureGroup({ billId, card, referenceMonth });
       group.generatedItems.push({
-        ...item,
+        ...candidate,
         sourceTransactionId: transaction.id,
         dueDate: fallbackDates.dueDate,
       });
@@ -275,6 +377,7 @@ export const buildInstallmentForecastWrites = ({
       forecastManaged: true,
       forecastItems,
       forecastTotalCents: totalCents,
+      registeredTransactionsTotalCents: Number(registeredTotalsByBillId.get(group.billId) || 0),
       forecastDueDate,
       forecastClosingDate,
       forecastProviderItemId: group.card.providerItemId || null,
@@ -307,7 +410,8 @@ export const getBillReconciliationDecision = (bill = {}) => {
   }
 
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-  const expectedTotalCents = Number(bill.forecastTotalCents || 0);
+  const expectedTotalCents = Number(bill.forecastTotalCents || 0)
+    + Number(bill.registeredTransactionsTotalCents || 0);
   const officialDueDate = dateOnly(bill.officialDueDate || bill.dueDate);
   const expectedDueDate = dateOnly(bill.forecastDueDate || bill.dueDate);
   const valuesMatch = officialTotalCents === expectedTotalCents;
@@ -362,6 +466,7 @@ export const reconciliationSignature = (bills = []) => JSON.stringify(
         bill.id,
         decision.officialTotalCents,
         decision.expectedTotalCents,
+        Number(bill.registeredTransactionsTotalCents || 0),
         decision.officialDueDate,
         decision.expectedDueDate,
         bill.forecastEditedAt || '',

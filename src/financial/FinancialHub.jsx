@@ -3028,6 +3028,68 @@ function BillDetailsModal({
           <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
         </div>
 
+        {bill.forecastManaged && (
+          <div className="border border-slate-200 rounded-2xl p-4 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="font-black text-slate-800">Conciliação da fatura</h4>
+                <p className="text-[10px] text-slate-400 mt-1">A previsão é mantida separada dos valores oficiais recebidos do banco.</p>
+              </div>
+              <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-lg ${reconciliationTone}`}>{reconciliationStatusLabel}</span>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="p-3 rounded-xl bg-blue-50 border border-blue-100">
+                <p className="text-[10px] font-black uppercase tracking-wide text-blue-700">Previsto pelo ArquiManager</p>
+                <p className="text-xl font-black text-blue-900 mt-1">{formatBRL(forecastTotalCents)}</p>
+                <p className="text-[10px] text-blue-700 mt-1">Vencimento: {dateLabel(forecastDueDate)}</p>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Fatura oficial do banco</p>
+                <p className="text-xl font-black text-slate-800 mt-1">{hasOfficialBill ? formatBRL(officialTotalCents) : 'Aguardando'}</p>
+                <p className="text-[10px] text-slate-500 mt-1">Vencimento: {hasOfficialBill ? dateLabel(officialDueDate) : 'Ainda não disponibilizado'}</p>
+              </div>
+            </div>
+
+            {hasOfficialBill && (
+              <div className={`p-3 rounded-xl border text-xs ${amountsMatch && datesMatch ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-red-50 border-red-100 text-red-800'}`}>
+                {amountsMatch && datesMatch
+                  ? 'Valor e vencimento conferem com a fatura oficial.'
+                  : `Diferença de total: ${formatBRL(officialTotalCents - forecastTotalCents)} · ${datesMatch ? 'vencimento igual' : 'vencimentos diferentes'}.`}
+              </div>
+            )}
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Fechamento previsto">
+                <input type="date" value={forecastDates.closingDate || ''} onChange={event => setForecastDates(prev => ({ ...prev, closingDate: event.target.value }))} className={inputCls}/>
+              </Field>
+              <Field label="Vencimento previsto">
+                <input type="date" value={forecastDates.dueDate || ''} onChange={event => setForecastDates(prev => ({ ...prev, dueDate: event.target.value }))} className={inputCls}/>
+              </Field>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                disabled={busy || !forecastDates.closingDate || !forecastDates.dueDate}
+                onClick={() => onUpdateForecastBillDates(bill.id, { forecastClosingDate: forecastDates.closingDate, forecastDueDate: forecastDates.dueDate })}
+                className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-black disabled:opacity-50"
+              >
+                Salvar datas previstas
+              </button>
+              {canManualReconcile && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onManualReconcile(bill.id)}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50"
+                >
+                  Confirmar conciliação manual
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {bill.provisional && (
           <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800">
             Esta fatura é uma <strong>projeção do ArquiManager</strong>. Ela será atualizada para uma fatura oficial quando a instituição disponibilizar o ciclo pela Pluggy.
@@ -3088,6 +3150,79 @@ function BillDetailsModal({
             {!sortedTransactions.length && <div className="p-8"><EmptyState text="Nenhum lançamento vinculado a esta fatura ainda."/></div>}
           </div>
         </div>
+
+        {bill.forecastManaged && (
+          <div className="border border-indigo-100 rounded-2xl overflow-hidden">
+            <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="font-black text-indigo-900">Lançamentos previstos</h4>
+                <p className="text-[10px] text-indigo-700">{visibleForecastItems.length} item(ns) · parcelas futuras e ajustes manuais</p>
+              </div>
+              <span className="text-sm font-black text-indigo-900">{formatBRL(forecastTotalCents)}</span>
+            </div>
+            <div className="divide-y divide-indigo-50">
+              {visibleForecastItems.map(item => {
+                const editing = editingForecastItemId === item.id;
+                const isInstallment = item.kind === 'INSTALLMENT_FORECAST';
+                return (
+                  <div key={item.id} className="p-4">
+                    {editing ? (
+                      <div className="grid sm:grid-cols-[minmax(0,1fr)_150px_auto] gap-2 items-end">
+                        <Field label="Descrição do lançamento">
+                          <input value={forecastItemDraft.description} onChange={event => setForecastItemDraft(prev => ({ ...prev, description: event.target.value }))} className={inputCls}/>
+                        </Field>
+                        <Field label="Valor previsto (R$)">
+                          <input type="number" step="0.01" value={forecastItemDraft.amount} onChange={event => setForecastItemDraft(prev => ({ ...prev, amount: event.target.value }))} className={inputCls}/>
+                        </Field>
+                        <div className="flex gap-1">
+                          <button type="button" disabled={busy} onClick={() => {
+                            onUpdateForecastItem(bill.id, item.id, { description: forecastItemDraft.description, amountCents: toCents(forecastItemDraft.amount) });
+                            setEditingForecastItemId('');
+                          }} className="px-3 py-2.5 rounded-lg bg-emerald-600 text-white text-xs font-black disabled:opacity-50">Salvar</button>
+                          <button type="button" onClick={() => setEditingForecastItemId('')} className="px-3 py-2.5 rounded-lg border text-xs font-bold">Cancelar</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-bold text-slate-800 break-words">{item.description || 'Lançamento previsto'}</p>
+                            {isInstallment && <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9px] font-black">Parcela {item.installmentNumber}/{item.totalInstallments}</span>}
+                            {!isInstallment && <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[9px] font-black">Ajuste manual</span>}
+                            {item.manualOverride && <span className="text-[9px] text-amber-700 font-bold">Editado manualmente</span>}
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-1">{item.merchant || item.description || 'Previsão'} · {bill.referenceMonth}</p>
+                        </div>
+                        <span className={`font-black text-sm ${Number(item.amountCents || 0) < 0 ? 'text-emerald-700' : 'text-slate-800'}`}>{formatBRL(item.amountCents)}</span>
+                        <div className="flex gap-1">
+                          <button type="button" disabled={busy} onClick={() => {
+                            setEditingForecastItemId(item.id);
+                            setForecastItemDraft({ description: item.description || '', amount: (Number(item.amountCents || 0) / 100).toFixed(2) });
+                          }} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50 disabled:opacity-50" title="Editar lançamento previsto"><Pencil size={14}/></button>
+                          <button type="button" disabled={busy} onClick={() => onDeleteForecastItem(bill.id, item.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50" title="Remover da previsão"><Trash2 size={14}/></button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {!visibleForecastItems.length && <div className="p-5 text-center text-xs text-slate-400">Nenhum lançamento previsto para este ciclo.</div>}
+            </div>
+            <form onSubmit={event => {
+              event.preventDefault();
+              onAddForecastItem(bill.id, newForecastDraft);
+              setNewForecastDraft({ description: '', amount: '' });
+            }} className="p-4 bg-slate-50 border-t border-slate-100 grid sm:grid-cols-[minmax(0,1fr)_150px_auto] gap-2 items-end">
+              <Field label="Adicionar lançamento / ajuste">
+                <input required value={newForecastDraft.description} onChange={event => setNewForecastDraft(prev => ({ ...prev, description: event.target.value }))} placeholder="Ex.: outra compra ou ajuste" className={inputCls}/>
+              </Field>
+              <Field label="Valor (R$)">
+                <input required type="number" step="0.01" value={newForecastDraft.amount} onChange={event => setNewForecastDraft(prev => ({ ...prev, amount: event.target.value }))} placeholder="Pode ser negativo" className={inputCls}/>
+              </Field>
+              <button type="submit" disabled={busy} className="px-4 py-2.5 rounded-xl bg-[#1e5aa0] text-white text-xs font-black disabled:opacity-50"><Plus size={14} className="inline mr-1"/>Adicionar</button>
+            </form>
+          </div>
+        )}
 
         <div className="flex justify-end">
           <button onClick={onClose} className="px-5 py-2.5 border rounded-xl text-xs font-bold">Fechar</button>

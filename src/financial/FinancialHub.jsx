@@ -1240,9 +1240,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     setBusy(true);
     try {
       if (isCreditCardTransaction(tx)) {
-        await updateCreditCardTransactionDetails(tx, data);
-        setModal(null);
-        setNotice('Lançamento do cartão atualizado.');
+        try {
+          await updateCreditCardTransactionDetails(tx, data);
+          setModal(null);
+          setNotice('Lançamento do cartão atualizado. As faturas futuras serão recalculadas.');
+        } catch (error) {
+          setNotice(error.message || 'Não foi possível atualizar o lançamento do cartão.');
+        }
         return;
       }
 
@@ -3287,7 +3291,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
             )}
             {String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT' && Number(data.creditCardTotalInstallments || 1) > Number(data.creditCardInstallmentNumber || 1) && (
               <p className="mt-3 text-[10px] font-bold text-blue-700">
-                Serão projetadas {Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)} parcelas futuras, totalizando {(Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)) * (Number(data.creditCardForecastAmount ?? data.amount ?? 0) || 0)}. O valor oficial deste lançamento não será alterado.
+                Serão projetadas {Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)} parcelas futuras, totalizando {formatBRL(Math.max(0, Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)) * Math.round((Number(data.creditCardForecastAmount ?? data.amount ?? 0) || 0) * 100))}. O valor oficial deste lançamento não será alterado.
               </p>
             )}
           </div>

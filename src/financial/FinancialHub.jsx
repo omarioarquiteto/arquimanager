@@ -252,6 +252,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         purchaseDate: tx.creditCardPurchaseDate || null,
         forecastDate: tx.creditCardBillForecastDate || null,
         billPostDate: tx.creditCardBillPostDate || null,
+        forecastAnchorDate: tx.creditCardForecastAnchorDate || null,
         description: tx.description || '',
         merchant: tx.merchant || '',
         categoryId: tx.categoryId || null,
@@ -260,45 +261,69 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       .sort((a, b) => String(a.id).localeCompare(String(b.id))),
   }), [cards, transactions]);
 
+  const rebuildInstallmentForecasts = async (planTransactions = transactions, isCancelled = () => false) => {
+    const snapshot = await getDocs(query(
+      collectionPath(db, 'financial_bills'),
+      where('companyId', '==', companyId)
+    ));
+    if (isCancelled()) return { cancelled: true, written: 0, deleted: 0 };
+
+    const currentBills = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const writes = buildInstallmentForecastWrites({
+      companyId,
+      cards,
+      transactions: planTransactions,
+      bills: currentBills,
+    });
+    let written = 0;
+    let deleted = 0;
+
+    for (let start = 0; start < writes.length; start += 400) {
+      if (isCancelled()) return { cancelled: true, written, deleted };
+      const batch = writeBatch(db);
+      const chunk = writes.slice(start, start + 400);
+      chunk.forEach(write => {
+        const target = docPath(db, 'financial_bills', write.id);
+        if (write.delete) {
+          batch.delete(target);
+          deleted += 1;
+        } else {
+          batch.set(target, { ...write.data, updatedAt: serverTimestamp() }, { merge: true });
+          written += 1;
+        }
+      });
+      await batch.commit();
+    }
+
+    return {
+      cancelled: false,
+      written,
+      deleted,
+      futureBills: writes.filter(write => !write.delete && write.data?.forecastManaged === true && Number(write.data?.forecastTotalCents || 0) > 0).length,
+      plannedItems: writes.filter(write => !write.delete).reduce(
+        (sum, write) => sum + (Array.isArray(write.data?.forecastItems) ? write.data.forecastItems.filter(item => item.excluded !== true).length : 0),
+        0
+      ),
+    };
+  };
+
   useEffect(() => {
     if (!companyId || forecastPlanSignatureRef.current === installmentPlanSignature) return undefined;
     let cancelled = false;
 
     const rebuildForecasts = async () => {
       try {
-        const snapshot = await getDocs(query(
-          collectionPath(db, 'financial_bills'),
-          where('companyId', '==', companyId)
-        ));
-        if (cancelled) return;
-        const currentBills = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-        const writes = buildInstallmentForecastWrites({
-          companyId,
-          cards,
-          transactions,
-          bills: currentBills,
-        });
-
-        for (let start = 0; start < writes.length; start += 400) {
-          if (cancelled) return;
-          const batch = writeBatch(db);
-          writes.slice(start, start + 400).forEach(write => {
-            const target = docPath(db, 'financial_bills', write.id);
-            if (write.delete) batch.delete(target);
-            else batch.set(target, { ...write.data, updatedAt: serverTimestamp() }, { merge: true });
-          });
-          await batch.commit();
-        }
+        await rebuildInstallmentForecasts(transactions, () => cancelled);
         if (!cancelled) forecastPlanSignatureRef.current = installmentPlanSignature;
       } catch (error) {
         console.error('Falha ao projetar parcelas futuras', error);
+        if (!cancelled) setNotice(`Não foi possível gerar as faturas previstas: ${error?.message || 'erro ao salvar no banco de dados'}`);
       }
     };
 
     rebuildForecasts();
     return () => { cancelled = true; };
   }, [companyId, installmentPlanSignature, cards, transactions, db]);
-
   const billReconciliationPlanSignature = useMemo(
     () => reconciliationSignature(bills),
     [bills]
@@ -1189,7 +1214,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '')
       || String(data.creditCardForecastAnchorDate || '') !== String(tx.creditCardForecastAnchorDate || '');
 
-    await updateDoc(docPath(db, 'financial_transactions', tx.id), {
+    const changes = {
       description,
       merchant,
       normalizedMerchant: normalizeText(merchant),
@@ -1208,7 +1233,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       creditCardForecastDescription: description,
       creditCardForecastMerchant: merchant,
       updatedAt: serverTimestamp(),
-    });
+    };
+
+    await updateDoc(docPath(db, 'financial_transactions', tx.id), changes);
+
+    // Persist the source transaction first, then rebuild forecasts from the
+    // just-saved values instead of relying on a later React snapshot.
+    try {
+      const nextTransaction = { ...tx, ...changes };
+      const nextTransactions = transactions.map(item => item.id === tx.id ? nextTransaction : item);
+      return await rebuildInstallmentForecasts(nextTransactions);
+    } catch (error) {
+      console.error('Falha ao gerar as faturas previstas após salvar o parcelamento', error);
+      return { forecastError: error?.message || 'Falha ao gravar as faturas previstas.' };
+    }
   };
 
   const updateTransaction = async (data) => {
@@ -1252,9 +1290,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     try {
       if (isCreditCardTransaction(tx)) {
         try {
-          await updateCreditCardTransactionDetails(tx, data);
+          const forecastResult = await updateCreditCardTransactionDetails(tx, data);
           setModal(null);
-          setNotice('Lançamento do cartão atualizado. As faturas futuras serão recalculadas.');
+          if (forecastResult?.forecastError) {
+            setNotice(`Lançamento salvo, mas as faturas previstas não foram geradas: ${forecastResult.forecastError}`);
+          } else {
+            setNotice(`Parcelamento salvo. ${forecastResult?.futureBills || 0} fatura(s) prevista(s) atualizada(s), com ${forecastResult?.plannedItems || 0} parcela(s)/ajuste(s) futuro(s).`);
+          }
         } catch (error) {
           setNotice(error.message || 'Não foi possível atualizar o lançamento do cartão.');
         }

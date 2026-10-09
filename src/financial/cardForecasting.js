@@ -73,7 +73,7 @@ const billIdForCycle = ({ companyId, card, referenceMonth, bills }) => {
 };
 
 const forecastTotal = (items = []) => items.reduce(
-  (sum, item) => sum + Number(item?.amountCents || 0),
+  (sum, item) => item?.excluded === true ? sum : sum + Number(item?.amountCents || 0),
   0
 );
 
@@ -164,6 +164,10 @@ export const buildInstallmentForecastWrites = ({
       const previousItem = (previousBill?.forecastItems || []).find(item =>
         item.id === `installment_${hash(`${transaction.id}|${installmentNumber}`)}`
       );
+      if (
+        previousItem?.excluded === true
+        && Number(previousItem.planVersion || 0) === planVersion
+      ) continue;
       const fallbackDates = datesForCycle(referenceMonth, card);
       const defaultItem = {
         id: `installment_${hash(`${transaction.id}|${installmentNumber}`)}`,
@@ -218,8 +222,10 @@ export const buildInstallmentForecastWrites = ({
   const writes = [];
   for (const group of groups.values()) {
     const existing = billsById.get(group.billId) || {};
+    const generatedIds = new Set(group.generatedItems.map(item => item.id));
     const manualItems = (existing.forecastItems || []).filter(item =>
       item.kind !== 'INSTALLMENT_FORECAST'
+      || (item.excluded === true && !generatedIds.has(item.id))
     );
     const forecastItems = [
       ...group.generatedItems,

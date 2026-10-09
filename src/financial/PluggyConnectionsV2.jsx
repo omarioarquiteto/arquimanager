@@ -130,7 +130,11 @@ const purgePreviousPluggyIntegration = async (db, companyId, itemId) => {
 
   const legacyAccounts = legacy(accountSnapshot);
   const legacyCards = legacy(cardSnapshot);
-  const legacyBills = legacy(billSnapshot);
+  // Projeções criadas pelo ArquiManager são necessárias para a conciliação
+  // posterior e nunca devem ser removidas como se fossem dados legados.
+  const legacyBills = legacy(billSnapshot).filter(item =>
+    item.source !== 'ARQUIMANAGER_FORECAST' && item.forecastManaged !== true
+  );
   const legacyTransactions = legacy(transactionSnapshot).filter(item =>
     item.source === 'PLUGGY' || item.source === 'PLUGGY_PROJECTION' || item.provider === 'PLUGGY'
   );
@@ -271,6 +275,17 @@ const makeTransactionPayload = ({
   const description = String(transaction?.description || transaction?.descriptionRaw || 'Movimentação bancária').trim();
   const merchant = merchantName(transaction);
   const externalId = `pluggy-v2:${transaction.id}`;
+  const cardMetadata = transaction?.creditCardMetadata || {};
+  const providerInstallmentNumber = Number(cardMetadata.installmentNumber || 0);
+  const providerTotalInstallments = Number(cardMetadata.totalInstallments || 0);
+  const providerPaymentTypeRaw = String(cardMetadata.paymentType || '').trim().toUpperCase();
+  const providerPaymentType = ['INSTALLMENT', 'A_PRAZO', 'PARCELADO'].includes(providerPaymentTypeRaw)
+    || providerTotalInstallments > 1
+    ? 'INSTALLMENT'
+    : ['SINGLE', 'A_VISTA', 'AVISTA'].includes(providerPaymentTypeRaw)
+      ? 'SINGLE'
+      : null;
+  const manualInstallmentPlan = existing?.creditCardPlanConfiguredManually === true;
 
   const base = {
     companyId,
@@ -304,6 +319,30 @@ const makeTransactionPayload = ({
     providerId: transaction?.providerId || null,
     providerCode: transaction?.providerCode || null,
     operationType: transaction?.operationType || null,
+    creditCardPaymentType: manualInstallmentPlan
+      ? (existing?.creditCardPaymentType || 'SINGLE')
+      : (providerPaymentType || existing?.creditCardPaymentType || 'SINGLE'),
+    creditCardInstallmentNumber: manualInstallmentPlan
+      ? Number(existing?.creditCardInstallmentNumber || 1)
+      : (providerInstallmentNumber || Number(existing?.creditCardInstallmentNumber || 1)),
+    creditCardTotalInstallments: manualInstallmentPlan
+      ? Number(existing?.creditCardTotalInstallments || 1)
+      : (providerTotalInstallments || Number(existing?.creditCardTotalInstallments || 1)),
+    creditCardPurchaseDate: manualInstallmentPlan
+      ? (existing?.creditCardPurchaseDate || dateOnly(transaction.date))
+      : (cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : (existing?.creditCardPurchaseDate || dateOnly(transaction.date))),
+    creditCardBillForecastDate: existing?.creditCardBillForecastDate
+      || (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate) : null)
+      || (cardMetadata.billForecastDate ? dateOnly(cardMetadata.billForecastDate) : null)
+      || dateOnly(transaction.date),
+    creditCardTotalAmountCents: cardMetadata.totalAmount == null
+      ? (existing?.creditCardTotalAmountCents ?? null)
+      : toCents(cardMetadata.totalAmount),
+    creditCardForecastAmountCents: existing?.creditCardForecastAmountCents ?? amountCents,
+    creditCardForecastPlanVersion: Number(existing?.creditCardForecastPlanVersion || 0),
+    creditCardPlanConfiguredManually: manualInstallmentPlan,
+    creditCardForecastDescription: existing?.creditCardForecastDescription || null,
+    creditCardForecastMerchant: existing?.creditCardForecastMerchant || null,
     providerRawData: transaction,
     importedAt: existing?.importedAt || new Date().toISOString(),
     updatedAt: serverTimestamp(),
@@ -542,6 +581,9 @@ export default function PluggyConnectionsV2({
           closingDate: closingDate || null,
           dueDate: dueDate || null,
           officialTotalCents: totalCents,
+          officialDueDate: dueDate || null,
+          officialClosingDate: closingDate || null,
+          officialSyncedAt: data.fetchedAt || new Date().toISOString(),
           projectedCents: 0,
           totalCents,
           paidCents,

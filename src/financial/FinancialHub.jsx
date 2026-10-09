@@ -2598,6 +2598,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         transactions={transactions}
         categories={categories}
         onEditTransaction={openEditTransaction}
+        onUpdateForecastItem={updateForecastItem}
+        onAddForecastItem={addForecastItem}
+        onDeleteForecastItem={deleteForecastItem}
+        onUpdateForecastBillDates={updateForecastBillDates}
+        onManualReconcile={manuallyReconcileForecastBill}
+        busy={busy}
         onClose={() => setModal(null)}
       />}
       {modal?.type === 'transaction' && <TransactionModal
@@ -2880,7 +2886,32 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
   );
 }
 
-function BillDetailsModal({ bill, card, transactions: allTransactions, categories, onEditTransaction, onClose }) {
+function BillDetailsModal({
+  bill,
+  card,
+  transactions: allTransactions,
+  categories,
+  onEditTransaction,
+  onUpdateForecastItem,
+  onAddForecastItem,
+  onDeleteForecastItem,
+  onUpdateForecastBillDates,
+  onManualReconcile,
+  busy = false,
+  onClose,
+}) {
+  const [editingForecastItemId, setEditingForecastItemId] = useState('');
+  const [forecastItemDraft, setForecastItemDraft] = useState({ description: '', amount: '' });
+  const [newForecastDraft, setNewForecastDraft] = useState({ description: '', amount: '' });
+  const [forecastDates, setForecastDates] = useState({ closingDate: '', dueDate: '' });
+
+  useEffect(() => {
+    setForecastDates({
+      closingDate: bill?.forecastClosingDate || bill?.closingDate || '',
+      dueDate: bill?.forecastDueDate || bill?.dueDate || '',
+    });
+  }, [bill?.id, bill?.forecastClosingDate, bill?.forecastDueDate, bill?.closingDate, bill?.dueDate]);
+
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
 
   const providerBillId = String(bill.providerBillId || '').trim();
@@ -2940,6 +2971,37 @@ function BillDetailsModal({ bill, card, transactions: allTransactions, categorie
   const remaining = Math.max(0, total - paid);
   const status = bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.dueDate, provisional: bill.provisional });
   const statusLabel = status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
+  const visibleForecastItems = (Array.isArray(bill.forecastItems) ? bill.forecastItems : [])
+    .filter(item => item?.excluded !== true)
+    .sort((a, b) => {
+      const monthDiff = String(a.dueDate || bill.forecastDueDate || '').localeCompare(String(b.dueDate || bill.forecastDueDate || ''));
+      if (monthDiff) return monthDiff;
+      return Number(a.installmentNumber || 0) - Number(b.installmentNumber || 0);
+    });
+  const forecastTotalCents = Number(bill.forecastTotalCents ?? visibleForecastItems.reduce((sum, item) => sum + Number(item.amountCents || 0), 0));
+  const hasOfficialBill = Boolean(bill.providerBillId || bill.officialTotalCents != null);
+  const officialTotalCents = Number(bill.officialTotalCents ?? (hasOfficialBill ? bill.totalCents : 0));
+  const officialDueDate = String(bill.officialDueDate || (hasOfficialBill ? bill.dueDate : '') || '').slice(0, 10);
+  const forecastDueDate = String(bill.forecastDueDate || (bill.provisional ? bill.dueDate : '') || '').slice(0, 10);
+  const amountsMatch = hasOfficialBill && officialTotalCents === forecastTotalCents;
+  const datesMatch = hasOfficialBill && Boolean(officialDueDate && forecastDueDate && officialDueDate === forecastDueDate);
+  const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && bill.reconciliationStatus !== 'MATCHED_MANUAL';
+  const reconciliationStatusLabel = bill.reconciliationStatus === 'MATCHED_AUTO'
+    ? 'Conciliada automaticamente'
+    : bill.reconciliationStatus === 'MATCHED_MANUAL'
+      ? 'Conciliada manualmente'
+      : bill.reconciliationStatus === 'READY_FOR_MANUAL'
+        ? 'Valores conferem · confirme a conciliação'
+        : bill.reconciliationStatus === 'NEEDS_REVIEW'
+          ? 'Não conciliada'
+          : 'Aguardando fatura oficial';
+  const reconciliationTone = ['MATCHED_AUTO', 'MATCHED_MANUAL'].includes(bill.reconciliationStatus)
+    ? 'bg-emerald-100 text-emerald-700'
+    : bill.reconciliationStatus === 'READY_FOR_MANUAL'
+      ? 'bg-blue-100 text-blue-700'
+      : bill.reconciliationStatus === 'NEEDS_REVIEW'
+        ? 'bg-red-100 text-red-700'
+        : 'bg-amber-100 text-amber-700';
 
   return (
     <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>

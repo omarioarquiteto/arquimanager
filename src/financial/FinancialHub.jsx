@@ -1214,7 +1214,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '')
       || String(data.creditCardForecastAnchorDate || '') !== String(tx.creditCardForecastAnchorDate || '');
 
-    await updateDoc(docPath(db, 'financial_transactions', tx.id), {
+    const changes = {
       description,
       merchant,
       normalizedMerchant: normalizeText(merchant),
@@ -1233,7 +1233,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       creditCardForecastDescription: description,
       creditCardForecastMerchant: merchant,
       updatedAt: serverTimestamp(),
-    });
+    };
+
+    await updateDoc(docPath(db, 'financial_transactions', tx.id), changes);
+
+    // Persist the source transaction first, then rebuild forecasts from the
+    // just-saved values instead of relying on a later React snapshot.
+    try {
+      const nextTransaction = { ...tx, ...changes };
+      const nextTransactions = transactions.map(item => item.id === tx.id ? nextTransaction : item);
+      return await rebuildInstallmentForecasts(nextTransactions);
+    } catch (error) {
+      console.error('Falha ao gerar as faturas previstas após salvar o parcelamento', error);
+      return { forecastError: error?.message || 'Falha ao gravar as faturas previstas.' };
+    }
   };
 
   const updateTransaction = async (data) => {
@@ -1277,9 +1290,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     try {
       if (isCreditCardTransaction(tx)) {
         try {
-          await updateCreditCardTransactionDetails(tx, data);
+          const forecastResult = await updateCreditCardTransactionDetails(tx, data);
           setModal(null);
-          setNotice('Lançamento do cartão atualizado. As faturas futuras serão recalculadas.');
+          if (forecastResult?.forecastError) {
+            setNotice(`Lançamento salvo, mas as faturas previstas não foram geradas: ${forecastResult.forecastError}`);
+          } else {
+            setNotice(`Parcelamento salvo. ${forecastResult?.futureBills || 0} fatura(s) prevista(s) atualizada(s), com ${forecastResult?.plannedItems || 0} parcela(s)/ajuste(s) futuro(s).`);
+          }
         } catch (error) {
           setNotice(error.message || 'Não foi possível atualizar o lançamento do cartão.');
         }

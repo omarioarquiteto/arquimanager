@@ -1176,7 +1176,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       paymentType !== String(tx.creditCardPaymentType || 'SINGLE').toUpperCase()
       || installmentNumber !== Number(tx.creditCardInstallmentNumber || 1)
       || totalInstallments !== Number(tx.creditCardTotalInstallments || 1)
-      || nextForecastAmountCents !== Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0);
+      || nextForecastAmountCents !== Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0)
+      || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '');
 
     await updateDoc(docPath(db, 'financial_transactions', tx.id), {
       description,
@@ -1193,8 +1194,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       creditCardForecastAmountCents: nextForecastAmountCents || Number(tx.amountCents || 0),
       creditCardPlanConfiguredManually: planChanged || tx.creditCardPlanConfiguredManually === true,
       creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0) + (planChanged ? 1 : 0),
-      creditCardForecastDescription: tx.creditCardForecastDescription || description,
-      creditCardForecastMerchant: tx.creditCardForecastMerchant || merchant,
+      creditCardForecastDescription: description,
+      creditCardForecastMerchant: merchant,
       updatedAt: serverTimestamp(),
     });
   };

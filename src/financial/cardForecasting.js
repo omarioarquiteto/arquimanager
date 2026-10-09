@@ -83,19 +83,39 @@ const currentMonthForTransaction = (transaction, card, bills) => {
     : null;
   if (linkedBill?.referenceMonth) return monthOf(linkedBill.referenceMonth);
 
-  const forecastDate = transaction.creditCardBillForecastDate
-    || transaction.providerRawData?.creditCardMetadata?.billPostDate
-    || transaction.providerRawData?.creditCardMetadata?.purchaseDate
-    || transaction.creditCardPurchaseDate
-    || transaction.date;
-  const month = monthOf(dateOnly(forecastDate));
-  if (!month) return '';
+  // Pluggy's Open Finance billForecastDate is already the intended cycle,
+  // formatted as YYYY-MM. Do not apply the closing-day rule to this value.
+  const explicitForecastMonth = String(
+    transaction.creditCardBillForecastDate
+    || transaction.providerRawData?.creditCardMetadata?.billForecastDate
+    || ''
+  ).slice(0, 7);
+  if (/^\d{4}-\d{2}$/.test(explicitForecastMonth)) return explicitForecastMonth;
 
-  // If the transaction date falls after the card's closing day, the purchase
-  // normally belongs to the next billing cycle.
-  const day = Number(String(dateOnly(forecastDate)).slice(8, 10));
-  if (day && day > Number(card?.closingDay || 1)) return addMonths(month, 1);
-  return month;
+  // billPostDate is the institution's actual posting date for the cycle.
+  // Its month is already authoritative; don't shift it based on closing day.
+  const billPostDate = dateOnly(
+    transaction.creditCardBillPostDate
+    || transaction.providerRawData?.creditCardMetadata?.billPostDate
+    || ''
+  );
+  if (/^\d{4}-\d{2}-\d{2}$/.test(billPostDate)) return monthOf(billPostDate);
+
+  const transactionDate = dateOnly(transaction.date);
+  if (transactionDate) {
+    const month = monthOf(transactionDate);
+    const day = Number(transactionDate.slice(8, 10));
+    // When no bill/forecast/posting date exists, approximate the current cycle
+    // from the observed transaction date and card closing day.
+    if (day && day > Number(card?.closingDay || 1)) return addMonths(month, 1);
+    return month;
+  }
+
+  return monthOf(dateOnly(
+    transaction.creditCardPurchaseDate
+    || transaction.providerRawData?.creditCardMetadata?.purchaseDate
+    || ''
+  ));
 };
 
 /**

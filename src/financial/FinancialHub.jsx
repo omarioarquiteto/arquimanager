@@ -2902,11 +2902,17 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
                 <Field label="Quantidade total de parcelas">
                   <input value={data.creditCardTotalInstallments || 1} onChange={e=>update('creditCardTotalInstallments',e.target.value)} type="number" min="1" max="48" className={inputCls}/>
                 </Field>
+                <Field label="Valor das próximas parcelas (R$)">
+                  <input value={data.creditCardForecastAmount ?? data.amount ?? ''} onChange={e=>update('creditCardForecastAmount',e.target.value)} type="number" min="0.01" step="0.01" className={inputCls}/>
+                </Field>
+                <Field label="Data-base da compra">
+                  <input value={data.creditCardPurchaseDate || data.date || todayLocal()} onChange={e=>update('creditCardPurchaseDate',e.target.value)} type="date" className={inputCls}/>
+                </Field>
               </div>
             )}
             {String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT' && Number(data.creditCardTotalInstallments || 1) > Number(data.creditCardInstallmentNumber || 1) && (
               <p className="mt-3 text-[10px] font-bold text-blue-700">
-                Serão projetadas {Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)} parcelas futuras e elas serão somadas às faturas existentes dos meses correspondentes.
+                Serão projetadas {Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)} parcelas futuras, totalizando {(Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)) * (Number(data.creditCardForecastAmount ?? data.amount ?? 0) || 0)}. O valor oficial deste lançamento não será alterado.
               </p>
             )}
           </div>

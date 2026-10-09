@@ -112,7 +112,6 @@ export const buildInstallmentForecastWrites = ({
   const cardsById = new Map(cards.map(card => [card.id, card]));
   const billsById = new Map(bills.map(bill => [bill.id, bill]));
   const groups = new Map();
-  const activePlanSources = new Set();
 
   const ensureGroup = ({ billId, card, referenceMonth }) => {
     const key = billId;
@@ -150,7 +149,6 @@ export const buildInstallmentForecastWrites = ({
     const currentMonth = currentMonthForTransaction(transaction, card, bills);
     if (!currentMonth) continue;
 
-    activePlanSources.add(transaction.id);
     const perInstallmentCents = Math.abs(Number(
       transaction.creditCardForecastAmountCents ?? transaction.amountCents ?? 0
     ));

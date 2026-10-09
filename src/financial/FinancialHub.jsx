@@ -251,6 +251,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         planVersion: Number(tx.creditCardForecastPlanVersion || 0),
         purchaseDate: tx.creditCardPurchaseDate || null,
         forecastDate: tx.creditCardBillForecastDate || null,
+        billPostDate: tx.creditCardBillPostDate || null,
         description: tx.description || '',
         merchant: tx.merchant || '',
         categoryId: tx.categoryId || null,
@@ -1150,6 +1151,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         creditCardForecastAmount: (Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0) / 100).toFixed(2),
         creditCardPlanConfiguredManually: tx.creditCardPlanConfiguredManually === true,
         creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0),
+        creditCardBillPostDate: tx.creditCardBillPostDate || '',
       }
     });
   };
@@ -3259,7 +3261,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
     <Modal title={editing ? 'Editar movimentação' : (data.type === 'INCOME' ? 'Nova entrada' : 'Nova despesa')} onClose={onClose}>
       <div className="grid sm:grid-cols-2 gap-4">
         {editing && <Field label="Tipo">
-          <select value={data.type||'EXPENSE'} onChange={e=>update('type',e.target.value)} disabled={lockedCore} className={inputCls}>
+          <select value={data.type||'EXPENSE'} onChange={e=>update('type',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}>
             <option value="EXPENSE">Despesa</option>
             <option value="INCOME">Entrada</option>
           </select>
@@ -3291,7 +3293,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
                 <Field label="Valor das próximas parcelas (R$)">
                   <input value={data.creditCardForecastAmount ?? data.amount ?? ''} onChange={e=>update('creditCardForecastAmount',e.target.value)} type="number" min="0.01" step="0.01" className={inputCls}/>
                 </Field>
-                <Field label="Data-base da compra">
+                <Field label="Data-base da parcela atual">
                   <input value={data.creditCardPurchaseDate || data.date || todayLocal()} onChange={e=>update('creditCardPurchaseDate',e.target.value)} type="date" className={inputCls}/>
                 </Field>
               </div>
@@ -3310,7 +3312,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
           <input type="date" value={data.date||todayLocal()} onChange={e=>update('date',e.target.value)} disabled={lockedCore} className={inputCls}/>
         </Field>
         <Field label="Conta">
-          <select value={data.accountId||''} onChange={e=>update('accountId',e.target.value)} disabled={lockedCore} className={inputCls}>
+          <select value={data.accountId||''} onChange={e=>update('accountId',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}>
             <option value="">Selecione...</option>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}
           </select>
         </Field>
@@ -3330,7 +3332,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
           </select>
         </Field>}
         <Field label="Estágio">
-          <select value={data.status||'CLASSIFIED'} onChange={e=>update('status',e.target.value)} disabled={lockedCore} className={inputCls}>
+          <select value={data.status||'CLASSIFIED'} onChange={e=>update('status',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}>
             <option value="CLASSIFIED">Realizada / classificada</option>
             <option value="SCHEDULED">Prevista</option>
             <option value="IDENTIFICATION_REQUIRED">Aguardando identificação</option>

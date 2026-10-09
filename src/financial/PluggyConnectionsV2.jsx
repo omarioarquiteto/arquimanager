@@ -870,8 +870,101 @@ export default function PluggyConnectionsV2({
             window.setTimeout(() => setProgress(null), 1200);
           }
         },
-        onError: (widgetError) => {
-          setFailure(widgetError?.message || 'A Pluggy não conseguiu concluir a operação.');
+        onError: async (widgetError) => {
+          const rawError = [
+            widgetError?.code,
+            widgetError?.errorCode,
+            widgetError?.error?.code,
+            widgetError?.data?.code,
+            widgetError?.data?.codeDescription,
+            widgetError?.message,
+            widgetError?.data?.item?.executionStatus?.code,
+            widgetError?.data?.item?.executionStatus?.codeDescription,
+            widgetError?.data?.item?.error?.code,
+            widgetError?.data?.item?.error?.message,
+          ].filter(Boolean).join(' ');
+          const duplicateDetected =
+            /ITEM_USER_ALREADY_EXISTS/i.test(rawError)
+            || /same credentials/i.test(rawError)
+            || (/já existe|ja existe/i.test(rawError) && /conex|credencia|item|banco/i.test(rawError));
+
+          const possibleIds = [
+            ...(Array.isArray(widgetError?.data?.items) ? widgetError.data.items : []),
+            ...(Array.isArray(widgetError?.data?.data?.items) ? widgetError.data.data.items : []),
+            ...(Array.isArray(widgetError?.provider?.data?.items) ? widgetError.provider.data.items : []),
+            widgetError?.data?.item?.id,
+            widgetError?.item?.id,
+            widgetError?.data?.itemId,
+          ];
+          const existingItemIds = [...new Set(
+            possibleIds.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim())
+          )];
+
+          // Some duplicate responses expose the Item IDs that already exist.
+          // Adopt and sync those Items instead of leaving the user with a dead end.
+          if (duplicateDetected && existingItemIds.length) {
+            setProgress({
+              percent: 30,
+              status: 'A conexão já existe. Recuperando o Item já autorizado...',
+            });
+
+            try {
+              let imported = 0;
+              let totalAccounts = 0;
+              let totalTransactions = 0;
+
+              for (const existingItemId of existingItemIds) {
+                const data = await readItemData({
+                  itemId: existingItemId,
+                  clientUserId,
+                });
+
+                const existingItem = data?.item || {};
+                const connection = {
+                  itemId: existingItemId,
+                  connectorId: existingItem.connectorId || null,
+                  connectorName: existingItem.connectorName || 'Banco via Meu Pluggy',
+                  clientUserId: existingItem.clientUserId || clientUserId || null,
+                  lastConnectedAt: new Date().toISOString(),
+                };
+
+                await saveConnectionRecord({
+                  id: existingItemId,
+                  ...connection,
+                  status: existingItem.status || 'UPDATED',
+                  executionStatus: existingItem.executionStatus || null,
+                  lastUpdatedAt: existingItem.lastUpdatedAt || null,
+                });
+
+                const summary = await materialize(connection, data);
+                imported += 1;
+                totalAccounts += summary.bankAccounts + summary.creditAccounts;
+                totalTransactions += summary.transactions + summary.creditTransactions;
+              }
+
+              showNotice(
+                `A Pluggy informou que a conexão já existia. ${imported} conexão(ões) recuperada(s): ${totalAccounts} conta(s)/cartão(ões) e ${totalTransactions} movimentação(ões) sincronizada(s).`
+              );
+              setError('');
+              setProgress({ percent: 100, status: 'Conexão existente recuperada.' });
+            } catch (recoveryError) {
+              setFailure(
+                `A Pluggy informou que essa conexão já existe, mas não foi possível recuperá-la automaticamente. ${recoveryError?.message || ''} Se estiver tentando adicionar outro banco, confirme que ele já está conectado à sua conta do Meu Pluggy e inicie uma nova conexão.`
+              );
+            } finally {
+              setBusyId('');
+              widgetRef.current = null;
+              window.setTimeout(() => setProgress(null), 1600);
+            }
+            return;
+          }
+
+          const ordinaryMessage = widgetError?.message || 'A Pluggy não conseguiu concluir a operação.';
+          const duplicateMessage = duplicateDetected
+            ? 'A Pluggy informou que essa conexão já existe. Nenhum dado foi apagado. Para importar outro banco, o banco precisa estar conectado ao Meu Pluggy e deve ser autorizado em uma nova conexão do ArquiManager; se for o mesmo banco, use a conexão que já aparece na lista.'
+            : ordinaryMessage;
+
+          setFailure(duplicateMessage);
           setBusyId('');
           widgetRef.current = null;
           setProgress(null);
@@ -1341,7 +1434,7 @@ export default function PluggyConnectionsV2({
         <div>
           <h4 className="font-black text-xl text-slate-800">Conexões bancárias</h4>
           <p className="text-xs text-slate-400 mt-1">
-            Integração Pluggy reconstruída: cada Item é uma conexão independente e o ArquiManager usa o itemId como referência.
+            Cada banco conectado ao Meu Pluggy precisa de sua própria autorização. Para atualizar um banco já conectado, use a ação no cartão correspondente.
           </p>
         </div>
         <button
@@ -1350,7 +1443,7 @@ export default function PluggyConnectionsV2({
           className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 disabled:opacity-50"
         >
           <Link2 size={16}/>
-          {busyId === 'new' ? 'Abrindo...' : 'Conectar banco'}
+          {busyId === 'new' ? 'Abrindo...' : (totalConnections > 0 ? 'Adicionar outro banco' : 'Conectar banco')}
         </button>
       </div>
 

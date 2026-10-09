@@ -29,7 +29,9 @@ export default async function handler(request) {
 
     const options = {
       clientUserId: clientUserId || undefined,
-      avoidDuplicates: body.forceNew === false ? true : false,
+      // Meu Pluggy creates a separate proxy Item for each connected bank.
+      // Do not block an additional bank because another Item already exists.
+      avoidDuplicates: false,
     };
 
     const webhookUrl = String(process.env.PLUGGY_V2_WEBHOOK_URL || '').trim();

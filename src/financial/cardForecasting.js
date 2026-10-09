@@ -119,14 +119,61 @@ const descriptionsMatch = (forecastItem, transaction) => {
     .some(value => value.length >= 3 && projected.has(value));
 };
 
-const matchesOfficialInstallmentDetails = ({ item, cardId, transaction }) => {
-  if (!item?.expectedTransactionDate || !Number(item.installmentNumber) || !Number(item.totalInstallments)) return false;
+const currentMonthForTransaction = (transaction, card, bills) => {
+  // A âncora corrigida manualmente é a primeira prioridade.
+  const manualAnchor = dateOnly(transaction.creditCardForecastAnchorDate || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(manualAnchor)) return monthOf(manualAnchor);
+
+  // A informação explícita do ciclo pela Pluggy deve prevalecer sobre billId:
+  // esse vínculo pode estar ausente/desatualizado e deslocar a projeção.
+  const explicitForecastMonth = String(
+    transaction.creditCardBillForecastDate
+    || transaction.providerRawData?.creditCardMetadata?.billForecastDate
+    || transaction.providerRawData?.billForecastDate
+    || ''
+  ).slice(0, 7);
+  if (/^\d{4}-\d{2}$/.test(explicitForecastMonth)) return explicitForecastMonth;
+
+  const billPostDate = dateOnly(
+    transaction.creditCardBillPostDate
+    || transaction.providerRawData?.creditCardMetadata?.billPostDate
+    || ''
+  );
+  if (/^\d{4}-\d{2}-\d{2}$/.test(billPostDate)) return monthOf(billPostDate);
+
+  const linkedBill = transaction.billId
+    ? bills.find(bill => bill.id === transaction.billId)
+    : null;
+  if (linkedBill?.referenceMonth) return monthOf(linkedBill.referenceMonth);
+
+  const transactionDate = dateOnly(transaction.date);
+  if (transactionDate) {
+    const month = monthOf(transactionDate);
+    const day = Number(transactionDate.slice(8, 10));
+    if (day && day > Number(card?.closingDay || 1)) return addMonths(month, 1);
+    return month;
+  }
+
+  return monthOf(dateOnly(
+    transaction.creditCardPurchaseDate
+    || transaction.providerRawData?.creditCardMetadata?.purchaseDate
+    || ''
+  ));
+};
+
+const matchesOfficialInstallmentDetails = ({ item, card, transaction, bills = [] }) => {
+  if (!item?.expectedTransactionDate || !item?.expectedBillMonth || !Number(item.installmentNumber) || !Number(item.totalInstallments)) return false;
   const expectedDate = dateOnly(item.expectedTransactionDate);
   if (!expectedDate) return false;
 
+  // Uma transação de outro ciclo não pode apagar a previsão desta fatura,
+  // mesmo que descrição, data e parcela tenham aparência semelhante.
+  const transactionBillMonth = currentMonthForTransaction(transaction, card, bills);
+  if (monthOf(transactionBillMonth) !== monthOf(item.expectedBillMonth)) return false;
+
   return (
     isPluggyTransaction(transaction)
-    && String(transaction.cardId || '') === String(cardId || '')
+    && String(transaction.cardId || '') === String(card?.id || '')
     && Number(transaction.creditCardInstallmentNumber || 0) === Number(item.installmentNumber)
     && Number(transaction.creditCardTotalInstallments || 0) === Number(item.totalInstallments)
     && dateOnly(transaction.date) === expectedDate
@@ -134,14 +181,13 @@ const matchesOfficialInstallmentDetails = ({ item, cardId, transaction }) => {
   );
 };
 
-const matchesOfficialInstallment = ({ item, cardId, transaction, transactions = [] }) => {
+const matchesOfficialInstallment = ({ item, card, transaction, transactions = [], bills = [] }) => {
   const candidates = transaction ? [transaction] : transactions;
   return candidates.some(candidate => (
-    matchesOfficialInstallmentDetails({ item, cardId, transaction: candidate })
+    matchesOfficialInstallmentDetails({ item, card, transaction: candidate, bills })
     && Math.abs(Number(candidate.amountCents || 0)) === Math.abs(Number(item.amountCents || 0))
   ));
 };
-
 /**
  * Rebuilds the forward-looking installment plan without replacing official
  * bill fields. Forecast lines live on the bill document, separately from the
@@ -291,12 +337,12 @@ export const buildInstallmentForecastWrites = ({
       const expectedTransactionDate = shiftDateByMonths(currentTransactionDate, offset)
         || previousItem?.expectedTransactionDate
         || '';
-      const candidate = { ...item, planIdentity, expectedTransactionDate };
+      const candidate = { ...item, planIdentity, expectedTransactionDate, expectedBillMonth: referenceMonth };
       const group = ensureGroup({ billId, card, referenceMonth });
       // Uma compra pode ter várias parcelas históricas importadas. Se a parcela
       // oficial já existe e coincide em todos os campos, retirar qualquer
       // projeção gerada anteriormente para a mesma compra/parcela.
-      if (matchesOfficialInstallment({ item: candidate, cardId: card.id, transactions })) {
+      if (matchesOfficialInstallment({ item: candidate, card, transactions, bills })) {
         group.generatedItems = group.generatedItems.filter(existingItem => !(
           existingItem.planIdentity === planIdentity
           && Number(existingItem.installmentNumber || 0) === installmentNumber
@@ -343,7 +389,14 @@ export const buildInstallmentForecastWrites = ({
     const card = cardsById.get(transaction.cardId);
     if (!card || transaction.reconciliationType === 'CARD_BILL_PAYMENT') continue;
 
-    let targetBillId = transaction.billId && billsById.has(transaction.billId)
+    const hasExplicitProviderCycle = isPluggyTransaction(transaction) && Boolean(
+      transaction.creditCardBillForecastDate
+      || transaction.providerRawData?.creditCardMetadata?.billForecastDate
+      || transaction.creditCardBillPostDate
+      || transaction.providerRawData?.creditCardMetadata?.billPostDate
+      || transaction.providerRawData?.billForecastDate
+    );
+    let targetBillId = !hasExplicitProviderCycle && transaction.billId && billsById.has(transaction.billId)
       ? transaction.billId
       : '';
     if (!targetBillId) {
@@ -360,7 +413,7 @@ export const buildInstallmentForecastWrites = ({
     // official transaction becomes part of the registered total.
     const hasUnresolvedForecastForTransaction = isPluggyTransaction(transaction)
       && generatedForBill.some(item => (
-        matchesOfficialInstallmentDetails({ item, cardId: card.id, transaction })
+        matchesOfficialInstallmentDetails({ item, card, transaction, bills })
         && Math.abs(Number(item.amountCents || 0)) !== amount
       ));
     if (hasUnresolvedForecastForTransaction) continue;

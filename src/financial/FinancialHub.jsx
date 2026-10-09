@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  getFirestore, collection, doc, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
+  getFirestore, collection, doc, query, where, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
   serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {

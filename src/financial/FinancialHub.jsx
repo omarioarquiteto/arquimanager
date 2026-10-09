@@ -941,6 +941,179 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
 
+  const persistForecastItems = async (bill, forecastItems) => {
+    if (!bill?.id) throw new Error('Fatura prevista não encontrada.');
+    const totalCents = forecastItems.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    const official = Boolean(bill.providerBillId || bill.officialTotalCents != null);
+    const forecastEditedAt = new Date().toISOString();
+    const changes = {
+      forecastItems,
+      forecastTotalCents: totalCents,
+      forecastEditedAt,
+      forecastManualReviewRequired: official,
+      reconciliationStatus: official ? 'NEEDS_REVIEW' : (bill.reconciliationStatus || null),
+      updatedAt: serverTimestamp(),
+    };
+
+    if (!official) {
+      changes.totalCents = totalCents;
+      changes.provisional = true;
+      changes.status = 'OPEN';
+      changes.source = bill.source || 'ARQUIMANAGER_FORECAST';
+    }
+
+    await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
+  };
+
+  const updateForecastItem = async (billId, itemId, changes) => {
+    const bill = bills.find(item => item.id === billId);
+    if (!bill) throw new Error('Fatura prevista não encontrada.');
+    const currentItems = Array.isArray(bill.forecastItems) ? bill.forecastItems : [];
+    const current = currentItems.find(item => item.id === itemId);
+    if (!current) throw new Error('Lançamento previsto não encontrado.');
+    const nextDescription = String(changes.description ?? current.description ?? '').trim();
+    const nextAmountCents = changes.amountCents == null
+      ? Number(current.amountCents || 0)
+      : Number(changes.amountCents);
+    if (!nextDescription || !Number.isFinite(nextAmountCents) || nextAmountCents === 0) {
+      throw new Error('Informe uma descrição e um valor diferente de zero.');
+    }
+
+    const nextItems = currentItems.map(item => item.id === itemId
+      ? { ...item, ...changes, description: nextDescription, amountCents: nextAmountCents, manualOverride: item.kind === 'INSTALLMENT_FORECAST' ? true : item.manualOverride || false }
+      : item
+    );
+    setBusy(true);
+    try {
+      await persistForecastItems(bill, nextItems);
+      setNotice('Lançamento previsto atualizado. A conciliação será reavaliada.');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível atualizar o lançamento previsto.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addForecastItem = async (billId, data) => {
+    const bill = bills.find(item => item.id === billId);
+    const description = String(data?.description || '').trim();
+    const amountCents = toCents(data?.amount);
+    if (!bill || !description || !amountCents) {
+      setNotice('Informe a descrição e o valor do lançamento previsto.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const currentItems = Array.isArray(bill.forecastItems) ? bill.forecastItems : [];
+      const item = {
+        id: `manual_${stableHash(`${bill.id}|${Date.now()}|${description}`)}`,
+        kind: 'MANUAL_ADJUSTMENT',
+        description,
+        merchant: description,
+        amountCents,
+        createdAt: new Date().toISOString(),
+        manualOverride: true,
+      };
+      await persistForecastItems(bill, [...currentItems, item]);
+      setNotice('Lançamento previsto adicionado à fatura.');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível adicionar o lançamento previsto.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteForecastItem = async (billId, itemId) => {
+    const bill = bills.find(item => item.id === billId);
+    if (!bill) return;
+    const currentItems = Array.isArray(bill.forecastItems) ? bill.forecastItems : [];
+    if (!currentItems.some(item => item.id === itemId)) return;
+
+    setBusy(true);
+    try {
+      await persistForecastItems(bill, currentItems.filter(item => item.id !== itemId));
+      setNotice('Lançamento previsto removido da fatura.');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível remover o lançamento previsto.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateForecastBillDates = async (billId, data) => {
+    const bill = bills.find(item => item.id === billId);
+    if (!bill) return;
+    const forecastDueDate = String(data.forecastDueDate || '').slice(0, 10);
+    const forecastClosingDate = String(data.forecastClosingDate || '').slice(0, 10);
+    if (!forecastDueDate || !forecastClosingDate) {
+      setNotice('Informe o fechamento e o vencimento da fatura prevista.');
+      return;
+    }
+
+    const official = Boolean(bill.providerBillId || bill.officialTotalCents != null);
+    const changes = {
+      forecastDueDate,
+      forecastClosingDate,
+      forecastDueDateCustom: true,
+      forecastClosingDateCustom: true,
+      forecastEditedAt: new Date().toISOString(),
+      forecastManualReviewRequired: official,
+      reconciliationStatus: official ? 'NEEDS_REVIEW' : (bill.reconciliationStatus || null),
+      updatedAt: serverTimestamp(),
+    };
+    if (!official) {
+      changes.dueDate = forecastDueDate;
+      changes.closingDate = forecastClosingDate;
+    }
+
+    setBusy(true);
+    try {
+      await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
+      setNotice('Datas previstas atualizadas.');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível atualizar as datas.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const manuallyReconcileForecastBill = async (billId) => {
+    const bill = bills.find(item => item.id === billId);
+    if (!bill || !(bill.providerBillId || bill.officialTotalCents != null)) {
+      setNotice('A fatura oficial ainda não foi recebida pela Pluggy.');
+      return;
+    }
+
+    const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
+    const expectedTotalCents = Number(bill.forecastTotalCents || 0);
+    const officialDueDate = String(bill.officialDueDate || bill.dueDate || '').slice(0, 10);
+    const expectedDueDate = String(bill.forecastDueDate || bill.dueDate || '').slice(0, 10);
+    if (officialTotalCents !== expectedTotalCents || !officialDueDate || officialDueDate !== expectedDueDate) {
+      setNotice('Para conciliar, o total e o vencimento previstos precisam ser iguais aos dados oficiais da fatura.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await updateDoc(docPath(db, 'financial_bills', bill.id), {
+        reconciliationStatus: 'MATCHED_MANUAL',
+        reconciledAgainstOfficialTotalCents: officialTotalCents,
+        reconciledAgainstOfficialDueDate: officialDueDate,
+        reconciledAgainstForecastTotalCents: expectedTotalCents,
+        reconciledAgainstForecastDueDate: expectedDueDate,
+        reconciledAt: new Date().toISOString(),
+        forecastManualReviewRequired: false,
+        updatedAt: serverTimestamp(),
+      });
+      setNotice('Fatura conciliada manualmente.');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível conciliar a fatura.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openEditTransaction = (tx) => {
     const lockedCore = tx.status === 'RECONCILED' || tx.reconciliationType === 'TRANSFER' || !!tx.billId || !!tx.payableId || !!tx.receivableId;
     setModal({

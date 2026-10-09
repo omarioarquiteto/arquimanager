@@ -2580,7 +2580,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               <span className="text-[10px] font-black uppercase text-slate-400">{bills.length} fatura(s)</span>
             </div>
             <div className="space-y-2">
-              {[...bills].sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||''))).map(b => {
+              {bills
+                .filter(b => !(
+                  b.source === 'ARQUIMANAGER_FORECAST'
+                  && Number(b.forecastTotalCents || 0) === 0
+                  && !(Array.isArray(b.forecastItems) ? b.forecastItems : []).some(item => item.excluded !== true)
+                ))
+                .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
+                .map(b => {
                 const card = cards.find(c=>c.id===b.cardId);
                 const remaining = Math.max(0, Number(b.totalCents||0) - Number(b.paidCents||0));
                 const paid = remaining === 0 && Number(b.totalCents||0) > 0;

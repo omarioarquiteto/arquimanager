@@ -80,7 +80,7 @@ const forecastTotal = (items = []) => items.reduce(
 const currentMonthForTransaction = (transaction, card, bills) => {
   // A user-maintained anchor is explicit and can override provider heuristics.
   const manualAnchor = dateOnly(transaction.creditCardForecastAnchorDate || '');
-  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(manualAnchor)) return monthOf(manualAnchor);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(manualAnchor)) return monthOf(manualAnchor);
 
   const linkedBill = transaction.billId
     ? bills.find(bill => bill.id === transaction.billId)

@@ -331,10 +331,15 @@ const makeTransactionPayload = ({
     creditCardPurchaseDate: manualInstallmentPlan
       ? (existing?.creditCardPurchaseDate || dateOnly(transaction.date))
       : (cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : (existing?.creditCardPurchaseDate || dateOnly(transaction.date))),
+    // billForecastDate is the most precise cycle anchor when present (YYYY-MM).
+    // billPostDate is an actual posting date and should be retained separately.
     creditCardBillForecastDate: existing?.creditCardBillForecastDate
-      || (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate) : null)
-      || (cardMetadata.billForecastDate ? dateOnly(cardMetadata.billForecastDate) : null)
-      || dateOnly(transaction.date),
+      || (cardMetadata.billForecastDate ? String(cardMetadata.billForecastDate).slice(0, 7) : null)
+      || (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null)
+      || null,
+    creditCardBillPostDate: cardMetadata.billPostDate
+      ? dateOnly(cardMetadata.billPostDate)
+      : (existing?.creditCardBillPostDate || null),
     creditCardTotalAmountCents: cardMetadata.totalAmount == null
       ? (existing?.creditCardTotalAmountCents ?? null)
       : toCents(cardMetadata.totalAmount),

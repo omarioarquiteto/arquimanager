@@ -251,6 +251,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         planVersion: Number(tx.creditCardForecastPlanVersion || 0),
         purchaseDate: tx.creditCardPurchaseDate || null,
         forecastDate: tx.creditCardBillForecastDate || null,
+        billPostDate: tx.creditCardBillPostDate || null,
         description: tx.description || '',
         merchant: tx.merchant || '',
         categoryId: tx.categoryId || null,
@@ -1147,9 +1148,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         creditCardInstallmentNumber: tx.creditCardInstallmentNumber || 1,
         creditCardTotalInstallments: tx.creditCardTotalInstallments || 1,
         creditCardPurchaseDate: tx.creditCardPurchaseDate || tx.date || todayLocal(),
+        creditCardForecastAnchorDate: tx.creditCardForecastAnchorDate
+          || (tx.creditCardBillForecastDate
+            ? String(tx.creditCardBillForecastDate).slice(0, 7) + '-01'
+            : (tx.creditCardBillPostDate
+              || (bills.find(bill => bill.id === tx.billId)?.referenceMonth
+                ? bills.find(bill => bill.id === tx.billId).referenceMonth + '-01'
+                : (tx.date || tx.creditCardPurchaseDate || todayLocal())))),
         creditCardForecastAmount: (Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0) / 100).toFixed(2),
         creditCardPlanConfiguredManually: tx.creditCardPlanConfiguredManually === true,
         creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0),
+        creditCardBillPostDate: tx.creditCardBillPostDate || '',
       }
     });
   };
@@ -1177,7 +1186,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       || installmentNumber !== Number(tx.creditCardInstallmentNumber || 1)
       || totalInstallments !== Number(tx.creditCardTotalInstallments || 1)
       || nextForecastAmountCents !== Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0)
-      || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '');
+      || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '')
+      || String(data.creditCardForecastAnchorDate || '') !== String(tx.creditCardForecastAnchorDate || '');
 
     await updateDoc(docPath(db, 'financial_transactions', tx.id), {
       description,
@@ -1191,6 +1201,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       creditCardInstallmentNumber: installmentNumber,
       creditCardTotalInstallments: totalInstallments,
       creditCardPurchaseDate: data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || null,
+      creditCardForecastAnchorDate: data.creditCardForecastAnchorDate || tx.creditCardForecastAnchorDate || null,
       creditCardForecastAmountCents: nextForecastAmountCents || Number(tx.amountCents || 0),
       creditCardPlanConfiguredManually: planChanged || tx.creditCardPlanConfiguredManually === true,
       creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0) + (planChanged ? 1 : 0),
@@ -3259,7 +3270,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
     <Modal title={editing ? 'Editar movimentação' : (data.type === 'INCOME' ? 'Nova entrada' : 'Nova despesa')} onClose={onClose}>
       <div className="grid sm:grid-cols-2 gap-4">
         {editing && <Field label="Tipo">
-          <select value={data.type||'EXPENSE'} onChange={e=>update('type',e.target.value)} disabled={lockedCore} className={inputCls}>
+          <select value={data.type||'EXPENSE'} onChange={e=>update('type',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}>
             <option value="EXPENSE">Despesa</option>
             <option value="INCOME">Entrada</option>
           </select>
@@ -3291,8 +3302,8 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
                 <Field label="Valor das próximas parcelas (R$)">
                   <input value={data.creditCardForecastAmount ?? data.amount ?? ''} onChange={e=>update('creditCardForecastAmount',e.target.value)} type="number" min="0.01" step="0.01" className={inputCls}/>
                 </Field>
-                <Field label="Data-base da compra">
-                  <input value={data.creditCardPurchaseDate || data.date || todayLocal()} onChange={e=>update('creditCardPurchaseDate',e.target.value)} type="date" className={inputCls}/>
+                <Field label="Data-base da parcela atual">
+                  <input value={data.creditCardForecastAnchorDate || data.date || todayLocal()} onChange={e=>update('creditCardForecastAnchorDate',e.target.value)} type="date" className={inputCls}/>
                 </Field>
               </div>
             )}
@@ -3304,13 +3315,13 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
           </div>
         )}
         <Field label="Valor (R$) *">
-          <input value={data.amount||''} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" disabled={lockedCore} className={inputCls}/>
+          <input value={data.amount||''} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" disabled={lockedCore || creditCardEdit} className={inputCls}/>
         </Field>
         <Field label={data.status === 'SCHEDULED' ? 'Data prevista' : 'Data *'}>
-          <input type="date" value={data.date||todayLocal()} onChange={e=>update('date',e.target.value)} disabled={lockedCore} className={inputCls}/>
+          <input type="date" value={data.date||todayLocal()} onChange={e=>update('date',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}/>
         </Field>
         <Field label="Conta">
-          <select value={data.accountId||''} onChange={e=>update('accountId',e.target.value)} disabled={lockedCore} className={inputCls}>
+          <select value={data.accountId||''} onChange={e=>update('accountId',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}>
             <option value="">Selecione...</option>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.institution}</option>)}
           </select>
         </Field>
@@ -3330,7 +3341,7 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
           </select>
         </Field>}
         <Field label="Estágio">
-          <select value={data.status||'CLASSIFIED'} onChange={e=>update('status',e.target.value)} disabled={lockedCore} className={inputCls}>
+          <select value={data.status||'CLASSIFIED'} onChange={e=>update('status',e.target.value)} disabled={lockedCore || creditCardEdit} className={inputCls}>
             <option value="CLASSIFIED">Realizada / classificada</option>
             <option value="SCHEDULED">Prevista</option>
             <option value="IDENTIFICATION_REQUIRED">Aguardando identificação</option>

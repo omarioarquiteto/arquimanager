@@ -77,48 +77,68 @@ const forecastTotal = (items = []) => items.reduce(
   0
 );
 
-const currentMonthForTransaction = (transaction, card, bills) => {
-  // A user-maintained anchor is explicit and can override provider heuristics.
-  const manualAnchor = dateOnly(transaction.creditCardForecastAnchorDate || '');
-  if (/^\d{4}-\d{2}-\d{2}$/.test(manualAnchor)) return monthOf(manualAnchor);
+const shiftDateByMonths = (value, months = 0) => {
+  const iso = dateOnly(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!match) return '';
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const targetFirst = new Date(year, month - 1 + Number(months || 0), 1);
+  const lastDay = new Date(targetFirst.getFullYear(), targetFirst.getMonth() + 1, 0).getDate();
+  const targetMonth = String(targetFirst.getFullYear()) + '-' + String(targetFirst.getMonth() + 1).padStart(2, '0');
+  return dateForMonthDay(targetMonth, Math.min(day, lastDay));
+};
 
-  const linkedBill = transaction.billId
-    ? bills.find(bill => bill.id === transaction.billId)
-    : null;
-  if (linkedBill?.referenceMonth) return monthOf(linkedBill.referenceMonth);
+const normalizeInstallmentDescription = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
+  .replace(/\b\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim()
+  .replace(/\s+/g, ' ');
 
-  // Pluggy's Open Finance billForecastDate is already the intended cycle,
-  // formatted as YYYY-MM. Do not apply the closing-day rule to this value.
-  const explicitForecastMonth = String(
-    transaction.creditCardBillForecastDate
-    || transaction.providerRawData?.creditCardMetadata?.billForecastDate
-    || ''
-  ).slice(0, 7);
-  if (/^\d{4}-\d{2}$/.test(explicitForecastMonth)) return explicitForecastMonth;
+const isPluggyTransaction = (transaction = {}) => (
+  String(transaction.provider || '').toUpperCase() === 'PLUGGY'
+  || String(transaction.source || '').toUpperCase().startsWith('PLUGGY')
+  || Boolean(transaction.providerTransactionId)
+  || String(transaction.externalId || '').startsWith('pluggy-v2:')
+);
 
-  // billPostDate is the institution's actual posting date for the cycle.
-  // Its month is already authoritative; don't shift it based on closing day.
-  const billPostDate = dateOnly(
-    transaction.creditCardBillPostDate
-    || transaction.providerRawData?.creditCardMetadata?.billPostDate
-    || ''
+const descriptionsMatch = (forecastItem, transaction) => {
+  const projected = new Set(
+    [forecastItem.description, forecastItem.merchant]
+      .map(normalizeInstallmentDescription)
+      .filter(value => value.length >= 3)
   );
-  if (/^\d{4}-\d{2}-\d{2}$/.test(billPostDate)) return monthOf(billPostDate);
+  if (!projected.size) return false;
+  return [transaction.description, transaction.merchant, transaction.normalizedMerchant]
+    .map(normalizeInstallmentDescription)
+    .some(value => value.length >= 3 && projected.has(value));
+};
 
-  const transactionDate = dateOnly(transaction.date);
-  if (transactionDate) {
-    const month = monthOf(transactionDate);
-    const day = Number(transactionDate.slice(8, 10));
-    // When no bill/forecast/posting date exists, approximate the current cycle
-    // from the observed transaction date and card closing day.
-    if (day && day > Number(card?.closingDay || 1)) return addMonths(month, 1);
-    return month;
-  }
+const matchesOfficialInstallmentDetails = ({ item, cardId, transaction }) => {
+  if (!item?.expectedTransactionDate || !Number(item.installmentNumber) || !Number(item.totalInstallments)) return false;
+  const expectedDate = dateOnly(item.expectedTransactionDate);
+  if (!expectedDate) return false;
 
-  return monthOf(dateOnly(
-    transaction.creditCardPurchaseDate
-    || transaction.providerRawData?.creditCardMetadata?.purchaseDate
-    || ''
+  return (
+    isPluggyTransaction(transaction)
+    && String(transaction.cardId || '') === String(cardId || '')
+    && Number(transaction.creditCardInstallmentNumber || 0) === Number(item.installmentNumber)
+    && Number(transaction.creditCardTotalInstallments || 0) === Number(item.totalInstallments)
+    && dateOnly(transaction.date) === expectedDate
+    && descriptionsMatch(item, transaction)
+  );
+};
+
+const matchesOfficialInstallment = ({ item, cardId, transaction, transactions = [] }) => {
+  const candidates = transaction ? [transaction] : transactions;
+  return candidates.some(candidate => (
+    matchesOfficialInstallmentDetails({ item, cardId, transaction: candidate })
+    && Math.abs(Number(candidate.amountCents || 0)) === Math.abs(Number(item.amountCents || 0))
   ));
 };
 
@@ -163,6 +183,38 @@ export const buildInstallmentForecastWrites = ({
       && total > current
       && total <= 48
     );
+  }).sort((a, b) => (
+    Number(a.creditCardInstallmentNumber || 0) - Number(b.creditCardInstallmentNumber || 0)
+    || String(a.date || '').localeCompare(String(b.date || ''))
+  ));
+
+  const planIdentityFor = (transaction) => {
+    const card = cardsById.get(transaction.cardId);
+    const current = Number(transaction.creditCardInstallmentNumber || 0);
+    const total = Number(transaction.creditCardTotalInstallments || 0);
+    const rawPurchaseDate = transaction.providerRawData?.creditCardMetadata?.purchaseDate;
+    const storedPurchaseDate = transaction.creditCardPurchaseDate;
+    const explicitPurchaseDate = rawPurchaseDate
+      || (transaction.creditCardPlanConfiguredManually === true ? storedPurchaseDate : '')
+      || (storedPurchaseDate && dateOnly(storedPurchaseDate) !== dateOnly(transaction.date) ? storedPurchaseDate : '');
+    const purchaseDate = dateOnly(explicitPurchaseDate)
+      || shiftDateByMonths(transaction.date, -(current - 1))
+      || dateOnly(storedPurchaseDate)
+      || dateOnly(transaction.date);
+    const purchaseDescription = normalizeInstallmentDescription(
+      transaction.creditCardForecastMerchant
+        || transaction.merchant
+        || transaction.creditCardForecastDescription
+        || transaction.description
+    );
+    return [card?.id || transaction.cardId, purchaseDescription, purchaseDate, total].join('|');
+  };
+
+  const sourceIdsByPlanIdentity = new Map();
+  plans.forEach(transaction => {
+    const identity = planIdentityFor(transaction);
+    if (!sourceIdsByPlanIdentity.has(identity)) sourceIdsByPlanIdentity.set(identity, new Set());
+    sourceIdsByPlanIdentity.get(identity).add(String(transaction.id));
   });
 
   for (const transaction of plans) {
@@ -170,6 +222,8 @@ export const buildInstallmentForecastWrites = ({
     const currentNumber = Number(transaction.creditCardInstallmentNumber);
     const totalInstallments = Number(transaction.creditCardTotalInstallments);
     const planVersion = Number(transaction.creditCardForecastPlanVersion || 0);
+    const planIdentity = planIdentityFor(transaction);
+    const planSourceIds = sourceIdsByPlanIdentity.get(planIdentity) || new Set();
     const currentMonth = currentMonthForTransaction(transaction, card, bills);
     if (!currentMonth) continue;
 
@@ -178,23 +232,41 @@ export const buildInstallmentForecastWrites = ({
     ));
     if (!perInstallmentCents) continue;
 
+    const currentTransactionDate = dateOnly(transaction.date)
+      || shiftDateByMonths(
+        transaction.creditCardPurchaseDate
+          || transaction.providerRawData?.creditCardMetadata?.purchaseDate,
+        currentNumber - 1
+      );
+
     for (let offset = 1; offset <= totalInstallments - currentNumber; offset += 1) {
       const installmentNumber = currentNumber + offset;
       const referenceMonth = addMonths(currentMonth, offset);
       const billId = billIdForCycle({ companyId, card, referenceMonth, bills });
       const previousBill = billsById.get(billId);
-      const previousItem = (previousBill?.forecastItems || []).find(item =>
-        item.id === `installment_${hash(`${transaction.id}|${installmentNumber}`)}`
-      );
+      const canonicalItemId = `installment_${hash(`${planIdentity}|${installmentNumber}`)}`;
+      const previousItem = (previousBill?.forecastItems || []).find(item => (
+        item.id === canonicalItemId
+        || (
+          item.kind === 'INSTALLMENT_FORECAST'
+          && Number(item.installmentNumber || 0) === installmentNumber
+          && Number(item.totalInstallments || 0) === totalInstallments
+          && (
+            item.planIdentity === planIdentity
+            || planSourceIds.has(String(item.sourceTransactionId || ''))
+          )
+        )
+      ));
       if (
         previousItem?.excluded === true
         && Number(previousItem.planVersion || 0) === planVersion
       ) continue;
       const fallbackDates = datesForCycle(referenceMonth, card);
       const defaultItem = {
-        id: `installment_${hash(`${transaction.id}|${installmentNumber}`)}`,
+        id: previousItem?.id || canonicalItemId,
         kind: 'INSTALLMENT_FORECAST',
         sourceTransactionId: transaction.id,
+        planIdentity,
         installmentNumber,
         totalInstallments,
         planVersion,
@@ -208,20 +280,45 @@ export const buildInstallmentForecastWrites = ({
         ? {
             ...defaultItem,
             ...previousItem,
-            // Values edited inside an individual forecast invoice remain in
-            // place until the source installment plan itself is changed.
+            // Valores corrigidos manualmente permanecem até a correspondência
+            // exata com a transação oficial ou até mudar o plano da compra.
             description: previousItem.manualOverride ? previousItem.description : defaultItem.description,
             merchant: previousItem.manualOverride ? previousItem.merchant : defaultItem.merchant,
             amountCents: previousItem.manualOverride ? Number(previousItem.amountCents || 0) : defaultItem.amountCents,
           }
         : defaultItem;
 
+      const expectedTransactionDate = shiftDateByMonths(currentTransactionDate, offset)
+        || previousItem?.expectedTransactionDate
+        || '';
+      const candidate = { ...item, planIdentity, expectedTransactionDate };
       const group = ensureGroup({ billId, card, referenceMonth });
-      group.generatedItems.push({
-        ...item,
+      // Uma compra pode ter várias parcelas históricas importadas. Se a parcela
+      // oficial já existe e coincide em todos os campos, retirar qualquer
+      // projeção gerada anteriormente para a mesma compra/parcela.
+      if (matchesOfficialInstallment({ item: candidate, cardId: card.id, transactions })) {
+        group.generatedItems = group.generatedItems.filter(existingItem => !(
+          existingItem.planIdentity === planIdentity
+          && Number(existingItem.installmentNumber || 0) === installmentNumber
+          && Number(existingItem.totalInstallments || 0) === totalInstallments
+        ));
+        continue;
+      }
+
+      const generatedIndex = group.generatedItems.findIndex(existingItem => (
+        existingItem.planIdentity === planIdentity
+        && Number(existingItem.installmentNumber || 0) === installmentNumber
+        && Number(existingItem.totalInstallments || 0) === totalInstallments
+      ));
+      const generatedItem = {
+        ...candidate,
         sourceTransactionId: transaction.id,
         dueDate: fallbackDates.dueDate,
-      });
+      };
+      // Como os planos estão ordenados pelo número de parcela, a fonte mais
+      // recente substitui a mais antiga sem produzir linhas duplicadas.
+      if (generatedIndex >= 0) group.generatedItems[generatedIndex] = generatedItem;
+      else group.generatedItems.push(generatedItem);
     }
   }
 
@@ -239,6 +336,40 @@ export const buildInstallmentForecastWrites = ({
         generatedItems: [],
       });
     }
+  }
+
+  const registeredTotalsByBillId = new Map();
+  for (const transaction of transactions) {
+    const card = cardsById.get(transaction.cardId);
+    if (!card || transaction.reconciliationType === 'CARD_BILL_PAYMENT') continue;
+
+    let targetBillId = transaction.billId && billsById.has(transaction.billId)
+      ? transaction.billId
+      : '';
+    if (!targetBillId) {
+      const referenceMonth = currentMonthForTransaction(transaction, card, bills);
+      if (!referenceMonth) continue;
+      targetBillId = billIdForCycle({ companyId, card, referenceMonth, bills });
+    }
+
+    const generatedForBill = groups.get(targetBillId)?.generatedItems || [];
+    const amount = Math.abs(Number(transaction.amountCents || 0));
+    // If a provider row matches every identifier except amount, its still-open
+    // forecast is the placeholder estimate. Do not count both in the invoice
+    // total; once the amount is corrected, the forecast disappears and the
+    // official transaction becomes part of the registered total.
+    const hasUnresolvedForecastForTransaction = isPluggyTransaction(transaction)
+      && generatedForBill.some(item => (
+        matchesOfficialInstallmentDetails({ item, cardId: card.id, transaction })
+        && Math.abs(Number(item.amountCents || 0)) !== amount
+      ));
+    if (hasUnresolvedForecastForTransaction) continue;
+
+    const signedAmount = String(transaction.type || '').toUpperCase() === 'INCOME' ? -amount : amount;
+    registeredTotalsByBillId.set(
+      targetBillId,
+      Number(registeredTotalsByBillId.get(targetBillId) || 0) + signedAmount
+    );
   }
 
   const writes = [];
@@ -275,6 +406,7 @@ export const buildInstallmentForecastWrites = ({
       forecastManaged: true,
       forecastItems,
       forecastTotalCents: totalCents,
+      registeredTransactionsTotalCents: Number(registeredTotalsByBillId.get(group.billId) || 0),
       forecastDueDate,
       forecastClosingDate,
       forecastProviderItemId: group.card.providerItemId || null,
@@ -307,7 +439,8 @@ export const getBillReconciliationDecision = (bill = {}) => {
   }
 
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-  const expectedTotalCents = Number(bill.forecastTotalCents || 0);
+  const expectedTotalCents = Number(bill.forecastTotalCents || 0)
+    + Number(bill.registeredTransactionsTotalCents || 0);
   const officialDueDate = dateOnly(bill.officialDueDate || bill.dueDate);
   const expectedDueDate = dateOnly(bill.forecastDueDate || bill.dueDate);
   const valuesMatch = officialTotalCents === expectedTotalCents;
@@ -362,6 +495,7 @@ export const reconciliationSignature = (bills = []) => JSON.stringify(
         bill.id,
         decision.officialTotalCents,
         decision.expectedTotalCents,
+        Number(bill.registeredTransactionsTotalCents || 0),
         decision.officialDueDate,
         decision.expectedDueDate,
         bill.forecastEditedAt || '',

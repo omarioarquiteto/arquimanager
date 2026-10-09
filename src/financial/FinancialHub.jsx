@@ -1012,7 +1012,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     setBusy(true);
     try {
       await persistForecastItems(bill, nextItems);
-      setNotice('Lançamento previsto atualizado. A conciliação será reavaliada.');
+      await rebuildInstallmentForecasts(transactions);
+      setNotice('Previsão salva. As correspondências com lançamentos oficiais foram reavaliadas.');
     } catch (error) {
       setNotice(error.message || 'Não foi possível atualizar o lançamento previsto.');
     } finally {
@@ -1116,7 +1117,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }
 
     const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-    const expectedTotalCents = Number(bill.forecastTotalCents || 0);
+    const expectedTotalCents = Number(bill.forecastTotalCents || 0)
+      + Number(bill.registeredTransactionsTotalCents || 0);
     const officialDueDate = String(bill.officialDueDate || bill.dueDate || '').slice(0, 10);
     const expectedDueDate = String(bill.forecastDueDate || bill.dueDate || '').slice(0, 10);
     if (officialTotalCents !== expectedTotalCents || !officialDueDate || officialDueDate !== expectedDueDate) {
@@ -3052,7 +3054,8 @@ function BillDetailsModal({
   const officialTotalCents = Number(bill.officialTotalCents ?? (hasOfficialBill ? bill.totalCents : 0));
   const officialDueDate = String(bill.officialDueDate || (hasOfficialBill ? bill.dueDate : '') || '').slice(0, 10);
   const forecastDueDate = String(bill.forecastDueDate || (bill.provisional ? bill.dueDate : '') || '').slice(0, 10);
-  const amountsMatch = hasOfficialBill && officialTotalCents === forecastTotalCents;
+  const estimatedBillTotalCents = forecastTotalCents + Number(bill.registeredTransactionsTotalCents || 0);
+  const amountsMatch = hasOfficialBill && officialTotalCents === estimatedBillTotalCents;
   const datesMatch = hasOfficialBill && Boolean(officialDueDate && forecastDueDate && officialDueDate === forecastDueDate);
   const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && !['MATCHED_MANUAL', 'MATCHED_AUTO'].includes(bill.reconciliationStatus);
   const reconciliationStatusLabel = bill.reconciliationStatus === 'MATCHED_AUTO'
@@ -3109,9 +3112,10 @@ function BillDetailsModal({
 
             <div className="grid sm:grid-cols-2 gap-3">
               <div className="p-3 rounded-xl bg-blue-50 border border-blue-100">
-                <p className="text-[10px] font-black uppercase tracking-wide text-blue-700">Previsto pelo ArquiManager</p>
-                <p className="text-xl font-black text-blue-900 mt-1">{formatBRL(forecastTotalCents)}</p>
+                <p className="text-[10px] font-black uppercase tracking-wide text-blue-700">Estimativa total do ArquiManager</p>
+                <p className="text-xl font-black text-blue-900 mt-1">{formatBRL(forecastTotalCents + Number(bill.registeredTransactionsTotalCents || 0))}</p>
                 <p className="text-[10px] text-blue-700 mt-1">Vencimento: {dateLabel(forecastDueDate)}</p>
+                <p className="text-[10px] text-blue-700 mt-1">Já registrados: {formatBRL(Number(bill.registeredTransactionsTotalCents || 0))} · Ainda previstos: {formatBRL(forecastTotalCents)}</p>
               </div>
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Fatura oficial do banco</p>
@@ -3124,7 +3128,7 @@ function BillDetailsModal({
               <div className={`p-3 rounded-xl border text-xs ${amountsMatch && datesMatch ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-red-50 border-red-100 text-red-800'}`}>
                 {amountsMatch && datesMatch
                   ? 'Valor e vencimento conferem com a fatura oficial.'
-                  : `Diferença de total: ${formatBRL(officialTotalCents - forecastTotalCents)} · ${datesMatch ? 'vencimento igual' : 'vencimentos diferentes'}.`}
+                  : `Diferença de total: ${formatBRL(officialTotalCents - estimatedBillTotalCents)} · ${datesMatch ? 'vencimento igual' : 'vencimentos diferentes'}.`}
               </div>
             )}
 
@@ -3192,7 +3196,7 @@ function BillDetailsModal({
 
         <div className="border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <div><h4 className="font-black text-slate-800">Lançamentos</h4><p className="text-[10px] text-slate-400">{sortedTransactions.length} lançamento(s) nesta fatura</p></div>
+            <div><h4 className="font-black text-slate-800">Lançamentos registrados</h4><p className="text-[10px] text-slate-400">Movimentações já registradas no ArquiManager, incluindo as sincronizadas da Pluggy · {sortedTransactions.length} item(ns)</p></div>
             <span className="text-[10px] font-black text-slate-400">{formatBRL(sortedTransactions.reduce((sum, tx) => sum + (tx.type === 'INCOME' ? -Number(tx.amountCents || 0) : Number(tx.amountCents || 0)), 0))}</span>
           </div>
           <div className="divide-y divide-slate-100">
@@ -3204,7 +3208,7 @@ function BillDetailsModal({
                 <div key={tx.id} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
                   <div className="w-12 shrink-0"><p className="text-[10px] font-black text-slate-500">{dateLabel(tx.date)}</p></div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p>{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>
+                    <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${tx.provider === 'PLUGGY' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{tx.provider === 'PLUGGY' ? 'Pluggy' : 'Registrado'}</span>{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>
                     <p className="text-[10px] text-slate-400 truncate">{tx.description}{category ? ` · ${category.nome}` : ' · categoria não definida'}{tx.notes ? ` · ${tx.notes}` : ''}</p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -3225,7 +3229,7 @@ function BillDetailsModal({
             <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h4 className="font-black text-indigo-900">Lançamentos previstos</h4>
-                <p className="text-[10px] text-indigo-700">{visibleForecastItems.length} item(ns) · parcelas futuras e ajustes manuais</p>
+                <p className="text-[10px] text-indigo-700">{visibleForecastItems.length} item(ns) · previsões ainda não encontradas na Pluggy ou ajustes manuais. Quando descrição, data, valor e parcela conferem, a previsão é removida e fica o lançamento registrado.</p>
               </div>
               <span className="text-sm font-black text-indigo-900">{formatBRL(forecastTotalCents)}</span>
             </div>
@@ -3260,7 +3264,7 @@ function BillDetailsModal({
                             {!isInstallment && <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[9px] font-black">Ajuste manual</span>}
                             {item.manualOverride && <span className="text-[9px] text-amber-700 font-bold">Editado manualmente</span>}
                           </div>
-                          <p className="text-[10px] text-slate-400 mt-1">{item.merchant || item.description || 'Previsão'} · {bill.referenceMonth}</p>
+                          <p className="text-[10px] text-slate-400 mt-1">{item.merchant || item.description || 'Previsão'} · {item.expectedTransactionDate ? `data prevista ${dateLabel(item.expectedTransactionDate)}` : `ciclo ${bill.referenceMonth}`}</p>
                         </div>
                         <span className={`font-black text-sm ${Number(item.amountCents || 0) < 0 ? 'text-emerald-700' : 'text-slate-800'}`}>{formatBRL(item.amountCents)}</span>
                         <div className="flex gap-1">

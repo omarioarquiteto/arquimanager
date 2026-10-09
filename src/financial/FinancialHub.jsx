@@ -970,6 +970,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         creditCardInstallmentNumber: tx.creditCardInstallmentNumber || 1,
         creditCardTotalInstallments: tx.creditCardTotalInstallments || 1,
         creditCardPurchaseDate: tx.creditCardPurchaseDate || tx.date || todayLocal(),
+        creditCardForecastAmount: (Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0) / 100).toFixed(2),
+        creditCardPlanConfiguredManually: tx.creditCardPlanConfiguredManually === true,
+        creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0),
       }
     });
   };
@@ -978,6 +981,25 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!tx?.id) return;
     const description = data.description?.trim() || tx.description || '';
     const merchant = data.merchant?.trim() || tx.merchant || description;
+    const paymentType = String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT'
+      ? 'INSTALLMENT'
+      : 'SINGLE';
+    const installmentNumber = Math.min(48, Math.max(1, Number(data.creditCardInstallmentNumber || 1)));
+    const totalInstallments = Math.min(48, Math.max(1, Number(data.creditCardTotalInstallments || 1)));
+    if (paymentType === 'INSTALLMENT' && totalInstallments < installmentNumber) {
+      throw new Error('A quantidade total de parcelas não pode ser menor que a parcela atual.');
+    }
+
+    const nextForecastAmountCents = Math.abs(toCents(data.creditCardForecastAmount ?? (Number(tx.amountCents || 0) / 100)));
+    if (paymentType === 'INSTALLMENT' && totalInstallments > installmentNumber && nextForecastAmountCents <= 0) {
+      throw new Error('Informe um valor válido para as próximas parcelas.');
+    }
+
+    const planChanged =
+      paymentType !== String(tx.creditCardPaymentType || 'SINGLE').toUpperCase()
+      || installmentNumber !== Number(tx.creditCardInstallmentNumber || 1)
+      || totalInstallments !== Number(tx.creditCardTotalInstallments || 1)
+      || nextForecastAmountCents !== Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0);
 
     await updateDoc(docPath(db, 'financial_transactions', tx.id), {
       description,
@@ -987,6 +1009,15 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       categoryId: data.categoryId || tx.categoryId || null,
       projectId: data.projectId || tx.projectId || null,
       clientId: data.clientId || tx.clientId || null,
+      creditCardPaymentType: paymentType,
+      creditCardInstallmentNumber: installmentNumber,
+      creditCardTotalInstallments: totalInstallments,
+      creditCardPurchaseDate: data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || null,
+      creditCardForecastAmountCents: nextForecastAmountCents || Number(tx.amountCents || 0),
+      creditCardPlanConfiguredManually: planChanged || tx.creditCardPlanConfiguredManually === true,
+      creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0) + (planChanged ? 1 : 0),
+      creditCardForecastDescription: tx.creditCardForecastDescription || description,
+      creditCardForecastMerchant: tx.creditCardForecastMerchant || merchant,
       updatedAt: serverTimestamp(),
     });
   };

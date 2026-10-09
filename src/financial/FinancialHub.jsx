@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getFirestore, collection, doc, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
   serverTimestamp, increment, writeBatch
@@ -13,6 +13,11 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
+import {
+  buildInstallmentForecastWrites,
+  getBillReconciliationDecision,
+  reconciliationSignature,
+} from './cardForecasting.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -191,6 +196,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bulkQuery, setBulkQuery] = useState('');
   const [bulkLimit, setBulkLimit] = useState(20);
   const [bulkBusyKey, setBulkBusyKey] = useState('');
+  const forecastPlanSignatureRef = useRef('');
+  const billReconciliationSignatureRef = useRef('');
 
   useEffect(() => {
     if (!companyId) return;
@@ -217,6 +224,120 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     ];
     return () => unsubs.forEach(u => u());
   }, [companyId]);
+
+  const installmentPlanSignature = useMemo(() => JSON.stringify({
+    cards: cards
+      .map(card => ({
+        id: card.id,
+        closingDay: card.closingDay || 1,
+        dueDay: card.dueDay || 10,
+        providerItemId: card.providerItemId || null,
+        provider: card.provider || null,
+        source: card.source || null,
+      }))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    transactions: transactions
+      .filter(tx => Boolean(tx.cardId))
+      .map(tx => ({
+        id: tx.id,
+        cardId: tx.cardId,
+        date: tx.date || null,
+        billId: tx.billId || null,
+        amountCents: Number(tx.amountCents || 0),
+        paymentType: tx.creditCardPaymentType || null,
+        installmentNumber: Number(tx.creditCardInstallmentNumber || 0),
+        totalInstallments: Number(tx.creditCardTotalInstallments || 0),
+        forecastAmountCents: tx.creditCardForecastAmountCents ?? null,
+        planVersion: Number(tx.creditCardForecastPlanVersion || 0),
+        purchaseDate: tx.creditCardPurchaseDate || null,
+        forecastDate: tx.creditCardBillForecastDate || null,
+        description: tx.description || '',
+        merchant: tx.merchant || '',
+        categoryId: tx.categoryId || null,
+        projectId: tx.projectId || null,
+      }))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+  }), [cards, transactions]);
+
+  useEffect(() => {
+    if (!companyId || forecastPlanSignatureRef.current === installmentPlanSignature) return undefined;
+    let cancelled = false;
+
+    const rebuildForecasts = async () => {
+      try {
+        const snapshot = await getDocs(query(
+          collectionPath(db, 'financial_bills'),
+          where('companyId', '==', companyId)
+        ));
+        if (cancelled) return;
+        const currentBills = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+        const writes = buildInstallmentForecastWrites({
+          companyId,
+          cards,
+          transactions,
+          bills: currentBills,
+        });
+
+        for (let start = 0; start < writes.length; start += 400) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          writes.slice(start, start + 400).forEach(write => {
+            const target = docPath(db, 'financial_bills', write.id);
+            if (write.delete) batch.delete(target);
+            else batch.set(target, { ...write.data, updatedAt: serverTimestamp() }, { merge: true });
+          });
+          await batch.commit();
+        }
+        if (!cancelled) forecastPlanSignatureRef.current = installmentPlanSignature;
+      } catch (error) {
+        console.error('Falha ao projetar parcelas futuras', error);
+      }
+    };
+
+    rebuildForecasts();
+    return () => { cancelled = true; };
+  }, [companyId, installmentPlanSignature, cards, transactions, db]);
+
+  const billReconciliationPlanSignature = useMemo(
+    () => reconciliationSignature(bills),
+    [bills]
+  );
+
+  useEffect(() => {
+    if (!companyId || billReconciliationSignatureRef.current === billReconciliationPlanSignature) return undefined;
+    let cancelled = false;
+
+    const reconcileForecastBills = async () => {
+      try {
+        const pending = bills.flatMap(bill => {
+          const decision = getBillReconciliationDecision(bill);
+          if (!decision) return [];
+          if (bill.reconciliationStatus === decision.status) return [];
+          return [{ bill, decision }];
+        });
+        if (cancelled) return;
+
+        for (let start = 0; start < pending.length; start += 400) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          pending.slice(start, start + 400).forEach(({ bill, decision }) => {
+            batch.update(docPath(db, 'financial_bills', bill.id), {
+              reconciliationStatus: decision.status,
+              reconciliationCheckedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          });
+          await batch.commit();
+        }
+        if (!cancelled) billReconciliationSignatureRef.current = billReconciliationPlanSignature;
+      } catch (error) {
+        console.error('Falha ao conciliar faturas previstas e oficiais', error);
+      }
+    };
+
+    reconcileForecastBills();
+    return () => { cancelled = true; };
+  }, [companyId, billReconciliationPlanSignature, bills, db]);
 
   useEffect(() => {
     DEFAULT_CATEGORIES.forEach(async ([id, nome]) => {

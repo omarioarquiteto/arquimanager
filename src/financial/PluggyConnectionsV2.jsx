@@ -874,8 +874,12 @@ export default function PluggyConnectionsV2({
           const rawError = [
             widgetError?.code,
             widgetError?.errorCode,
+            widgetError?.error?.code,
+            widgetError?.data?.code,
+            widgetError?.data?.codeDescription,
             widgetError?.message,
             widgetError?.data?.item?.executionStatus?.code,
+            widgetError?.data?.item?.executionStatus?.codeDescription,
             widgetError?.data?.item?.error?.code,
             widgetError?.data?.item?.error?.message,
           ].filter(Boolean).join(' ');
@@ -1430,7 +1434,7 @@ export default function PluggyConnectionsV2({
         <div>
           <h4 className="font-black text-xl text-slate-800">Conexões bancárias</h4>
           <p className="text-xs text-slate-400 mt-1">
-            Integração Pluggy reconstruída: cada Item é uma conexão independente e o ArquiManager usa o itemId como referência.
+            Cada banco conectado ao Meu Pluggy precisa de sua própria autorização. Para atualizar um banco já conectado, use a ação no cartão correspondente.
           </p>
         </div>
         <button
@@ -1439,7 +1443,7 @@ export default function PluggyConnectionsV2({
           className="bg-[#1e5aa0] text-white px-4 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 disabled:opacity-50"
         >
           <Link2 size={16}/>
-          {busyId === 'new' ? 'Abrindo...' : 'Conectar banco'}
+          {busyId === 'new' ? 'Abrindo...' : (totalConnections > 0 ? 'Adicionar outro banco' : 'Conectar banco')}
         </button>
       </div>
 

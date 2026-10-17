@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFirestore, collection, doc, query, where, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
-  serverTimestamp, increment, writeBatch
+  arrayUnion, arrayRemove, serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
@@ -155,6 +155,21 @@ const getBillTransactions = (bill, card, transactions = []) => (
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
 );
 
+const getCheckedInvoiceTransactionIds = (bill = {}) => new Set(
+  (Array.isArray(bill.reconciliationCheckedTransactionIds) ? bill.reconciliationCheckedTransactionIds : [])
+    .map(id => String(id))
+);
+
+const getCheckedInvoiceTransactionCount = (bill = {}, transactions = []) => {
+  const checkedIds = getCheckedInvoiceTransactionIds(bill);
+  return transactions.filter(tx => checkedIds.has(String(tx.id))).length;
+};
+
+const areAllInvoiceTransactionsChecked = (bill = {}, transactions = []) => (
+  transactions.length > 0
+  && getCheckedInvoiceTransactionCount(bill, transactions) === transactions.length
+);
+
 const getBillTransactionsTotalCents = (transactions = []) => transactions.reduce((sum, tx) => {
   const amount = Math.abs(Number(tx.amountCents || 0));
   return sum + (String(tx.type || '').toUpperCase() === 'INCOME' ? -amount : amount);
@@ -270,6 +285,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [selectedMonth, setSelectedMonth] = useState(todayLocal().slice(0, 7));
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [invoiceCheckSavingIds, setInvoiceCheckSavingIds] = useState(() => new Set());
   const [notice, setNotice] = useState('');
   const [bulkQuery, setBulkQuery] = useState('');
   const [bulkLimit, setBulkLimit] = useState(20);
@@ -323,6 +339,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
       const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
       const transactionsSignature = getBillTransactionsSignature(billTransactions);
+      const checkedTransactionIds = Array.from(getCheckedInvoiceTransactionIds(bill)).sort();
+      const checkedTransactionCount = getCheckedInvoiceTransactionCount(bill, billTransactions);
+      const allTransactionsChecked = (
+        billTransactions.length > 0
+        && checkedTransactionCount === billTransactions.length
+      );
       return {
         bill,
         totalAvailable,
@@ -330,9 +352,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         transactionsTotalCents,
         transactionsSignature,
         transactionCount: billTransactions.length,
-        status: totalAvailable && officialTotalCents === transactionsTotalCents
-          ? 'MATCHED_AUTO'
-          : 'NEEDS_REVIEW',
+        checkedTransactionIds,
+        checkedTransactionCount,
+        status: allTransactionsChecked ? 'MATCHED_MANUAL' : 'NEEDS_REVIEW',
       };
     })
     .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id))),
@@ -346,6 +368,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       row.transactionsTotalCents,
       row.transactionsSignature,
       row.transactionCount,
+      row.checkedTransactionIds,
+      row.checkedTransactionCount,
       row.status,
     ])
   ), [invoiceReconciliationRows]);
@@ -1018,6 +1042,29 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         creditCardBillPostDate: tx.creditCardBillPostDate || null,
       }
     });
+  };
+
+  const toggleInvoiceTransactionCheck = async (bill, transaction, checked) => {
+    if (!bill?.id || !transaction?.id) return;
+
+    setInvoiceCheckSavingIds(previous => new Set(previous).add(transaction.id));
+    try {
+      await updateDoc(docPath(db, 'financial_bills', bill.id), {
+        reconciliationCheckedTransactionIds: checked
+          ? arrayUnion(transaction.id)
+          : arrayRemove(transaction.id),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error('Falha ao salvar conferência do lançamento da fatura', error);
+      setNotice(error.message || 'Não foi possível salvar a conferência deste lançamento.');
+    } finally {
+      setInvoiceCheckSavingIds(previous => {
+        const next = new Set(previous);
+        next.delete(transaction.id);
+        return next;
+      });
+    }
   };
 
   const updateCreditCardTransactionDetails = async (tx, data) => {
@@ -2428,16 +2475,23 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const remaining = Math.max(0, officialTotal - paidCents);
                 const paid = remaining === 0 && officialTotal > 0;
                 const billTransactions = getBillTransactions(b, card, transactions);
-                const transactionTotal = getBillTransactionsTotalCents(billTransactions);
-                const valuesMatch = totalAvailable && officialTotal === transactionTotal;
-                const statusLabel = !totalAvailable
-                  ? 'total oficial indisponível'
-                  : valuesMatch ? 'conciliada' : 'não conciliada';
-                const statusClass = !totalAvailable
-                  ? 'bg-amber-100 text-amber-700'
-                  : valuesMatch ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';
+                const checkedTransactionCount = getCheckedInvoiceTransactionCount(b, billTransactions);
+                const allTransactionsChecked = (
+                  billTransactions.length > 0
+                  && checkedTransactionCount === billTransactions.length
+                );
+                const statusLabel = allTransactionsChecked
+                  ? 'conciliada'
+                  : !totalAvailable
+                    ? 'total oficial indisponível'
+                    : 'não conciliada';
+                const statusClass = allTransactionsChecked
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : !totalAvailable
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'bg-red-100 text-red-700';
                 return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy</p></div>
+                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy · {checkedTransactionCount}/{billTransactions.length} conferidos</p></div>
                   <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                 </button>;
               })}
@@ -2459,6 +2513,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         transactions={transactions}
         categories={categories}
         onEditTransaction={openEditTransaction}
+        onToggleTransactionCheck={toggleInvoiceTransactionCheck}
+        savingTransactionIds={invoiceCheckSavingIds}
         onClose={() => setModal(null)}
       />}
       {modal?.type === 'transaction' && <TransactionModal
@@ -2747,6 +2803,8 @@ function BillDetailsModal({
   transactions: allTransactions,
   categories,
   onEditTransaction,
+  onToggleTransactionCheck,
+  savingTransactionIds = new Set(),
   onClose,
 }) {
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
@@ -2762,18 +2820,18 @@ function BillDetailsModal({
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
   const registeredTotalCents = getBillTransactionsTotalCents(sortedTransactions);
   const amountsMatch = hasOfficialBill && totalAvailable && officialTotalCents === registeredTotalCents;
-  const reconciliationStatusLabel = !hasOfficialBill
-    ? 'Aguardando fatura oficial'
-    : !totalAvailable
-      ? 'Total oficial não informado pela Pluggy'
-      : amountsMatch
-        ? 'Conciliada: a soma dos lançamentos confere'
-        : 'Não conciliada: a soma dos lançamentos difere do total oficial';
-  const reconciliationTone = !hasOfficialBill || !totalAvailable
-    ? 'bg-amber-100 text-amber-700'
-    : amountsMatch
-      ? 'bg-emerald-100 text-emerald-700'
-      : 'bg-red-100 text-red-700';
+  const checkedTransactionIds = getCheckedInvoiceTransactionIds(bill);
+  const checkedTransactionCount = getCheckedInvoiceTransactionCount(bill, sortedTransactions);
+  const allTransactionsChecked = (
+    sortedTransactions.length > 0
+    && checkedTransactionCount === sortedTransactions.length
+  );
+  const reconciliationStatusLabel = allTransactionsChecked
+    ? 'Conciliada: todos os lançamentos foram conferidos'
+    : `Não conciliada: ${checkedTransactionCount} de ${sortedTransactions.length} lançamentos conferidos`;
+  const reconciliationTone = allTransactionsChecked
+    ? 'bg-emerald-100 text-emerald-700'
+    : 'bg-red-100 text-red-700';
 
   return (
     <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>
@@ -2805,7 +2863,7 @@ function BillDetailsModal({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h4 className="font-black text-slate-800">Conferência da fatura</h4>
-                <p className="text-[10px] text-slate-500 mt-1">A conciliação considera apenas lançamentos efetivamente importados da API Pluggy. Nenhuma diferença será preenchida com previsões ou parcelas estimadas.</p>
+                <p className="text-[10px] text-slate-500 mt-1">Marque cada lançamento depois de conferi-lo na fatura. Quando todos estiverem marcados, o status passará para conciliada. A comparação dos totais permanece informativa; não são criadas previsões ou parcelas.</p>
               </div>
               <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-lg ${reconciliationTone}`}>{reconciliationStatusLabel}</span>
             </div>
@@ -2825,7 +2883,8 @@ function BillDetailsModal({
                 <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(officialTotalCents - registeredTotalCents) : '—'}</p>
               </div>
             </div>
-            {!amountsMatch && <p className="text-xs text-red-700">A fatura permanece não conciliada. Nenhum lançamento será criado automaticamente.</p>}
+            {!allTransactionsChecked && <p className="text-xs text-red-700">Confira os lançamentos acima e marque cada um. A fatura será marcada como conciliada quando todos estiverem selecionados.</p>}
+            {allTransactionsChecked && !amountsMatch && <p className="text-xs text-amber-700">Todos os lançamentos exibidos foram conferidos. A soma ainda difere do total oficial; revise a comparação antes de encerrar a conferência.</p>}
           </div>
         )}
 
@@ -2866,6 +2925,17 @@ function BillDetailsModal({
               const installments = Number(tx.creditCardTotalInstallments || 0);
               return (
                 <div key={tx.id} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
+                  <label className="inline-flex items-center gap-2 shrink-0 cursor-pointer" title="Marcar lançamento como conferido">
+                    <input
+                      type="checkbox"
+                      checked={checkedTransactionIds.has(String(tx.id))}
+                      disabled={savingTransactionIds.has(tx.id)}
+                      onChange={event => onToggleTransactionCheck(bill, tx, event.target.checked)}
+                      aria-label={`Conferido: ${tx.merchant || tx.description || 'lançamento'}`}
+                      className="h-4 w-4 accent-emerald-600 cursor-pointer disabled:opacity-50"
+                    />
+                    <span className="sr-only">Marcar como conferido</span>
+                  </label>
                   <div className="w-12 shrink-0"><p className="text-[10px] font-black text-slate-500">{dateLabel(tx.date)}</p></div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${tx.provider === 'PLUGGY' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{tx.provider === 'PLUGGY' ? 'Pluggy' : 'Registrado'}</span>{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>

@@ -637,6 +637,7 @@ export default function PluggyConnectionsV2({
       const transactionId = `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`;
       transactionIds.add(transactionId);
 
+      const existing = existingById.get(transactionId) || null;
       const payload = makeTransactionPayload({
         companyId,
         itemId,
@@ -709,7 +710,6 @@ export default function PluggyConnectionsV2({
 
       const transactionId = `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`;
       const current = existingById.get(transactionId);
-      if (handledIntermediateTransactionIds.has(transactionId)) continue;
       const isUnclassified = !current
         ? !reconcileExactRule(ruleMap, merchantName(transaction))
         : current.status === 'IDENTIFICATION_REQUIRED';

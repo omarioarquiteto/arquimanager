@@ -74,8 +74,18 @@ const toCents = (value) => {
 
 const dateOnly = (value) => {
   if (!value) return '';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
+  const raw = String(value).trim();
+
+  // billForecastDate is a billing period (YYYY-MM), not a UTC timestamp.
+  if (/^\d{4}-\d{2}$/.test(raw)) return `${raw}-01`;
+
+  // Preserve the calendar date returned by the provider, including ISO
+  // timestamps whose UTC midnight would otherwise move to the prior day.
+  const isoDate = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDate) return isoDate[1];
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw.slice(0, 10);
   return [
     parsed.getFullYear(),
     String(parsed.getMonth() + 1).padStart(2, '0'),
@@ -436,9 +446,13 @@ export default function PluggyConnectionsV2({
     const creditTransactions = Array.isArray(data.creditTransactions) ? data.creditTransactions : [];
     const rawBills = Array.isArray(data.bills) ? data.bills : [];
 
-    const [transactionSnapshot, rulesSnapshot, inboxSnapshot] = await Promise.all([
+    const [transactionSnapshot, billSnapshot, rulesSnapshot, inboxSnapshot] = await Promise.all([
       getDocs(query(
         coll(db, 'financial_transactions'),
+        where('providerItemId', '==', itemId)
+      )),
+      getDocs(query(
+        coll(db, 'financial_bills'),
         where('providerItemId', '==', itemId)
       )),
       getDocs(query(
@@ -465,6 +479,15 @@ export default function PluggyConnectionsV2({
       );
 
     const existingById = new Map(existingTransactions.map(item => [item.id, item]));
+    // Reuse the already-imported local bill document by providerBillId. This
+    // lets a corrected reference month update the existing record rather than
+    // creating a second official bill for the same Pluggy bill.
+    const existingBillsByProviderId = new Map(
+      billSnapshot.docs
+        .map(item => ({ id: item.id, ...item.data() }))
+        .filter(item => item.companyId === companyId && item.providerBillId)
+        .map(item => [String(item.providerBillId), item])
+    );
     const ruleMap = safeRuleMap(
       rulesSnapshot.docs
         .map(item => item.data())
@@ -542,12 +565,18 @@ export default function PluggyConnectionsV2({
       const cardId = cardByAccount.get(rawBill.accountId);
       if (!cardId) continue;
 
-      const closingDate = dateOnly(rawBill.billClosingDate || rawBill.billForecastDate || rawBill.dueDate);
+      const closingDate = dateOnly(rawBill.billClosingDate);
       const dueDate = dateOnly(rawBill.dueDate);
-      const referenceMonth = (closingDate || dueDate || '').slice(0, 7);
+      const forecastMonth = String(rawBill.billForecastDate || '').trim().slice(0, 7);
+      // Prefer the provider's explicit forecast billing period. If unavailable,
+      // use the due month, then the closing month as a last resort.
+      const referenceMonth = (/^\d{4}-\d{2}$/.test(forecastMonth) ? forecastMonth : '')
+        || (dueDate || '').slice(0, 7)
+        || (closingDate || '').slice(0, 7);
       if (!referenceMonth) continue;
 
-      const billId = billIdFor(companyId, cardId, referenceMonth);
+      const existingBill = existingBillsByProviderId.get(String(rawBill.id));
+      const billId = existingBill?.id || billIdFor(companyId, cardId, referenceMonth);
       billByProviderId.set(String(rawBill.id), billId);
 
       const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';

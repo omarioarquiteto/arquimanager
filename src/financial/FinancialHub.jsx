@@ -921,21 +921,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         payableId: tx.payableId || null,
         receivableId: tx.receivableId || null,
         creditCardEdit: isCreditCardTransaction(tx),
-        creditCardPaymentType: tx.creditCardPaymentType || (Number(tx.creditCardTotalInstallments || 0) > 1 ? 'INSTALLMENT' : 'SINGLE'),
-        creditCardInstallmentNumber: tx.creditCardInstallmentNumber || 1,
-        creditCardTotalInstallments: tx.creditCardTotalInstallments || 1,
-        creditCardPurchaseDate: tx.creditCardPurchaseDate || tx.date || todayLocal(),
-        creditCardForecastAnchorDate: tx.creditCardForecastAnchorDate
-          || (tx.creditCardBillForecastDate
-            ? String(tx.creditCardBillForecastDate).slice(0, 7) + '-01'
-            : (tx.creditCardBillPostDate
-              || (bills.find(bill => bill.id === tx.billId)?.referenceMonth
-                ? bills.find(bill => bill.id === tx.billId).referenceMonth + '-01'
-                : (tx.date || tx.creditCardPurchaseDate || todayLocal())))),
-        creditCardForecastAmount: (Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0) / 100).toFixed(2),
-        creditCardPlanConfiguredManually: tx.creditCardPlanConfiguredManually === true,
-        creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0),
-        creditCardBillPostDate: tx.creditCardBillPostDate || '',
+        creditCardPaymentType: tx.creditCardPaymentType || null,
+        creditCardInstallmentNumber: tx.creditCardInstallmentNumber ?? null,
+        creditCardTotalInstallments: tx.creditCardTotalInstallments ?? null,
+        creditCardPurchaseDate: tx.creditCardPurchaseDate || null,
+        creditCardBillPostDate: tx.creditCardBillPostDate || null,
       }
     });
   };
@@ -2814,7 +2804,7 @@ function BillDetailsModal({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`font-black text-sm ${tx.type === 'INCOME' ? 'text-emerald-600' : 'text-red-600'}`}>{tx.type === 'INCOME' ? '+' : '-'}{formatBRL(tx.amountCents)}</span>
-                    <button type="button" onClick={() => onEditTransaction(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Reclassificar / editar parcelamento">
+                    <button type="button" onClick={() => onEditTransaction(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Reclassificar lançamento">
                       <Pencil size={15}/>
                     </button>
                   </div>

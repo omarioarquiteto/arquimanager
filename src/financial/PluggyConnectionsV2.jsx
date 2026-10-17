@@ -234,7 +234,7 @@ const merchantName = (transaction) =>
 
 const shiftDateByMonths = (value, months = 0) => {
   const iso = String(value || '').slice(0, 10);
-  const match = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(iso);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!match) return '';
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -250,13 +250,13 @@ const shiftDateByMonths = (value, months = 0) => {
 
 const normalizeInstallmentDescription = (value = '') => String(value || '')
   .normalize('NFD')
-  .replace(/[\\u0300-\\u036f]/g, '')
+  .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
-  .replace(/\\b(?:parcela|parc\\.?|prestacao|installment)\\s*#?\\s*\\d{1,2}(?:\\s*[/-]\\s*\\d{1,2})?\\b/g, ' ')
-  .replace(/\\b\\d{1,2}\\s*[/-]\\s*\\d{1,2}\\b/g, ' ')
+  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}(?:\s*[/-]\s*\d{1,2})?\b/g, ' ')
+  .replace(/\b\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
   .replace(/[^a-z0-9]+/g, ' ')
   .trim()
-  .replace(/\\s+/g, ' ');
+  .replace(/\s+/g, ' ');
 
 const installmentPlanFor = (record = {}, cardId) => {
   const raw = record?.providerRawData || record;

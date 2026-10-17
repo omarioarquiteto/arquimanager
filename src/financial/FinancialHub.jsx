@@ -30,6 +30,9 @@ const dateLabel = (s) => {
   return `${d}/${m}/${String(y).slice(2)}`;
 };
 
+const getCardDisplayName = (card, fallback = 'Cartão') =>
+  card?.displayName || card?.name || fallback;
+
 const stableHash = (value = '') => {
   let hash = 2166136261;
   for (let i = 0; i < value.length; i += 1) {
@@ -280,6 +283,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [selectedMonth, setSelectedMonth] = useState(todayLocal().slice(0, 7));
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [renamingCardId, setRenamingCardId] = useState('');
+  const [cardNameDraft, setCardNameDraft] = useState('');
+  const [cardRenameBusy, setCardRenameBusy] = useState(false);
   const [invoiceCheckSavingIds, setInvoiceCheckSavingIds] = useState(() => new Set());
   const [notice, setNotice] = useState('');
   const [bulkQuery, setBulkQuery] = useState('');
@@ -502,7 +508,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
         const remaining = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
         const alreadyPaid = Number(b.paidCents || 0) >= officialTotalCents && officialTotalCents > 0;
-        const cardName = normalizeText(card.name || '');
+        const cardName = normalizeText(getCardDisplayName(card, '') || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
         let score = 0;
@@ -940,7 +946,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           kind: 'CARD_BILL',
           date: b.dueDate,
           type: 'CARD_BILL',
-          description: `Fatura ${card?.name || 'cartão'}`,
+          description: `Fatura ${getCardDisplayName(card, 'cartão')}`,
           amountCents: remainingCents,
         };
       });
@@ -1294,20 +1300,42 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       if (linkedPurchases.length) details.push(`${linkedPurchases.length} compra(s)`);
       if (linkedBills.length) details.push(`${linkedBills.length} fatura(s)`);
       if (linkedTransactions.length) details.push(`${linkedTransactions.length} movimentação(ões)`);
-      setNotice(`Não é possível excluir "${card.name}" porque ele está vinculado a ${details.join(', ')}. Remova os vínculos primeiro.`);
+      setNotice(`Não é possível excluir "${getCardDisplayName(card)}" porque ele está vinculado a ${details.join(', ')}. Remova os vínculos primeiro.`);
       return;
     }
 
-    if (!window.confirm(`Excluir o cartão "${card.name}"? Esta ação não pode ser desfeita.`)) return;
+    if (!window.confirm(`Excluir o cartão "${getCardDisplayName(card)}"? Esta ação não pode ser desfeita.`)) return;
 
     setBusy(true);
     try {
       await deleteDoc(docPath(db, 'financial_cards', card.id));
-      setNotice(`Cartão "${card.name}" excluído.`);
+      setNotice(`Cartão "${getCardDisplayName(card)}" excluído.`);
     } catch (err) {
       setNotice(err.message || 'Não foi possível excluir o cartão.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const saveCardDisplayName = async (card) => {
+    const displayName = String(cardNameDraft || '').trim();
+    if (!displayName) {
+      setNotice('Informe um nome para o cartão.');
+      return;
+    }
+    setCardRenameBusy(true);
+    try {
+      await updateDoc(docPath(db, 'financial_cards', card.id), {
+        displayName,
+        updatedAt: serverTimestamp(),
+      });
+      setRenamingCardId('');
+      setCardNameDraft('');
+      setNotice(`Cartão renomeado para "${displayName}". As faturas vinculadas usarão esse nome.`);
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível renomear o cartão.');
+    } finally {
+      setCardRenameBusy(false);
     }
   };
 
@@ -1857,6 +1885,35 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     } finally { setBusy(false); }
   };
 
+  const officialBillGroups = useMemo(() => {
+    const groups = new Map();
+    bills.filter(isOfficialBill).forEach(bill => {
+      const card = cards.find(item => item.id === bill.cardId) || {};
+      const itemId = String(bill.providerItemId || card.providerItemId || '');
+      const connection = itemId
+        ? connections.find(item => String(item.itemId || '') === itemId)
+        : null;
+      const institution = String(card.institution || '').trim();
+      const key = itemId
+        ? `connection:${itemId}`
+        : `institution:${normalizeText(institution || 'sem instituição identificada')}`;
+      const title = connection
+        ? (connection.displayName || connection.connectorName || institution || 'Banco não identificado')
+        : (institution || 'Faturas sem banco identificado');
+      if (!groups.has(key)) groups.set(key, { key, title, bills: [] });
+      groups.get(key).bills.push(bill);
+    });
+
+    return Array.from(groups.values())
+      .map(group => ({
+        ...group,
+        bills: group.bills.sort((a, b) =>
+          String(a.officialDueDate || a.dueDate || '').localeCompare(String(b.officialDueDate || b.dueDate || ''))
+        ),
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title, 'pt-BR'));
+  }, [bills, cards, connections]);
+
   const shiftMonth = (delta) => {
     const [y, m] = selectedMonth.split('-').map(Number);
     const d = new Date(y, m - 1 + delta, 1);
@@ -2064,7 +2121,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         onClick={() => setModal({ type: 'billDetails', billId: bill.id })}
                         className={`w-full text-left text-[9px] px-2 py-1 rounded-lg border font-bold ${paid ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : bill.status === 'OVERDUE' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}
                       >
-                        {paid ? '✓' : '↘'} fatura · {card?.name || 'Cartão'} · {formatBRL(bill.totalCents)} {bill.provisional ? '· estimada' : ''}
+                        {paid ? '✓' : '↘'} fatura · {getCardDisplayName(card, 'Cartão')} · {formatBRL(bill.totalCents)} {bill.provisional ? '· estimada' : ''}
                       </button>;
                     })}
                     {dayBills.length > 4 && <div className="text-[9px] text-slate-400">+{dayBills.length - 4} faturas</div>}
@@ -2426,9 +2483,33 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
-                    <div><p className="font-black text-slate-800">{card.name}</p><p className="text-xs text-slate-400">{card.institution}</p></div>
+                    <div className="flex-1 min-w-0">
+                      {renamingCardId === card.id ? (
+                        <div className="space-y-2">
+                          <input
+                            value={cardNameDraft}
+                            onChange={event => setCardNameDraft(event.target.value)}
+                            onKeyDown={event => { if (event.key === 'Enter') saveCardDisplayName(card); if (event.key === 'Escape') { setRenamingCardId(''); setCardNameDraft(''); } }}
+                            maxLength={80}
+                            autoFocus
+                            aria-label="Novo nome do cartão"
+                            className="w-full min-w-0 px-2 py-1.5 border border-blue-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                          />
+                          <div className="flex gap-1">
+                            <button onClick={() => saveCardDisplayName(card)} disabled={cardRenameBusy} className="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-black flex items-center gap-1 disabled:opacity-50"><Check size={13}/> Salvar</button>
+                            <button onClick={() => { setRenamingCardId(''); setCardNameDraft(''); }} disabled={cardRenameBusy} className="px-2 py-1 rounded-lg border border-slate-200 text-slate-500 text-[10px] font-black flex items-center gap-1 disabled:opacity-50"><X size={13}/> Cancelar</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="font-black text-slate-800 break-words">{getCardDisplayName(card)}</p>
+                          <p className="text-xs text-slate-400">{card.institution}</p>
+                        </>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1">
-                      <WalletCards size={19} className="text-[#1e5aa0]"/>
+                      {renamingCardId !== card.id && <button onClick={() => { setRenamingCardId(card.id); setCardNameDraft(card.displayName || card.name || ''); }} className="p-1.5 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Renomear cartão" aria-label="Renomear cartão"><Pencil size={14}/></button>}
+                      <WalletCards size={19} className="text-[#1e5aa0}"/>
                       {card.source !== 'PLUGGY' && !card.provider && !card.providerCardId && !card.providerAccountId && !card.providerItemId && (
                         <button
                           onClick={() => deleteManualCard(card)}
@@ -2458,39 +2539,44 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               <div><h4 className="font-black text-xl text-slate-800">Faturas</h4><p className="text-xs text-slate-400">Totais oficiais e lançamentos importados diretamente da Pluggy.</p></div>
               <span className="text-[10px] font-black uppercase text-slate-400">{bills.filter(isOfficialBill).length} fatura(s) oficial(is)</span>
             </div>
-            <div className="space-y-2">
-              {bills
-                .filter(isOfficialBill)
-                .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
-                .map(b => {
-                const card = cards.find(c=>c.id===b.cardId) || {};
-                const totalAvailable = hasOfficialBillTotal(b);
-                const officialTotal = Number(b.officialTotalCents ?? b.totalCents ?? 0);
-                const paidCents = Number(b.paidCents || 0);
-                const remaining = Math.max(0, officialTotal - paidCents);
-                const paid = remaining === 0 && officialTotal > 0;
-                const billTransactions = getBillTransactions(b, card, transactions);
-                const checkedTransactionCount = getCheckedInvoiceTransactionCount(b, billTransactions);
-                const allTransactionsChecked = (
-                  billTransactions.length > 0
-                  && checkedTransactionCount === billTransactions.length
-                );
-                const statusLabel = allTransactionsChecked
-                  ? 'conciliada'
-                  : !totalAvailable
-                    ? 'total oficial indisponível'
-                    : 'não conciliada';
-                const statusClass = allTransactionsChecked
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : !totalAvailable
-                    ? 'bg-amber-100 text-amber-700'
-                    : 'bg-red-100 text-red-700';
-                return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy · {checkedTransactionCount}/{billTransactions.length} conferidos</p></div>
-                  <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
-                </button>;
-              })}
-              {!bills.some(isOfficialBill) && <EmptyState text="As faturas oficiais aparecerão aqui quando forem recebidas pela Pluggy."/>}
+            <div className="space-y-5">
+              {officialBillGroups.map(group => (
+                <section key={group.key} className="space-y-2">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
+                    <h5 className="font-black text-sm text-slate-700 flex items-center gap-2"><Landmark size={15} className="text-[#1e5aa0}"/>{group.title}</h5>
+                    <span className="text-[10px] font-bold text-slate-400">{group.bills.length} fatura(s)</span>
+                  </div>
+                  {group.bills.map(b => {
+                    const card = cards.find(c => c.id === b.cardId) || {};
+                    const totalAvailable = hasOfficialBillTotal(b);
+                    const officialTotal = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+                    const paidCents = Number(b.paidCents || 0);
+                    const remaining = Math.max(0, officialTotal - paidCents);
+                    const paid = remaining === 0 && officialTotal > 0;
+                    const billTransactions = getBillTransactions(b, card, transactions);
+                    const checkedTransactionCount = getCheckedInvoiceTransactionCount(b, billTransactions);
+                    const allTransactionsChecked = (
+                      billTransactions.length > 0
+                      && checkedTransactionCount === billTransactions.length
+                    );
+                    const statusLabel = allTransactionsChecked
+                      ? 'conciliada'
+                      : !totalAvailable
+                        ? 'total oficial indisponível'
+                        : 'não conciliada';
+                    const statusClass = allTransactionsChecked
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : !totalAvailable
+                        ? 'bg-amber-100 text-amber-700'
+                        : 'bg-red-100 text-red-700';
+                    return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
+                      <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{getCardDisplayName(card, 'Cartão não identificado')} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy · {checkedTransactionCount}/{billTransactions.length} conferidos</p></div>
+                      <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                    </button>;
+                  })}
+                </section>
+              ))}
+              {!officialBillGroups.length && <EmptyState text="As faturas oficiais aparecerão aqui quando forem recebidas pela Pluggy."/>}
             </div>
           </Card>
         </div>
@@ -2735,7 +2821,7 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
                 .map(b => {
                   const card = cards.find(c=>c.id===b.cardId);
                   const remaining = Number(b.officialTotalCents ?? b.totalCents ?? 0) - Number(b.paidCents || 0);
-                  return <option key={b.id} value={b.id}>{card?.name || 'Cartão'} · {b.referenceMonth} · {formatBRL(remaining)} restante</option>;
+                  return <option key={b.id} value={b.id}>{getCardDisplayName(card, 'Cartão')} · {b.referenceMonth} · {formatBRL(remaining)} restante</option>;
                 })}
             </select>
           ) : item.kind === 'PAYABLE_PAYMENT' ? (
@@ -2829,7 +2915,7 @@ function BillDetailsModal({
     : 'bg-red-100 text-red-700';
 
   return (
-    <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>
+    <Modal title={`Fatura · ${getCardDisplayName(card, 'Cartão')}`} onClose={onClose}>
       <div className="space-y-5">
         <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
           <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
@@ -2839,7 +2925,7 @@ function BillDetailsModal({
                 {card?.brand && <span className="text-[10px] font-black uppercase text-slate-500">{card.brand}</span>}
 
               </div>
-              <p className="text-xs text-slate-500 mt-1">{card?.name || 'Cartão'} · referência {bill.referenceMonth || '—'}</p>
+              <p className="text-xs text-slate-500 mt-1">{getCardDisplayName(card, 'Cartão')} · referência {bill.referenceMonth || '—'}</p>
               <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.officialClosingDate || bill.closingDate)} · vencimento {dateLabel(bill.officialDueDate || bill.dueDate)}</p>
             </div>
             <span className={`text-xs font-black uppercase px-3 py-2 rounded-xl ${status === 'PAID' ? 'bg-emerald-100 text-emerald-700' : status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{statusLabel}</span>
@@ -3122,7 +3208,7 @@ function CardPurchaseModal({ cards, categories, projects, onClose, onSave, busy 
   const update=(k,v)=>setData(p=>({...p,[k]:v}));
   return <Modal title="Nova compra no cartão" onClose={onClose}>
     <div className="grid sm:grid-cols-2 gap-4">
-      <Field label="Cartão *"><select value={data.cardId} onChange={e=>update('cardId',e.target.value)} className={inputCls}>{cards.map(c=><option key={c.id} value={c.id}>{c.name} · {c.institution}</option>)}</select></Field>
+      <Field label="Cartão *"><select value={data.cardId} onChange={e=>update('cardId',e.target.value)} className={inputCls}>{cards.map(c=><option key={c.id} value={c.id}>{getCardDisplayName(c)} · {c.institution}</option>)}</select></Field>
       <Field label="Valor total (R$) *"><input value={data.amount} onChange={e=>update('amount',e.target.value)} type="number" min="0" step="0.01" className={inputCls}/></Field>
       <Field label="Descrição *"><input value={data.description} onChange={e=>update('description',e.target.value)} placeholder="Ex.: Notebook" className={inputCls}/></Field>
       <Field label="Estabelecimento"><input value={data.merchant} onChange={e=>update('merchant',e.target.value)} placeholder="Ex.: Loja ABC" className={inputCls}/></Field>

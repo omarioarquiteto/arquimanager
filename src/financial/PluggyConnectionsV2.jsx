@@ -282,8 +282,8 @@ const installmentPlanFor = (record = {}, cardId) => {
   const description = normalizeInstallmentDescription(
     record?.creditCardForecastMerchant
     || (typeof record?.merchant === 'string' ? record.merchant : '')
-    || record?.description
     || merchantName(raw)
+    || record?.description
   );
   if (!purchaseId && !description) return null;
 

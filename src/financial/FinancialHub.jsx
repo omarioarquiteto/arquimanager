@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFirestore, collection, doc, query, where, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
-  arrayUnion, arrayRemove, serverTimestamp, increment, writeBatch
+  arrayUnion, arrayRemove, deleteField, serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
@@ -115,6 +115,23 @@ const hasOfficialBillTotal = (bill = {}) => Boolean(
   bill.officialTotalCents != null
   || (bill.providerRawData?.totalAmount != null && bill.providerRawData.totalAmount !== '')
   || (isOfficialBill(bill) && bill.provisional === false && Number(bill.totalCents || 0) > 0)
+);
+
+// Keep the provider's original total for comparison/audit, but use the
+// transaction sum after a successful manual reconciliation or advance payment.
+const hasAppliedReconciledBillTotal = (bill = {}) => (
+  bill.reconciledTotalCents != null
+  && (bill.reconciliationStatus === 'MATCHED_MANUAL' || bill.paidWithAdvance === true)
+);
+
+const hasEffectiveBillTotal = (bill = {}) => (
+  hasOfficialBillTotal(bill) || hasAppliedReconciledBillTotal(bill)
+);
+
+const getBillTotalCents = (bill = {}) => (
+  hasAppliedReconciledBillTotal(bill)
+    ? Number(bill.reconciledTotalCents || 0)
+    : Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
 );
 
 const transactionBelongsToBill = (tx = {}, bill = {}, card = {}) => {
@@ -287,6 +304,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [cardNameDraft, setCardNameDraft] = useState('');
   const [cardRenameBusy, setCardRenameBusy] = useState(false);
   const [invoiceCheckSavingIds, setInvoiceCheckSavingIds] = useState(() => new Set());
+  const [invoiceAdvanceBusy, setInvoiceAdvanceBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [bulkQuery, setBulkQuery] = useState('');
   const [bulkLimit, setBulkLimit] = useState(20);
@@ -501,19 +519,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
 
     const scored = bills
-      .filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.companyId === companyId && Number(b.officialTotalCents ?? b.totalCents ?? 0) > 0)
+      .filter(b => isOfficialBill(b) && hasEffectiveBillTotal(b) && b.companyId === companyId && getBillTotalCents(b) > 0)
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
-        const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
-        const remaining = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
-        const alreadyPaid = Number(b.paidCents || 0) >= officialTotalCents && officialTotalCents > 0;
+        const billTotalCents = getBillTotalCents(b);
+        const remaining = Math.max(0, billTotalCents - Number(b.paidCents || 0));
+        const alreadyPaid = Number(b.paidCents || 0) >= billTotalCents && billTotalCents > 0;
         const cardName = normalizeText(getCardDisplayName(card, '') || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
         let score = 0;
         if (amountCents === remaining && remaining > 0) score += 100;
-        else if (alreadyPaid && amountCents === officialTotalCents) score += 90;
+        else if (alreadyPaid && amountCents === billTotalCents) score += 90;
         else if (remaining > 0 && amountCents < remaining) score += 40;
         if (card.paymentAccountId && card.paymentAccountId === accountId) score += 40;
         if (cardName && normalizedDescription.includes(cardName)) score += 30;
@@ -537,7 +555,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     const match = findCardBillForPayment({ amountCents, date, description, accountId });
     if (match.status !== 'MATCH') return match;
     const currentPaidCents = Number(match.bill.paidCents || 0);
-    const totalCents = Number(match.bill.totalCents || 0);
+    const totalCents = getBillTotalCents(match.bill);
     const alreadyPaid = currentPaidCents >= totalCents && totalCents > 0;
     const paidCents = alreadyPaid ? currentPaidCents : currentPaidCents + amountCents;
     if (!alreadyPaid) {
@@ -935,11 +953,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }));
 
     const cardBillEvents = bills
-      .filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.status !== 'PAID')
+      .filter(b => isOfficialBill(b) && hasEffectiveBillTotal(b) && b.status !== 'PAID')
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
-        const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
-        const remainingCents = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
+        const totalCents = getBillTotalCents(b);
+        const remainingCents = Math.max(0, totalCents - Number(b.paidCents || 0));
         return {
           id: 'card_bill_' + b.id,
           sourceId: b.id,
@@ -1048,14 +1066,51 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const toggleInvoiceTransactionCheck = async (bill, transaction, checked) => {
     if (!bill?.id || !transaction?.id) return;
 
+    const card = cards.find(item => item.id === bill.cardId) || {};
+    const billTransactions = getBillTransactions(bill, card, transactions);
+    const nextCheckedIds = getCheckedInvoiceTransactionIds(bill);
+    if (checked) nextCheckedIds.add(String(transaction.id));
+    else nextCheckedIds.delete(String(transaction.id));
+
+    const allTransactionsChecked = (
+      billTransactions.length > 0
+      && billTransactions.every(item => nextCheckedIds.has(String(item.id)))
+    );
+    const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
+    const transactionsSignature = getBillTransactionsSignature(billTransactions);
+    const changes = {
+      reconciliationCheckedTransactionIds: checked
+        ? arrayUnion(transaction.id)
+        : arrayRemove(transaction.id),
+      reconciliationStatus: allTransactionsChecked ? 'MATCHED_MANUAL' : 'NEEDS_REVIEW',
+      updatedAt: serverTimestamp(),
+    };
+
+    if (allTransactionsChecked) {
+      changes.reconciledTotalCents = transactionsTotalCents;
+      changes.reconciledTotalSource = bill.paidWithAdvance ? 'ADVANCE_PAYMENT' : 'TRANSACTION_SUM';
+      changes.reconciledTotalAppliedAt = serverTimestamp();
+      changes.reconciledAgainstOfficialTotalCents = hasOfficialBillTotal(bill)
+        ? Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
+        : null;
+      changes.reconciledAgainstTransactionsTotalCents = transactionsTotalCents;
+      changes.reconciledTransactionsSignature = transactionsSignature;
+      changes.reconciledTransactionCount = billTransactions.length;
+      if (bill.paidWithAdvance) {
+        changes.paidCents = transactionsTotalCents;
+        changes.status = 'PAID';
+      }
+    } else if (!bill.paidWithAdvance) {
+      // If a reconciled item is unchecked, remove the override so the bill
+      // falls back to the original Pluggy total until it is reconciled again.
+      changes.reconciledTotalCents = deleteField();
+      changes.reconciledTotalSource = deleteField();
+      changes.reconciledTotalAppliedAt = deleteField();
+    }
+
     setInvoiceCheckSavingIds(previous => new Set(previous).add(transaction.id));
     try {
-      await updateDoc(docPath(db, 'financial_bills', bill.id), {
-        reconciliationCheckedTransactionIds: checked
-          ? arrayUnion(transaction.id)
-          : arrayRemove(transaction.id),
-        updatedAt: serverTimestamp(),
-      });
+      await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
     } catch (error) {
       console.error('Falha ao salvar conferência do lançamento da fatura', error);
       setNotice(error.message || 'Não foi possível salvar a conferência deste lançamento.');
@@ -1065,6 +1120,91 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         next.delete(transaction.id);
         return next;
       });
+    }
+  };
+
+  const markBillPaidWithAdvance = async (bill) => {
+    if (!bill?.id || bill.paidWithAdvance || invoiceAdvanceBusy) return;
+    const card = cards.find(item => item.id === bill.cardId) || {};
+    const billTransactions = getBillTransactions(bill, card, transactions);
+    if (!billTransactions.length) {
+      setNotice('Não é possível marcar esta fatura como paga com adiantamento: ainda não há lançamentos importados vinculados a ela.');
+      return;
+    }
+
+    const totalCents = getBillTransactionsTotalCents(billTransactions);
+    const confirmed = window.confirm(
+      `Marcar esta fatura como paga com adiantamento? O total e o valor pago passarão a ser ${formatBRL(totalCents)}, calculado pela soma dos lançamentos vinculados neste momento. O total original da Pluggy será preservado para consulta.`
+    );
+    if (!confirmed) return;
+
+    const previousState = {
+      paidCents: Number(bill.paidCents || 0),
+      status: bill.status || billStatusFromValues({
+        totalCents: getBillTotalCents(bill),
+        paidCents: Number(bill.paidCents || 0),
+        dueDate: bill.officialDueDate || bill.dueDate,
+        provisional: false,
+      }),
+      reconciledTotalCents: bill.reconciledTotalCents ?? null,
+      reconciledTotalSource: bill.reconciledTotalSource ?? null,
+      reconciledTotalAppliedAt: bill.reconciledTotalAppliedAt ?? null,
+    };
+
+    setInvoiceAdvanceBusy(true);
+    try {
+      await updateDoc(docPath(db, 'financial_bills', bill.id), {
+        paidWithAdvance: true,
+        paidWithAdvanceAt: serverTimestamp(),
+        preAdvanceState: previousState,
+        reconciledTotalCents: totalCents,
+        reconciledTotalSource: 'ADVANCE_PAYMENT',
+        reconciledTotalAppliedAt: serverTimestamp(),
+        paidCents: totalCents,
+        status: 'PAID',
+        updatedAt: serverTimestamp(),
+      });
+      setNotice(`Fatura marcada como paga com adiantamento. Total considerado: ${formatBRL(totalCents)}.`);
+    } catch (error) {
+      console.error('Falha ao marcar fatura paga com adiantamento', error);
+      setNotice(error.message || 'Não foi possível marcar a fatura como paga com adiantamento.');
+    } finally {
+      setInvoiceAdvanceBusy(false);
+    }
+  };
+
+  const undoBillPaidWithAdvance = async (bill) => {
+    if (!bill?.id || !bill.paidWithAdvance || invoiceAdvanceBusy) return;
+    if (!window.confirm('Desfazer a marcação de pagamento por adiantamento e restaurar os valores anteriores desta fatura?')) return;
+
+    const previousState = bill.preAdvanceState || {};
+    const changes = {
+      paidWithAdvance: false,
+      paidWithAdvanceAt: deleteField(),
+      preAdvanceState: deleteField(),
+      paidCents: Number(previousState.paidCents || 0),
+      status: previousState.status || 'OPEN',
+      updatedAt: serverTimestamp(),
+    };
+    changes.reconciledTotalCents = previousState.reconciledTotalCents == null
+      ? deleteField()
+      : previousState.reconciledTotalCents;
+    changes.reconciledTotalSource = previousState.reconciledTotalSource == null
+      ? deleteField()
+      : previousState.reconciledTotalSource;
+    changes.reconciledTotalAppliedAt = previousState.reconciledTotalAppliedAt == null
+      ? deleteField()
+      : previousState.reconciledTotalAppliedAt;
+
+    setInvoiceAdvanceBusy(true);
+    try {
+      await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
+      setNotice('A marcação de pagamento por adiantamento foi desfeita; os valores anteriores foram restaurados.');
+    } catch (error) {
+      console.error('Falha ao desfazer pagamento por adiantamento', error);
+      setNotice(error.message || 'Não foi possível desfazer a marcação de pagamento por adiantamento.');
+    } finally {
+      setInvoiceAdvanceBusy(false);
     }
   };
 
@@ -1203,7 +1343,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           const nextPaid = Math.max(0, Number(bill.paidCents || 0) - Number(tx.amountCents || 0));
           const billChange = {
             paidCents: nextPaid,
-            status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= Number(bill.totalCents || 0) ? 'PAID' : 'PARTIALLY_PAID'),
+            status: nextPaid <= 0 ? 'OPEN' : (nextPaid >= getBillTotalCents(bill) ? 'PAID' : 'PARTIALLY_PAID'),
             updatedAt: serverTimestamp(),
           };
           if (bill.lastPaymentTransactionId === tx.id) billChange.lastPaymentTransactionId = null;
@@ -1695,14 +1835,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       if (item.kind === 'CARD_BILL_PAYMENT' && data.billId) {
         const bill = bills.find(b => b.id === data.billId);
         if (!bill) throw new Error('Fatura selecionada não foi encontrada.');
-        const remaining = Number(bill.totalCents || 0) - Number(bill.paidCents || 0);
+        const remaining = getBillTotalCents(bill) - Number(bill.paidCents || 0);
         if (tx.type !== 'EXPENSE' || Number(tx.amountCents || 0) <= 0 || Number(tx.amountCents || 0) > remaining) {
           throw new Error('O valor do pagamento não pode ser maior que o saldo da fatura.');
         }
         const paidCents = Number(bill.paidCents || 0) + Number(tx.amountCents || 0);
         await updateDoc(docPath(db, 'financial_bills', bill.id), {
           paidCents,
-          status: paidCents >= Number(bill.totalCents || 0) ? 'PAID' : 'PARTIALLY_PAID',
+          status: paidCents >= getBillTotalCents(bill) ? 'PAID' : 'PARTIALLY_PAID',
           lastPaymentTransactionId: tx.id,
           lastPaidAt: tx.date,
           updatedAt: serverTimestamp(),
@@ -1719,7 +1859,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           resolvedAt: serverTimestamp(),
           resolvedBy: appUser?.id || null,
         });
-        setNotice(paidCents >= Number(bill.totalCents || 0) ? 'Fatura conciliada e marcada como paga.' : 'Pagamento parcial conciliado.');
+        setNotice(paidCents >= getBillTotalCents(bill) ? 'Fatura conciliada e marcada como paga.' : 'Pagamento parcial conciliado.');
         return;
       }
 
@@ -2113,15 +2253,16 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
                     {dayBills.slice(0, 4).map(bill => {
                       const card = cards.find(item => item.id === bill.cardId);
-                      const remaining = Math.max(0, Number(bill.totalCents || 0) - Number(bill.paidCents || 0));
-                      const paid = bill.status === 'PAID' || (remaining === 0 && Number(bill.totalCents || 0) > 0);
+                      const billTotalCents = getBillTotalCents(bill);
+                      const remaining = Math.max(0, billTotalCents - Number(bill.paidCents || 0));
+                      const paid = bill.paidWithAdvance === true || bill.status === 'PAID' || (remaining === 0 && billTotalCents > 0);
                       return <button
                         key={`bill_${bill.id}`}
                         type="button"
                         onClick={() => setModal({ type: 'billDetails', billId: bill.id })}
                         className={`w-full text-left text-[9px] px-2 py-1 rounded-lg border font-bold ${paid ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : bill.status === 'OVERDUE' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}
                       >
-                        {paid ? '✓' : '↘'} fatura · {getCardDisplayName(card, 'Cartão')} · {formatBRL(bill.totalCents)} {bill.provisional ? '· estimada' : ''}
+                        {paid ? '✓' : '↘'} fatura · {getCardDisplayName(card, 'Cartão')} · {formatBRL(billTotalCents)} {bill.paidWithAdvance ? '· paga com adiantamento' : bill.provisional ? '· estimada' : ''}
                       </button>;
                     })}
                     {dayBills.length > 4 && <div className="text-[9px] text-slate-400">+{dayBills.length - 4} faturas</div>}
@@ -2479,8 +2620,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {cards.map(card => {
-                const openBills = bills.filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.cardId === card.id && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0));
-                const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
+                const openBills = bills.filter(b => isOfficialBill(b) && hasEffectiveBillTotal(b) && b.cardId === card.id && b.status !== 'PAID' && getBillTotalCents(b) > Number(b.paidCents || 0));
+                const openTotal = openBills.reduce((s,b) => s + getBillTotalCents(b) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
@@ -2548,30 +2689,32 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                   </div>
                   {group.bills.map(b => {
                     const card = cards.find(c => c.id === b.cardId) || {};
-                    const totalAvailable = hasOfficialBillTotal(b);
-                    const officialTotal = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+                    const totalAvailable = hasEffectiveBillTotal(b);
+                    const officialTotal = getBillTotalCents(b);
                     const paidCents = Number(b.paidCents || 0);
                     const remaining = Math.max(0, officialTotal - paidCents);
-                    const paid = remaining === 0 && officialTotal > 0;
+                    const paid = b.paidWithAdvance === true || (remaining === 0 && officialTotal > 0);
                     const billTransactions = getBillTransactions(b, card, transactions);
                     const checkedTransactionCount = getCheckedInvoiceTransactionCount(b, billTransactions);
                     const allTransactionsChecked = (
                       billTransactions.length > 0
                       && checkedTransactionCount === billTransactions.length
                     );
-                    const statusLabel = allTransactionsChecked
-                      ? 'conciliada'
-                      : !totalAvailable
-                        ? 'total oficial indisponível'
-                        : 'não conciliada';
-                    const statusClass = allTransactionsChecked
+                    const statusLabel = b.paidWithAdvance
+                      ? 'paga com adiantamento'
+                      : allTransactionsChecked
+                        ? 'conciliada'
+                        : !totalAvailable
+                          ? 'total oficial indisponível'
+                          : 'não conciliada';
+                    const statusClass = b.paidWithAdvance || allTransactionsChecked
                       ? 'bg-emerald-100 text-emerald-700'
                       : !totalAvailable
                         ? 'bg-amber-100 text-amber-700'
                         : 'bg-red-100 text-red-700';
                     return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
                       <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{getCardDisplayName(card, 'Cartão não identificado')} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy · {checkedTransactionCount}/{billTransactions.length} conferidos</p></div>
-                      <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                      <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{b.paidWithAdvance ? 'Paga com adiantamento' : paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                     </button>;
                   })}
                 </section>
@@ -2596,6 +2739,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         onEditTransaction={openEditTransaction}
         onToggleTransactionCheck={toggleInvoiceTransactionCheck}
         savingTransactionIds={invoiceCheckSavingIds}
+        onMarkPaidWithAdvance={markBillPaidWithAdvance}
+        onUndoPaidWithAdvance={undoBillPaidWithAdvance}
+        invoiceAdvanceBusy={invoiceAdvanceBusy}
         onClose={() => setModal(null)}
       />}
       {modal?.type === 'transaction' && <TransactionModal
@@ -2816,11 +2962,11 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
             <select value={billId} onChange={e=>setBillId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
               <option value="">Escolha a fatura...</option>
               {[...bills]
-                .filter(b => isOfficialBill(b) && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0))
+                .filter(b => isOfficialBill(b) && b.status !== 'PAID' && hasEffectiveBillTotal(b) && getBillTotalCents(b) > Number(b.paidCents || 0))
                 .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
                 .map(b => {
                   const card = cards.find(c=>c.id===b.cardId);
-                  const remaining = Number(b.officialTotalCents ?? b.totalCents ?? 0) - Number(b.paidCents || 0);
+                  const remaining = getBillTotalCents(b) - Number(b.paidCents || 0);
                   return <option key={b.id} value={b.id}>{getCardDisplayName(card, 'Cartão')} · {b.referenceMonth} · {formatBRL(remaining)} restante</option>;
                 })}
             </select>
@@ -2886,16 +3032,23 @@ function BillDetailsModal({
   onEditTransaction,
   onToggleTransactionCheck,
   savingTransactionIds = new Set(),
+  onMarkPaidWithAdvance,
+  onUndoPaidWithAdvance,
+  invoiceAdvanceBusy = false,
   onClose,
 }) {
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
 
   const sortedTransactions = getBillTransactions(bill, card, allTransactions);
-  const total = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
+  const total = getBillTotalCents(bill);
   const paid = Number(bill.paidCents || 0);
   const remaining = Math.max(0, total - paid);
-  const status = bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.officialDueDate || bill.dueDate, provisional: false });
-  const statusLabel = status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
+  const status = bill.paidWithAdvance
+    ? 'PAID'
+    : bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.officialDueDate || bill.dueDate, provisional: false });
+  const statusLabel = bill.paidWithAdvance
+    ? 'Paga com adiantamento'
+    : status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
   const hasOfficialBill = isOfficialBill(bill);
   const totalAvailable = hasOfficialBillTotal(bill);
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
@@ -2933,11 +3086,30 @@ function BillDetailsModal({
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Metric label="Total oficial" value={formatBRL(total)} icon={<WalletCards size={16}/>} tone="slate"/>
+          <Metric label="Total considerado" value={formatBRL(total)} icon={<WalletCards size={16}/>} tone="slate"/>
           <Metric label="Pago" value={formatBRL(paid)} icon={<Check size={16}/>} tone="green"/>
           <Metric label="Restante" value={formatBRL(remaining)} icon={<CircleAlert size={16}/>} tone={remaining > 0 ? 'red' : 'green'}/>
           <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
         </div>
+
+        {hasOfficialBill && (
+          <div className="border border-blue-100 bg-blue-50/50 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h4 className="font-black text-slate-800">Pagamento por adiantamento</h4>
+              <p className="text-[10px] text-slate-600 mt-1">Use quando você quitou a fatura antes do fechamento e a Pluggy registrou o crédito em outro ciclo. O total considerado será a soma dos lançamentos vinculados no momento da marcação.</p>
+            </div>
+            {bill.paidWithAdvance ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-black px-2.5 py-2 rounded-lg bg-emerald-100 text-emerald-700">Fatura paga com adiantamento</span>
+                <button type="button" onClick={() => onUndoPaidWithAdvance(bill)} disabled={invoiceAdvanceBusy} className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-black disabled:opacity-50">Desfazer</button>
+              </div>
+            ) : (
+              <button type="button" onClick={() => onMarkPaidWithAdvance(bill)} disabled={invoiceAdvanceBusy} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50 whitespace-nowrap">
+                {invoiceAdvanceBusy ? 'Salvando...' : 'Fatura paga com adiantamento'}
+              </button>
+            )}
+          </div>
+        )}
 
         {hasOfficialBill && (
           <div className="border border-slate-200 rounded-2xl p-4 space-y-4">

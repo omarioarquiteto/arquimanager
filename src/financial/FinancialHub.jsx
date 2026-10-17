@@ -97,6 +97,12 @@ const isOfficialBill = (bill = {}) => Boolean(
   || (bill.provisional === false && (bill.source === 'PLUGGY_REBUILT' || bill.provider === 'PLUGGY'))
 );
 
+const hasOfficialBillTotal = (bill = {}) => Boolean(
+  bill.officialTotalCents != null
+  || bill.providerRawData?.totalAmount != null
+  || (isOfficialBill(bill) && bill.provisional === false && Number(bill.totalCents || 0) > 0)
+);
+
 const transactionBelongsToBill = (tx = {}, bill = {}, card = {}) => {
   if (!isCreditCardTransaction(tx) || !isPluggyTransaction(tx)) return false;
   if (tx.billId && String(tx.billId) === String(bill.id)) return true;
@@ -351,7 +357,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
 
     const scored = bills
-      .filter(b => isOfficialBill(b) && b.companyId === companyId && Number(b.officialTotalCents ?? b.totalCents ?? 0) > 0)
+      .filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.companyId === companyId && Number(b.officialTotalCents ?? b.totalCents ?? 0) > 0)
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
@@ -785,7 +791,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }));
 
     const cardBillEvents = bills
-      .filter(b => isOfficialBill(b) && b.status !== 'PAID')
+      .filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.status !== 'PAID')
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
@@ -870,6 +876,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     const card = cards.find(item => item.id === bill.cardId) || {};
     const billTransactions = getBillTransactions(bill, card, transactions);
+    if (!hasOfficialBillTotal(bill)) {
+      setNotice('A Pluggy não informou o total oficial desta fatura. Não é possível conciliá-la.');
+      return;
+    }
     const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
     const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
     if (officialTotalCents !== transactionsTotalCents) {
@@ -2290,7 +2300,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {cards.map(card => {
-                const openBills = bills.filter(b => isOfficialBill(b) && b.cardId === card.id && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0));
+                const openBills = bills.filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.cardId === card.id && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0));
                 const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
@@ -2332,25 +2342,30 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
                 .map(b => {
                 const card = cards.find(c=>c.id===b.cardId) || {};
+                const totalAvailable = hasOfficialBillTotal(b);
                 const officialTotal = Number(b.officialTotalCents ?? b.totalCents ?? 0);
                 const paidCents = Number(b.paidCents || 0);
                 const remaining = Math.max(0, officialTotal - paidCents);
                 const paid = remaining === 0 && officialTotal > 0;
                 const billTransactions = getBillTransactions(b, card, transactions);
                 const transactionTotal = getBillTransactionsTotalCents(billTransactions);
-                const valuesMatch = officialTotal === transactionTotal;
+                const valuesMatch = totalAvailable && officialTotal === transactionTotal;
                 const manuallyConfirmed = b.reconciliationStatus === 'MATCHED_MANUAL'
                   && Number(b.reconciledAgainstOfficialTotalCents) === officialTotal
                   && Number(b.reconciledAgainstTransactionsTotalCents) === transactionTotal
                   && Number(b.reconciledTransactionCount) === billTransactions.length
                   && b.reconciledTransactionsSignature === getBillTransactionsSignature(billTransactions);
-                const statusLabel = manuallyConfirmed ? 'conciliada' : valuesMatch ? 'conferir conciliação' : 'não conciliada';
-                const statusClass = manuallyConfirmed
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : valuesMatch ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700';
+                const statusLabel = !totalAvailable
+                  ? 'total oficial indisponível'
+                  : manuallyConfirmed ? 'conciliada' : valuesMatch ? 'conferir conciliação' : 'não conciliada';
+                const statusClass = !totalAvailable
+                  ? 'bg-amber-100 text-amber-700'
+                  : manuallyConfirmed
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : valuesMatch ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700';
                 return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
                   <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy</p></div>
-                  <div className="text-right"><p className="font-black text-slate-800">{formatBRL(officialTotal)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                  <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                 </button>;
               })}
               {!bills.some(isOfficialBill) && <EmptyState text="As faturas oficiais aparecerão aqui quando forem recebidas pela Pluggy."/>}
@@ -2674,10 +2689,11 @@ function BillDetailsModal({
   const status = bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.officialDueDate || bill.dueDate, provisional: false });
   const statusLabel = status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
   const hasOfficialBill = isOfficialBill(bill);
+  const totalAvailable = hasOfficialBillTotal(bill);
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
   const registeredTotalCents = getBillTransactionsTotalCents(sortedTransactions);
   const transactionsSignature = getBillTransactionsSignature(sortedTransactions);
-  const amountsMatch = hasOfficialBill && officialTotalCents === registeredTotalCents;
+  const amountsMatch = hasOfficialBill && totalAvailable && officialTotalCents === registeredTotalCents;
   const manuallyConfirmedCurrent = bill.reconciliationStatus === 'MATCHED_MANUAL'
     && Number(bill.reconciledAgainstOfficialTotalCents) === officialTotalCents
     && Number(bill.reconciledAgainstTransactionsTotalCents) === registeredTotalCents
@@ -2685,19 +2701,21 @@ function BillDetailsModal({
     && bill.reconciledTransactionsSignature === transactionsSignature;
   const reconciliationStatusLabel = !hasOfficialBill
     ? 'Aguardando fatura oficial'
-    : manuallyConfirmedCurrent
+    : !totalAvailable
+      ? 'Total oficial não informado pela Pluggy'
+      : manuallyConfirmedCurrent
       ? 'Conciliada manualmente'
       : amountsMatch
         ? 'Valores conferem · confirme a conciliação manual'
         : 'Não conciliada · a soma dos lançamentos difere do total oficial';
-  const reconciliationTone = !hasOfficialBill
+  const reconciliationTone = !hasOfficialBill || !totalAvailable
     ? 'bg-amber-100 text-amber-700'
     : manuallyConfirmedCurrent
       ? 'bg-emerald-100 text-emerald-700'
       : amountsMatch
         ? 'bg-blue-100 text-blue-700'
         : 'bg-red-100 text-red-700';
-  const canManualReconcile = hasOfficialBill && amountsMatch && !manuallyConfirmedCurrent;
+  const canManualReconcile = hasOfficialBill && totalAvailable && amountsMatch && !manuallyConfirmedCurrent;
 
   return (
     <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>
@@ -2736,7 +2754,7 @@ function BillDetailsModal({
             <div className="grid sm:grid-cols-3 gap-3">
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 1 · Total oficial da Pluggy</p>
-                <p className="text-xl font-black text-slate-800 mt-1">{formatBRL(officialTotalCents)}</p>
+                <p className="text-xl font-black text-slate-800 mt-1">{totalAvailable ? formatBRL(officialTotalCents) : 'Não informado'}</p>
               </div>
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 2 · Lançamentos encontrados</p>
@@ -2745,8 +2763,8 @@ function BillDetailsModal({
               </div>
               <div className={`p-3 rounded-xl border ${amountsMatch ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 3 · Comparação</p>
-                <p className={`text-sm font-black mt-2 ${amountsMatch ? 'text-emerald-800' : 'text-red-800'}`}>{amountsMatch ? 'Os totais conferem' : 'Os totais não conferem'}</p>
-                <p className="text-[10px] text-slate-600 mt-1">Diferença: {formatBRL(officialTotalCents - registeredTotalCents)}</p>
+                <p className={`text-sm font-black mt-2 ${amountsMatch ? 'text-emerald-800' : 'text-red-800'}`}>{!totalAvailable ? 'Total oficial ausente' : amountsMatch ? 'Os totais conferem' : 'Os totais não conferem'}</p>
+                <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(officialTotalCents - registeredTotalCents) : '—'}</p>
               </div>
             </div>
             <div className="flex flex-wrap justify-end gap-2">

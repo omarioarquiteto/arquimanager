@@ -373,7 +373,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     return new Set(
       transactions
         .filter(tx => {
-          if (tx.creditCardInstallmentHandledAsForecast === true) return true;
           const current = Number(tx.creditCardInstallmentNumber || 0);
           const total = Number(tx.creditCardTotalInstallments || 0);
           return current > 1 && current < total && firstPlanIdentities.has(installmentPlanFingerprint(tx));

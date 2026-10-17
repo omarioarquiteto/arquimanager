@@ -165,11 +165,6 @@ const getCheckedInvoiceTransactionCount = (bill = {}, transactions = []) => {
   return transactions.filter(tx => checkedIds.has(String(tx.id))).length;
 };
 
-const areAllInvoiceTransactionsChecked = (bill = {}, transactions = []) => (
-  transactions.length > 0
-  && getCheckedInvoiceTransactionCount(bill, transactions) === transactions.length
-);
-
 const getBillTransactionsTotalCents = (transactions = []) => transactions.reduce((sum, tx) => {
   const amount = Math.abs(Number(tx.amountCents || 0));
   return sum + (String(tx.type || '').toUpperCase() === 'INCOME' ? -amount : amount);

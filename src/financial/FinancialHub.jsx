@@ -942,28 +942,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!tx?.id) return;
     const description = data.description?.trim() || tx.description || '';
     const merchant = data.merchant?.trim() || tx.merchant || description;
-    const paymentType = String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT'
-      ? 'INSTALLMENT'
-      : 'SINGLE';
-    const installmentNumber = Math.min(48, Math.max(1, Number(data.creditCardInstallmentNumber || 1)));
-    const totalInstallments = Math.min(48, Math.max(1, Number(data.creditCardTotalInstallments || 1)));
-    if (paymentType === 'INSTALLMENT' && totalInstallments < installmentNumber) {
-      throw new Error('A quantidade total de parcelas não pode ser menor que a parcela atual.');
-    }
-
-    const nextForecastAmountCents = Math.abs(toCents(data.creditCardForecastAmount ?? (Number(tx.amountCents || 0) / 100)));
-    if (paymentType === 'INSTALLMENT' && totalInstallments > installmentNumber && nextForecastAmountCents <= 0) {
-      throw new Error('Informe um valor válido para as próximas parcelas.');
-    }
-
-    const planChanged =
-      paymentType !== String(tx.creditCardPaymentType || 'SINGLE').toUpperCase()
-      || installmentNumber !== Number(tx.creditCardInstallmentNumber || 1)
-      || totalInstallments !== Number(tx.creditCardTotalInstallments || 1)
-      || nextForecastAmountCents !== Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0)
-      || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '')
-      || String(data.creditCardForecastAnchorDate || '') !== String(tx.creditCardForecastAnchorDate || '');
-
     const changes = {
       description,
       merchant,
@@ -972,31 +950,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       categoryId: data.categoryId || tx.categoryId || null,
       projectId: data.projectId || tx.projectId || null,
       clientId: data.clientId || tx.clientId || null,
-      creditCardPaymentType: paymentType,
-      creditCardInstallmentNumber: installmentNumber,
-      creditCardTotalInstallments: totalInstallments,
-      creditCardPurchaseDate: data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || null,
-      creditCardForecastAnchorDate: data.creditCardForecastAnchorDate || tx.creditCardForecastAnchorDate || null,
-      creditCardForecastAmountCents: nextForecastAmountCents || Number(tx.amountCents || 0),
-      creditCardPlanConfiguredManually: planChanged || tx.creditCardPlanConfiguredManually === true,
-      creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0) + (planChanged ? 1 : 0),
-      creditCardForecastDescription: description,
-      creditCardForecastMerchant: merchant,
       updatedAt: serverTimestamp(),
     };
-
     await updateDoc(docPath(db, 'financial_transactions', tx.id), changes);
-
-    // Persist the source transaction first, then rebuild forecasts from the
-    // just-saved values instead of relying on a later React snapshot.
-    try {
-      const nextTransaction = { ...tx, ...changes };
-      const nextTransactions = transactions.map(item => item.id === tx.id ? nextTransaction : item);
-      return await rebuildInstallmentForecasts(nextTransactions);
-    } catch (error) {
-      console.error('Falha ao gerar as faturas previstas após salvar o parcelamento', error);
-      return { forecastError: error?.message || 'Falha ao gravar as faturas previstas.' };
-    }
   };
 
   const updateTransaction = async (data) => {
@@ -1040,13 +996,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     try {
       if (isCreditCardTransaction(tx)) {
         try {
-          const forecastResult = await updateCreditCardTransactionDetails(tx, data);
+          await updateCreditCardTransactionDetails(tx, data);
           setModal(null);
-          if (forecastResult?.forecastError) {
-            setNotice(`Lançamento salvo, mas as faturas previstas não foram geradas: ${forecastResult.forecastError}`);
-          } else {
-            setNotice(`Parcelamento salvo. ${forecastResult?.futureBills || 0} fatura(s) prevista(s) atualizada(s), com ${forecastResult?.plannedItems || 0} parcela(s)/ajuste(s) futuro(s).`);
-          }
+          setNotice('Dados do lançamento do cartão atualizados. O ArquiManager não estima nem cria parcelas futuras.');
         } catch (error) {
           setNotice(error.message || 'Não foi possível atualizar o lançamento do cartão.');
         }

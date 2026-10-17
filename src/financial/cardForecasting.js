@@ -265,7 +265,6 @@ export const buildInstallmentForecastWrites = ({
       .map(planIdentityFor)
   );
   const isForecastRepresentedIntermediate = (transaction = {}) => {
-    if (transaction.creditCardInstallmentHandledAsForecast === true) return true;
     const current = Number(transaction.creditCardInstallmentNumber || 0);
     const total = Number(transaction.creditCardTotalInstallments || 0);
     if (current <= 1 || total <= current) return false;

@@ -550,7 +550,8 @@ export default function PluggyConnectionsV2({
       const billId = billIdFor(companyId, cardId, referenceMonth);
       billByProviderId.set(String(rawBill.id), billId);
 
-      const totalCents = Math.abs(toCents(rawBill.totalAmount));
+      const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';
+      const totalCents = hasOfficialTotal ? Math.abs(toCents(rawBill.totalAmount)) : 0;
       const paidCents = Array.isArray(rawBill.payments)
         ? rawBill.payments.reduce((sum, payment) => sum + Math.abs(toCents(payment?.amount)), 0)
         : 0;
@@ -571,7 +572,7 @@ export default function PluggyConnectionsV2({
           referenceMonth,
           closingDate: closingDate || null,
           dueDate: dueDate || null,
-          officialTotalCents: totalCents,
+          officialTotalCents: hasOfficialTotal ? totalCents : null,
           officialDueDate: dueDate || null,
           officialClosingDate: closingDate || null,
           officialSyncedAt: data.fetchedAt || new Date().toISOString(),
@@ -584,7 +585,7 @@ export default function PluggyConnectionsV2({
           payments: Array.isArray(rawBill.payments) ? rawBill.payments : [],
           providerRawData: rawBill,
           provisional: false,
-          status: statusForBill(totalCents, paidCents, dueDate),
+          status: hasOfficialTotal ? statusForBill(totalCents, paidCents, dueDate) : 'OPEN',
           updatedAt: serverTimestamp(),
         },
       });

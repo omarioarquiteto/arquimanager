@@ -351,18 +351,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
 
     const scored = bills
-      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > 0)
+      .filter(b => isOfficialBill(b) && b.companyId === companyId && Number(b.officialTotalCents ?? b.totalCents ?? 0) > 0)
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
-        const remaining = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
-        const alreadyPaid = Number(b.paidCents || 0) >= Number(b.totalCents || 0) && Number(b.totalCents || 0) > 0;
+        const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+        const remaining = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
+        const alreadyPaid = Number(b.paidCents || 0) >= officialTotalCents && officialTotalCents > 0;
         const cardName = normalizeText(card.name || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
         let score = 0;
         if (amountCents === remaining && remaining > 0) score += 100;
-        else if (alreadyPaid && amountCents === Number(b.totalCents || 0)) score += 90;
+        else if (alreadyPaid && amountCents === officialTotalCents) score += 90;
         else if (remaining > 0 && amountCents < remaining) score += 40;
         if (card.paymentAccountId && card.paymentAccountId === accountId) score += 40;
         if (cardName && normalizedDescription.includes(cardName)) score += 30;
@@ -784,10 +785,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }));
 
     const cardBillEvents = bills
-      .filter(b => b.status !== 'PAID')
+      .filter(b => isOfficialBill(b) && b.status !== 'PAID')
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
-        const remainingCents = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
+        const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+        const remainingCents = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
         return {
           id: 'card_bill_' + b.id,
           sourceId: b.id,
@@ -1913,7 +1915,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               {days.map((day, idx) => {
                 const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
                 const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day && t.kind !== 'CARD_BILL') : [];
-                const dayBills = day ? bills.filter(b => (b.dueDate || '') === day) : [];
+                const dayBills = day ? bills.filter(b => isOfficialBill(b) && (b.officialDueDate || b.dueDate || '') === day) : [];
                 const dayProjection = day ? projection.byDate[day] : null;
                 const actualIncome = dayTx.filter(t => t.type === 'INCOME' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const actualExpense = dayTx.filter(t => t.type === 'EXPENSE' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
@@ -2601,11 +2603,11 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
             <select value={billId} onChange={e=>setBillId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
               <option value="">Escolha a fatura...</option>
               {[...bills]
-                .filter(b => b.status !== 'PAID' && Number(b.totalCents || 0) > Number(b.paidCents || 0))
+                .filter(b => isOfficialBill(b) && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0))
                 .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
                 .map(b => {
                   const card = cards.find(c=>c.id===b.cardId);
-                  const remaining = Number(b.totalCents || 0) - Number(b.paidCents || 0);
+                  const remaining = Number(b.officialTotalCents ?? b.totalCents ?? 0) - Number(b.paidCents || 0);
                   return <option key={b.id} value={b.id}>{card?.name || 'Cartão'} · {b.referenceMonth} · {formatBRL(remaining)} restante</option>;
                 })}
             </select>

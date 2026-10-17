@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFirestore, collection, doc, query, where, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
   serverTimestamp, increment, writeBatch
@@ -13,7 +13,6 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
-import { buildInstallmentForecastWrites } from './cardForecasting.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -85,33 +84,77 @@ const dateForMonthDay = (yearMonth, day = 1) => {
 
 const monthFromIso = (value) => String(value || '').slice(0, 7);
 
-const normalizeInstallmentDescription = (value = '') => String(value || '')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}(?:\s*[/-]\s*\d{1,2})?\b/g, ' ')
-  .replace(/\b\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
-  .replace(/[^a-z0-9]+/g, ' ')
-  .trim()
-  .replace(/\s+/g, ' ');
+const isPluggyTransaction = (tx = {}) => (
+  String(tx.provider || '').toUpperCase() === 'PLUGGY'
+  || String(tx.source || '').toUpperCase().startsWith('PLUGGY')
+  || Boolean(tx.providerTransactionId)
+  || String(tx.externalId || '').startsWith('pluggy-v2:')
+);
 
-const installmentPlanFingerprint = (tx = {}) => {
-  const current = Number(tx.creditCardInstallmentNumber || 0);
-  const total = Number(tx.creditCardTotalInstallments || 0);
-  const rawPurchaseDate = tx.providerRawData?.creditCardMetadata?.purchaseDate;
-  const storedPurchaseDate = tx.creditCardPurchaseDate;
-  const explicitPurchaseDate = rawPurchaseDate
-    || (tx.creditCardPlanConfiguredManually === true ? storedPurchaseDate : '')
-    || (storedPurchaseDate && syncDateOnly(storedPurchaseDate) !== syncDateOnly(tx.date) ? storedPurchaseDate : '');
-  const inferredPurchaseDate = addMonthsToIsoDate(tx.date, -(current - 1))
-    || syncDateOnly(storedPurchaseDate)
-    || syncDateOnly(tx.date);
-  const purchaseAnchor = syncDateOnly(explicitPurchaseDate) || (monthFromIso(inferredPurchaseDate) + '-01');
-  const description = normalizeInstallmentDescription(
-    tx.creditCardForecastMerchant || tx.merchant || tx.creditCardForecastDescription || tx.description
+const isOfficialBill = (bill = {}) => Boolean(
+  bill.providerBillId
+  || bill.officialTotalCents != null
+  || (bill.provisional === false && (bill.source === 'PLUGGY_REBUILT' || bill.provider === 'PLUGGY'))
+);
+
+const hasOfficialBillTotal = (bill = {}) => Boolean(
+  bill.officialTotalCents != null
+  || (bill.providerRawData?.totalAmount != null && bill.providerRawData.totalAmount !== '')
+  || (isOfficialBill(bill) && bill.provisional === false && Number(bill.totalCents || 0) > 0)
+);
+
+const transactionBelongsToBill = (tx = {}, bill = {}, card = {}) => {
+  if (!isCreditCardTransaction(tx) || !isPluggyTransaction(tx)) return false;
+  if (tx.billId && String(tx.billId) === String(bill.id)) return true;
+
+  const providerBillId = String(bill.providerBillId || '').trim();
+  const transactionProviderBillId = String(
+    tx.providerBillId
+    || tx.creditCardBillId
+    || tx.providerRawData?.creditCardMetadata?.billId
+    || tx.providerRawData?.billId
+    || ''
+  ).trim();
+  if (providerBillId && transactionProviderBillId === providerBillId) return true;
+
+  const sameCard = (
+    String(tx.cardId || '') === String(card.id || '')
+    || String(tx.accountId || '') === String(card.id || '')
+    || Boolean(card.providerAccountId && String(tx.providerAccountId || '') === String(card.providerAccountId))
   );
-  return [tx.cardId || tx.accountId || '', description, purchaseAnchor, total].join('|');
+  if (!sameCard) return false;
+
+  const providerCycle = (
+    tx.creditCardBillForecastDate
+    || tx.providerRawData?.creditCardMetadata?.billForecastDate
+    || tx.providerRawData?.billForecastDate
+    || tx.creditCardBillPostDate
+    || tx.providerRawData?.creditCardMetadata?.billPostDate
+    || ''
+  );
+  return Boolean(
+    providerCycle
+    && monthFromIso(syncDateOnly(providerCycle)) === monthFromIso(bill.referenceMonth)
+  );
 };
+
+const getBillTransactions = (bill, card, transactions = []) => (
+  (Array.isArray(transactions) ? transactions : [])
+    .filter(tx => transactionBelongsToBill(tx, bill, card))
+    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+);
+
+const getBillTransactionsTotalCents = (transactions = []) => transactions.reduce((sum, tx) => {
+  const amount = Math.abs(Number(tx.amountCents || 0));
+  return sum + (String(tx.type || '').toUpperCase() === 'INCOME' ? -amount : amount);
+}, 0);
+
+const getBillTransactionsSignature = (transactions = []) => stableHash(
+  transactions
+    .map(tx => [tx.id || '', tx.date || '', tx.type || '', Number(tx.amountCents || 0)].join(':'))
+    .sort()
+    .join('|')
+);
 
 const billStatusFromValues = ({ totalCents = 0, paidCents = 0, dueDate = '', provisional = false }) => {
   const total = Number(totalCents || 0);
@@ -220,134 +263,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bulkQuery, setBulkQuery] = useState('');
   const [bulkLimit, setBulkLimit] = useState(20);
   const [bulkBusyKey, setBulkBusyKey] = useState('');
-  const forecastPlanSignatureRef = useRef('');
-
-  useEffect(() => {
-    if (!companyId) return;
-    const attach = (name, setter) => onSnapshot(collectionPath(db, name), snap => {
-      setter(
-        snap.docs
-          .map(d => ({ id: d.id, ...d.data() }))
-          .filter(item => !item.companyId || item.companyId === companyId)
-      );
-    }, err => console.error(`Erro ao carregar ${name}`, err));
-
-    const unsubs = [
-      attach('financial_accounts', setAccounts),
-      attach('financial_cards', setCards),
-      attach('financial_bills', setBills),
-      attach('financial_payables', setPayables),
-      attach('financial_receivables', setReceivables),
-      attach('financial_transfers', setTransfers),
-      attach('financial_connections', setConnections),
-      attach('financial_categories', setCategories),
-      attach('financial_transactions', setTransactions),
-      attach('financial_inbox', setInbox),
-      attach('financial_rules', setRules),
-    ];
-    return () => unsubs.forEach(u => u());
-  }, [companyId]);
-
-  const installmentPlanSignature = useMemo(() => JSON.stringify({
-    cards: cards
-      .map(card => ({
-        id: card.id,
-        closingDay: card.closingDay || 1,
-        dueDay: card.dueDay || 10,
-        providerItemId: card.providerItemId || null,
-        provider: card.provider || null,
-        source: card.source || null,
-      }))
-      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
-    transactions: transactions
-      .filter(tx => Boolean(tx.cardId))
-      .map(tx => ({
-        id: tx.id,
-        cardId: tx.cardId,
-        date: tx.date || null,
-        billId: tx.billId || null,
-        amountCents: Number(tx.amountCents || 0),
-        paymentType: tx.creditCardPaymentType || null,
-        installmentNumber: Number(tx.creditCardInstallmentNumber || 0),
-        totalInstallments: Number(tx.creditCardTotalInstallments || 0),
-        handledAsForecast: tx.creditCardInstallmentHandledAsForecast === true,
-        forecastAmountCents: tx.creditCardForecastAmountCents ?? null,
-        planVersion: Number(tx.creditCardForecastPlanVersion || 0),
-        purchaseDate: tx.creditCardPurchaseDate || null,
-        forecastDate: tx.creditCardBillForecastDate || null,
-        billPostDate: tx.creditCardBillPostDate || null,
-        forecastAnchorDate: tx.creditCardForecastAnchorDate || null,
-        description: tx.description || '',
-        merchant: tx.merchant || '',
-        categoryId: tx.categoryId || null,
-        projectId: tx.projectId || null,
-      }))
-      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
-  }), [cards, transactions]);
-
-  const rebuildInstallmentForecasts = async (planTransactions = transactions, isCancelled = () => false) => {
-    const snapshot = await getDocs(query(
-      collectionPath(db, 'financial_bills'),
-      where('companyId', '==', companyId)
-    ));
-    if (isCancelled()) return { cancelled: true, written: 0, deleted: 0 };
-
-    const currentBills = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
-    const writes = buildInstallmentForecastWrites({
-      companyId,
-      cards,
-      transactions: planTransactions,
-      bills: currentBills,
-    });
-    let written = 0;
-    let deleted = 0;
-
-    for (let start = 0; start < writes.length; start += 400) {
-      if (isCancelled()) return { cancelled: true, written, deleted };
-      const batch = writeBatch(db);
-      const chunk = writes.slice(start, start + 400);
-      chunk.forEach(write => {
-        const target = docPath(db, 'financial_bills', write.id);
-        if (write.delete) {
-          batch.delete(target);
-          deleted += 1;
-        } else {
-          batch.set(target, { ...write.data, updatedAt: serverTimestamp() }, { merge: true });
-          written += 1;
-        }
-      });
-      await batch.commit();
-    }
-
-    return {
-      cancelled: false,
-      written,
-      deleted,
-      futureBills: writes.filter(write => !write.delete && write.data?.forecastManaged === true && Number(write.data?.forecastTotalCents || 0) > 0).length,
-      plannedItems: writes.filter(write => !write.delete).reduce(
-        (sum, write) => sum + (Array.isArray(write.data?.forecastItems) ? write.data.forecastItems.filter(item => item.excluded !== true).length : 0),
-        0
-      ),
-    };
-  };
-
-  useEffect(() => {
-    if (!companyId || forecastPlanSignatureRef.current === installmentPlanSignature) return undefined;
-    let cancelled = false;
-
-    const rebuildForecasts = async () => {
-      try {
-        await rebuildInstallmentForecasts(transactions, () => cancelled);
-        if (!cancelled) forecastPlanSignatureRef.current = installmentPlanSignature;
-      } catch (error) {
-        console.error('Falha ao projetar parcelas futuras', error);
-        if (!cancelled) setNotice(`Não foi possível gerar as faturas previstas: ${error?.message || 'erro ao salvar no banco de dados'}`);
-      }
-    };
-
-    rebuildForecasts();
-    return () => { cancelled = true; };
-  }, [companyId, installmentPlanSignature, cards, transactions, db]);
   useEffect(() => {
     DEFAULT_CATEGORIES.forEach(async ([id, nome]) => {
       try {
@@ -360,33 +275,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   }, [companyId]);
 
-  const representedIntermediateTransactionIds = useMemo(() => {
-    const firstPlanIdentities = new Set(
-      transactions
-        .filter(tx =>
-          tx.creditCardInstallmentHandledAsForecast !== true
-          && Number(tx.creditCardInstallmentNumber || 0) === 1
-          && Number(tx.creditCardTotalInstallments || 0) > 1
-        )
-        .map(installmentPlanFingerprint)
-    );
-    return new Set(
-      transactions
-        .filter(tx => {
-          const current = Number(tx.creditCardInstallmentNumber || 0);
-          const total = Number(tx.creditCardTotalInstallments || 0);
-          return current > 1 && current < total && firstPlanIdentities.has(installmentPlanFingerprint(tx));
-        })
-        .map(tx => String(tx.id))
-    );
-  }, [transactions]);
-
   const monthTransactions = useMemo(
-    () => transactions.filter(t =>
-      !representedIntermediateTransactionIds.has(String(t.id))
-      && monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth
-    ),
-    [transactions, representedIntermediateTransactionIds, selectedMonth]
+    () => transactions.filter(t => monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth),
+    [transactions, selectedMonth]
   );
 
   const totals = useMemo(() => {
@@ -412,7 +303,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ...item,
         transaction: transactions.find(t => t.id === item.transactionId) || null,
       }))
-      .filter(item => !item.transaction || !representedIntermediateTransactionIds.has(String(item.transaction.id)))
       .sort((a, b) => {
         const priorityDiff = (priority[a.kind] || 9) - (priority[b.kind] || 9);
         if (priorityDiff) return priorityDiff;
@@ -420,7 +310,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         if (confidenceDiff) return confidenceDiff;
         return String(a.createdAt?.seconds || 0).localeCompare(String(b.createdAt?.seconds || 0));
       });
-  }, [inbox, transactions, representedIntermediateTransactionIds]);
+  }, [inbox, transactions]);
 
   const attentionCount = attentionItems.length;
 
@@ -438,10 +328,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const filteredTransactions = useMemo(() => {
     const q = normalizeText(queryText);
     return [...transactions]
-      .filter(t => !representedIntermediateTransactionIds.has(String(t.id)))
       .filter(t => !q || normalizeText(`${t.description || ''} ${t.merchant || ''}`).includes(q))
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
-  }, [transactions, queryText, representedIntermediateTransactionIds]);
+  }, [transactions, queryText]);
 
   const days = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);
@@ -468,18 +357,19 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!paymentHint || !amountCents) return { status: 'NO_MATCH' };
 
     const scored = bills
-      .filter(b => b.companyId === companyId && Number(b.totalCents || 0) > 0)
+      .filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.companyId === companyId && Number(b.officialTotalCents ?? b.totalCents ?? 0) > 0)
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
-        const remaining = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
-        const alreadyPaid = Number(b.paidCents || 0) >= Number(b.totalCents || 0) && Number(b.totalCents || 0) > 0;
+        const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+        const remaining = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
+        const alreadyPaid = Number(b.paidCents || 0) >= officialTotalCents && officialTotalCents > 0;
         const cardName = normalizeText(card.name || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
         let score = 0;
         if (amountCents === remaining && remaining > 0) score += 100;
-        else if (alreadyPaid && amountCents === Number(b.totalCents || 0)) score += 90;
+        else if (alreadyPaid && amountCents === officialTotalCents) score += 90;
         else if (remaining > 0 && amountCents < remaining) score += 40;
         if (card.paymentAccountId && card.paymentAccountId === accountId) score += 40;
         if (cardName && normalizedDescription.includes(cardName)) score += 30;
@@ -901,10 +791,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }));
 
     const cardBillEvents = bills
-      .filter(b => b.status !== 'PAID')
+      .filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.status !== 'PAID')
       .map(b => {
         const card = cards.find(c => c.id === b.cardId);
-        const remainingCents = Math.max(0, Number(b.totalCents || 0) - Number(b.paidCents || 0));
+        const officialTotalCents = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+        const remainingCents = Math.max(0, officialTotalCents - Number(b.paidCents || 0));
         return {
           id: 'card_bill_' + b.id,
           sourceId: b.id,
@@ -976,162 +867,23 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
 
-  const persistForecastItems = async (bill, forecastItems) => {
-    if (!bill?.id) throw new Error('Fatura prevista não encontrada.');
-    const totalCents = forecastItems.reduce((sum, item) => item?.excluded === true ? sum : sum + Number(item.amountCents || 0), 0);
-    const official = Boolean(bill.providerBillId || bill.officialTotalCents != null);
-    const forecastEditedAt = new Date().toISOString();
-    const changes = {
-      forecastItems,
-      forecastTotalCents: totalCents,
-      forecastEditedAt,
-      forecastManualReviewRequired: official,
-      reconciliationStatus: official ? 'NEEDS_REVIEW' : (bill.reconciliationStatus || null),
-      updatedAt: serverTimestamp(),
-    };
-
-    if (!official) {
-      changes.totalCents = totalCents;
-      changes.provisional = true;
-      changes.status = 'OPEN';
-      changes.source = bill.source || 'ARQUIMANAGER_FORECAST';
-    }
-
-    await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
-  };
-
-  const updateForecastItem = async (billId, itemId, changes) => {
+  const manuallyReconcileBill = async (billId) => {
     const bill = bills.find(item => item.id === billId);
-    if (!bill) throw new Error('Fatura prevista não encontrada.');
-    const currentItems = Array.isArray(bill.forecastItems) ? bill.forecastItems : [];
-    const current = currentItems.find(item => item.id === itemId);
-    if (!current) throw new Error('Lançamento previsto não encontrado.');
-    const nextDescription = String(changes.description ?? current.description ?? '').trim();
-    const nextAmountCents = changes.amountCents == null
-      ? Number(current.amountCents || 0)
-      : Number(changes.amountCents);
-    if (!nextDescription || !Number.isFinite(nextAmountCents) || nextAmountCents === 0) {
-      throw new Error('Informe uma descrição e um valor diferente de zero.');
-    }
-
-    const nextItems = currentItems.map(item => item.id === itemId
-      ? { ...item, ...changes, description: nextDescription, amountCents: nextAmountCents, manualOverride: item.kind === 'INSTALLMENT_FORECAST' ? true : item.manualOverride || false }
-      : item
-    );
-    setBusy(true);
-    try {
-      await persistForecastItems(bill, nextItems);
-      await rebuildInstallmentForecasts(transactions);
-      setNotice('Previsão salva. As correspondências com lançamentos oficiais foram reavaliadas.');
-    } catch (error) {
-      setNotice(error.message || 'Não foi possível atualizar o lançamento previsto.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const addForecastItem = async (billId, data) => {
-    const bill = bills.find(item => item.id === billId);
-    const description = String(data?.description || '').trim();
-    const amountCents = toCents(data?.amount);
-    if (!bill || !description || !amountCents) {
-      setNotice('Informe a descrição e o valor do lançamento previsto.');
+    if (!bill || !isOfficialBill(bill)) {
+      setNotice('A fatura oficial da Pluggy ainda não está disponível.');
       return;
     }
 
-    setBusy(true);
-    try {
-      const currentItems = Array.isArray(bill.forecastItems) ? bill.forecastItems : [];
-      const item = {
-        id: `manual_${stableHash(`${bill.id}|${Date.now()}|${description}`)}`,
-        kind: 'MANUAL_ADJUSTMENT',
-        description,
-        merchant: description,
-        amountCents,
-        createdAt: new Date().toISOString(),
-        manualOverride: true,
-      };
-      await persistForecastItems(bill, [...currentItems, item]);
-      setNotice('Lançamento previsto adicionado à fatura.');
-    } catch (error) {
-      setNotice(error.message || 'Não foi possível adicionar o lançamento previsto.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deleteForecastItem = async (billId, itemId) => {
-    const bill = bills.find(item => item.id === billId);
-    if (!bill) return;
-    const currentItems = Array.isArray(bill.forecastItems) ? bill.forecastItems : [];
-    if (!currentItems.some(item => item.id === itemId)) return;
-
-    setBusy(true);
-    try {
-      const itemToDelete = currentItems.find(item => item.id === itemId);
-      const nextItems = itemToDelete?.kind === 'INSTALLMENT_FORECAST'
-        ? currentItems.map(item => item.id === itemId ? { ...item, excluded: true, manualOverride: true } : item)
-        : currentItems.filter(item => item.id !== itemId);
-      await persistForecastItems(bill, nextItems);
-      setNotice('Lançamento previsto removido da fatura.');
-    } catch (error) {
-      setNotice(error.message || 'Não foi possível remover o lançamento previsto.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const updateForecastBillDates = async (billId, data) => {
-    const bill = bills.find(item => item.id === billId);
-    if (!bill) return;
-    const forecastDueDate = String(data.forecastDueDate || '').slice(0, 10);
-    const forecastClosingDate = String(data.forecastClosingDate || '').slice(0, 10);
-    if (!forecastDueDate || !forecastClosingDate) {
-      setNotice('Informe o fechamento e o vencimento da fatura prevista.');
+    const card = cards.find(item => item.id === bill.cardId) || {};
+    const billTransactions = getBillTransactions(bill, card, transactions);
+    if (!hasOfficialBillTotal(bill)) {
+      setNotice('A Pluggy não informou o total oficial desta fatura. Não é possível conciliá-la.');
       return;
     }
-
-    const official = Boolean(bill.providerBillId || bill.officialTotalCents != null);
-    const changes = {
-      forecastDueDate,
-      forecastClosingDate,
-      forecastDueDateCustom: true,
-      forecastClosingDateCustom: true,
-      forecastEditedAt: new Date().toISOString(),
-      forecastManualReviewRequired: official,
-      reconciliationStatus: official ? 'NEEDS_REVIEW' : (bill.reconciliationStatus || null),
-      updatedAt: serverTimestamp(),
-    };
-    if (!official) {
-      changes.dueDate = forecastDueDate;
-      changes.closingDate = forecastClosingDate;
-    }
-
-    setBusy(true);
-    try {
-      await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
-      setNotice('Datas previstas atualizadas.');
-    } catch (error) {
-      setNotice(error.message || 'Não foi possível atualizar as datas.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const manuallyReconcileForecastBill = async (billId) => {
-    const bill = bills.find(item => item.id === billId);
-    if (!bill || !(bill.providerBillId || bill.officialTotalCents != null)) {
-      setNotice('A fatura oficial ainda não foi recebida pela Pluggy.');
-      return;
-    }
-
     const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-    const expectedTotalCents = Number(bill.forecastTotalCents || 0)
-      + Number(bill.registeredTransactionsTotalCents || 0);
-    const officialDueDate = String(bill.officialDueDate || bill.dueDate || '').slice(0, 10);
-    const expectedDueDate = String(bill.forecastDueDate || bill.dueDate || '').slice(0, 10);
-    if (officialTotalCents !== expectedTotalCents || !officialDueDate || officialDueDate !== expectedDueDate) {
-      setNotice('Para conciliar, o total e o vencimento previstos precisam ser iguais aos dados oficiais da fatura.');
+    const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
+    if (officialTotalCents !== transactionsTotalCents) {
+      setNotice(`Fatura não conciliada. Total oficial: ${formatBRL(officialTotalCents)}; lançamentos importados: ${formatBRL(transactionsTotalCents)}; diferença: ${formatBRL(officialTotalCents - transactionsTotalCents)}. Nenhum lançamento foi criado.`);
       return;
     }
 
@@ -1140,14 +892,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       await updateDoc(docPath(db, 'financial_bills', bill.id), {
         reconciliationStatus: 'MATCHED_MANUAL',
         reconciledAgainstOfficialTotalCents: officialTotalCents,
-        reconciledAgainstOfficialDueDate: officialDueDate,
-        reconciledAgainstForecastTotalCents: expectedTotalCents,
-        reconciledAgainstForecastDueDate: expectedDueDate,
+        reconciledAgainstTransactionsTotalCents: transactionsTotalCents,
+        reconciledTransactionsSignature: getBillTransactionsSignature(billTransactions),
+        reconciledTransactionCount: billTransactions.length,
         reconciledAt: new Date().toISOString(),
-        forecastManualReviewRequired: false,
         updatedAt: serverTimestamp(),
       });
-      setNotice('Fatura conciliada manualmente.');
+      setNotice('Fatura conciliada manualmente: o somatório dos lançamentos da Pluggy confere com o total oficial.');
     } catch (error) {
       setNotice(error.message || 'Não foi possível conciliar a fatura.');
     } finally {
@@ -1180,21 +931,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         payableId: tx.payableId || null,
         receivableId: tx.receivableId || null,
         creditCardEdit: isCreditCardTransaction(tx),
-        creditCardPaymentType: tx.creditCardPaymentType || (Number(tx.creditCardTotalInstallments || 0) > 1 ? 'INSTALLMENT' : 'SINGLE'),
-        creditCardInstallmentNumber: tx.creditCardInstallmentNumber || 1,
-        creditCardTotalInstallments: tx.creditCardTotalInstallments || 1,
-        creditCardPurchaseDate: tx.creditCardPurchaseDate || tx.date || todayLocal(),
-        creditCardForecastAnchorDate: tx.creditCardForecastAnchorDate
-          || (tx.creditCardBillForecastDate
-            ? String(tx.creditCardBillForecastDate).slice(0, 7) + '-01'
-            : (tx.creditCardBillPostDate
-              || (bills.find(bill => bill.id === tx.billId)?.referenceMonth
-                ? bills.find(bill => bill.id === tx.billId).referenceMonth + '-01'
-                : (tx.date || tx.creditCardPurchaseDate || todayLocal())))),
-        creditCardForecastAmount: (Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0) / 100).toFixed(2),
-        creditCardPlanConfiguredManually: tx.creditCardPlanConfiguredManually === true,
-        creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0),
-        creditCardBillPostDate: tx.creditCardBillPostDate || '',
+        creditCardPaymentType: tx.creditCardPaymentType || null,
+        creditCardInstallmentNumber: tx.creditCardInstallmentNumber ?? null,
+        creditCardTotalInstallments: tx.creditCardTotalInstallments ?? null,
+        creditCardPurchaseDate: tx.creditCardPurchaseDate || null,
+        creditCardBillPostDate: tx.creditCardBillPostDate || null,
       }
     });
   };
@@ -1203,28 +944,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!tx?.id) return;
     const description = data.description?.trim() || tx.description || '';
     const merchant = data.merchant?.trim() || tx.merchant || description;
-    const paymentType = String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT'
-      ? 'INSTALLMENT'
-      : 'SINGLE';
-    const installmentNumber = Math.min(48, Math.max(1, Number(data.creditCardInstallmentNumber || 1)));
-    const totalInstallments = Math.min(48, Math.max(1, Number(data.creditCardTotalInstallments || 1)));
-    if (paymentType === 'INSTALLMENT' && totalInstallments < installmentNumber) {
-      throw new Error('A quantidade total de parcelas não pode ser menor que a parcela atual.');
-    }
-
-    const nextForecastAmountCents = Math.abs(toCents(data.creditCardForecastAmount ?? (Number(tx.amountCents || 0) / 100)));
-    if (paymentType === 'INSTALLMENT' && totalInstallments > installmentNumber && nextForecastAmountCents <= 0) {
-      throw new Error('Informe um valor válido para as próximas parcelas.');
-    }
-
-    const planChanged =
-      paymentType !== String(tx.creditCardPaymentType || 'SINGLE').toUpperCase()
-      || installmentNumber !== Number(tx.creditCardInstallmentNumber || 1)
-      || totalInstallments !== Number(tx.creditCardTotalInstallments || 1)
-      || nextForecastAmountCents !== Number(tx.creditCardForecastAmountCents ?? tx.amountCents ?? 0)
-      || String(data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || '') !== String(tx.creditCardPurchaseDate || tx.date || '')
-      || String(data.creditCardForecastAnchorDate || '') !== String(tx.creditCardForecastAnchorDate || '');
-
     const changes = {
       description,
       merchant,
@@ -1233,31 +952,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       categoryId: data.categoryId || tx.categoryId || null,
       projectId: data.projectId || tx.projectId || null,
       clientId: data.clientId || tx.clientId || null,
-      creditCardPaymentType: paymentType,
-      creditCardInstallmentNumber: installmentNumber,
-      creditCardTotalInstallments: totalInstallments,
-      creditCardPurchaseDate: data.creditCardPurchaseDate || tx.creditCardPurchaseDate || tx.date || null,
-      creditCardForecastAnchorDate: data.creditCardForecastAnchorDate || tx.creditCardForecastAnchorDate || null,
-      creditCardForecastAmountCents: nextForecastAmountCents || Number(tx.amountCents || 0),
-      creditCardPlanConfiguredManually: planChanged || tx.creditCardPlanConfiguredManually === true,
-      creditCardForecastPlanVersion: Number(tx.creditCardForecastPlanVersion || 0) + (planChanged ? 1 : 0),
-      creditCardForecastDescription: description,
-      creditCardForecastMerchant: merchant,
       updatedAt: serverTimestamp(),
     };
-
     await updateDoc(docPath(db, 'financial_transactions', tx.id), changes);
-
-    // Persist the source transaction first, then rebuild forecasts from the
-    // just-saved values instead of relying on a later React snapshot.
-    try {
-      const nextTransaction = { ...tx, ...changes };
-      const nextTransactions = transactions.map(item => item.id === tx.id ? nextTransaction : item);
-      return await rebuildInstallmentForecasts(nextTransactions);
-    } catch (error) {
-      console.error('Falha ao gerar as faturas previstas após salvar o parcelamento', error);
-      return { forecastError: error?.message || 'Falha ao gravar as faturas previstas.' };
-    }
   };
 
   const updateTransaction = async (data) => {
@@ -1301,13 +998,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     try {
       if (isCreditCardTransaction(tx)) {
         try {
-          const forecastResult = await updateCreditCardTransactionDetails(tx, data);
+          await updateCreditCardTransactionDetails(tx, data);
           setModal(null);
-          if (forecastResult?.forecastError) {
-            setNotice(`Lançamento salvo, mas as faturas previstas não foram geradas: ${forecastResult.forecastError}`);
-          } else {
-            setNotice(`Parcelamento salvo. ${forecastResult?.futureBills || 0} fatura(s) prevista(s) atualizada(s), com ${forecastResult?.plannedItems || 0} parcela(s)/ajuste(s) futuro(s).`);
-          }
+          setNotice('Dados do lançamento do cartão atualizados. O ArquiManager não estima nem cria parcelas futuras.');
         } catch (error) {
           setNotice(error.message || 'Não foi possível atualizar o lançamento do cartão.');
         }
@@ -2222,7 +1915,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               {days.map((day, idx) => {
                 const dayTx = day ? monthTransactions.filter(t => (t.date || '') === day) : [];
                 const dayPlanned = day ? plannedEvents.filter(t => (t.date || '') === day && t.kind !== 'CARD_BILL') : [];
-                const dayBills = day ? bills.filter(b => (b.dueDate || '') === day) : [];
+                const dayBills = day ? bills.filter(b => isOfficialBill(b) && (b.officialDueDate || b.dueDate || '') === day) : [];
                 const dayProjection = day ? projection.byDate[day] : null;
                 const actualIncome = dayTx.filter(t => t.type === 'INCOME' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
                 const actualExpense = dayTx.filter(t => t.type === 'EXPENSE' && hasCashImpact(t)).reduce((s,t)=>s+Number(t.amountCents||0),0);
@@ -2607,7 +2300,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {cards.map(card => {
-                const openBills = bills.filter(b => b.cardId === card.id && b.status !== 'PAID' && Number(b.totalCents || 0) > Number(b.paidCents || 0));
+                const openBills = bills.filter(b => isOfficialBill(b) && hasOfficialBillTotal(b) && b.cardId === card.id && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0));
                 const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
@@ -2640,27 +2333,42 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
           <Card className="p-5">
             <div className="flex items-center justify-between gap-3 mb-4">
-              <div><h4 className="font-black text-xl text-slate-800">Faturas</h4><p className="text-xs text-slate-400">As parcelas entram na fatura; o caixa só muda no pagamento.</p></div>
-              <span className="text-[10px] font-black uppercase text-slate-400">{bills.length} fatura(s)</span>
+              <div><h4 className="font-black text-xl text-slate-800">Faturas</h4><p className="text-xs text-slate-400">Totais oficiais e lançamentos importados diretamente da Pluggy.</p></div>
+              <span className="text-[10px] font-black uppercase text-slate-400">{bills.filter(isOfficialBill).length} fatura(s) oficial(is)</span>
             </div>
             <div className="space-y-2">
               {bills
-                .filter(b => !(
-                  b.source === 'ARQUIMANAGER_FORECAST'
-                  && Number(b.forecastTotalCents || 0) === 0
-                  && !(Array.isArray(b.forecastItems) ? b.forecastItems : []).some(item => item.excluded !== true)
-                ))
+                .filter(isOfficialBill)
                 .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
                 .map(b => {
-                const card = cards.find(c=>c.id===b.cardId);
-                const remaining = Math.max(0, Number(b.totalCents||0) - Number(b.paidCents||0));
-                const paid = remaining === 0 && Number(b.totalCents||0) > 0;
+                const card = cards.find(c=>c.id===b.cardId) || {};
+                const totalAvailable = hasOfficialBillTotal(b);
+                const officialTotal = Number(b.officialTotalCents ?? b.totalCents ?? 0);
+                const paidCents = Number(b.paidCents || 0);
+                const remaining = Math.max(0, officialTotal - paidCents);
+                const paid = remaining === 0 && officialTotal > 0;
+                const billTransactions = getBillTransactions(b, card, transactions);
+                const transactionTotal = getBillTransactionsTotalCents(billTransactions);
+                const valuesMatch = totalAvailable && officialTotal === transactionTotal;
+                const manuallyConfirmed = b.reconciliationStatus === 'MATCHED_MANUAL'
+                  && Number(b.reconciledAgainstOfficialTotalCents) === officialTotal
+                  && Number(b.reconciledAgainstTransactionsTotalCents) === transactionTotal
+                  && Number(b.reconciledTransactionCount) === billTransactions.length
+                  && b.reconciledTransactionsSignature === getBillTransactionsSignature(billTransactions);
+                const statusLabel = !totalAvailable
+                  ? 'total oficial indisponível'
+                  : manuallyConfirmed ? 'conciliada' : valuesMatch ? 'conferir conciliação' : 'não conciliada';
+                const statusClass = !totalAvailable
+                  ? 'bg-amber-100 text-amber-700'
+                  : manuallyConfirmed
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : valuesMatch ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700';
                 return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p>{b.provisional && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">prevista</span>}{b.reconciliationStatus === 'NEEDS_REVIEW' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">não conciliada</span>}{b.reconciliationStatus === 'MATCHED_AUTO' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">conferência manual</span>}{b.reconciliationStatus === 'READY_FOR_MANUAL' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">conferir</span>}{b.reconciliationStatus === 'MATCHED_MANUAL' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliada</span>}</div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.forecastClosingDate || b.closingDate)} · Vencimento {dateLabel(b.forecastDueDate || b.dueDate)} · {b.providerBillId || b.source === 'PLUGGY_REBUILT' || b.provider === 'PLUGGY' && !b.provisional ? 'sincronizada' : 'prevista/local'}</p></div>
-                  <div className="text-right"><p className="font-black text-slate-800">{formatBRL(b.totalCents)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy</p></div>
+                  <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                 </button>;
               })}
-              {!bills.length && <EmptyState text="As faturas aparecerão aqui quando você lançar compras no cartão."/>}
+              {!bills.some(isOfficialBill) && <EmptyState text="As faturas oficiais aparecerão aqui quando forem recebidas pela Pluggy."/>}
             </div>
           </Card>
         </div>
@@ -2677,13 +2385,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         card={cards.find(item => item.id === bills.find(bill => bill.id === modal.billId)?.cardId)}
         transactions={transactions}
         categories={categories}
-        representedIntermediateTransactionIds={representedIntermediateTransactionIds}
         onEditTransaction={openEditTransaction}
-        onUpdateForecastItem={updateForecastItem}
-        onAddForecastItem={addForecastItem}
-        onDeleteForecastItem={deleteForecastItem}
-        onUpdateForecastBillDates={updateForecastBillDates}
-        onManualReconcile={manuallyReconcileForecastBill}
+        onManualReconcile={manuallyReconcileBill}
         busy={busy}
         onClose={() => setModal(null)}
       />}
@@ -2905,11 +2608,11 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
             <select value={billId} onChange={e=>setBillId(e.target.value)} className="p-2.5 bg-white border border-amber-200 rounded-xl text-xs font-bold">
               <option value="">Escolha a fatura...</option>
               {[...bills]
-                .filter(b => b.status !== 'PAID' && Number(b.totalCents || 0) > Number(b.paidCents || 0))
+                .filter(b => isOfficialBill(b) && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0))
                 .sort((a,b)=>String(a.dueDate||'').localeCompare(String(b.dueDate||'')))
                 .map(b => {
                   const card = cards.find(c=>c.id===b.cardId);
-                  const remaining = Number(b.totalCents || 0) - Number(b.paidCents || 0);
+                  const remaining = Number(b.officialTotalCents ?? b.totalCents ?? 0) - Number(b.paidCents || 0);
                   return <option key={b.id} value={b.id}>{card?.name || 'Cartão'} · {b.referenceMonth} · {formatBRL(remaining)} restante</option>;
                 })}
             </select>
@@ -2972,120 +2675,47 @@ function BillDetailsModal({
   card,
   transactions: allTransactions,
   categories,
-  representedIntermediateTransactionIds = new Set(),
   onEditTransaction,
-  onUpdateForecastItem,
-  onAddForecastItem,
-  onDeleteForecastItem,
-  onUpdateForecastBillDates,
   onManualReconcile,
   busy = false,
   onClose,
 }) {
-  const [editingForecastItemId, setEditingForecastItemId] = useState('');
-  const [forecastItemDraft, setForecastItemDraft] = useState({ description: '', amount: '' });
-  const [newForecastDraft, setNewForecastDraft] = useState({ description: '', amount: '' });
-  const [forecastDates, setForecastDates] = useState({ closingDate: '', dueDate: '' });
-
-  useEffect(() => {
-    setForecastDates({
-      closingDate: bill?.forecastClosingDate || bill?.closingDate || '',
-      dueDate: bill?.forecastDueDate || bill?.dueDate || '',
-    });
-  }, [bill?.id, bill?.forecastClosingDate, bill?.forecastDueDate, bill?.closingDate, bill?.dueDate]);
-
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
 
-  const providerBillId = String(bill.providerBillId || '').trim();
-  const isTransactionForThisBill = (tx = {}) => {
-    if (!isCreditCardTransaction(tx)) return false;
-
-    // Associação forte: id local da fatura.
-    if (tx.billId === bill.id) return true;
-
-    // Compatibilidade com registros que guardaram o id da fatura
-    // diretamente da Pluggy, em vez do id local do ArquiManager.
-    const txProviderBillId = String(
-      tx.providerBillId
-      || tx.creditCardBillId
-      || tx.providerRawData?.creditCardMetadata?.billId
-      || tx.providerRawData?.billId
-      || ''
-    ).trim();
-    if (providerBillId && txProviderBillId === providerBillId) return true;
-
-    const sameCard =
-      tx.cardId === card?.id
-      || tx.accountId === card?.id
-      || tx.providerAccountId === card?.providerAccountId;
-
-    if (!sameCard) return false;
-
-    // Antes da fatura oficial existir, a Pluggy pode informar somente a
-    // previsão do ciclo. Esse vínculo também deve continuar abrindo a linha
-    // correta da fatura depois que ela for sincronizada.
-    const forecastDate =
-      tx.creditCardBillForecastDate
-      || tx.providerRawData?.creditCardMetadata?.billForecastDate
-      || tx.providerRawData?.billForecastDate
-      || '';
-    if (monthFromIso(syncDateOnly(forecastDate)) === monthFromIso(bill.referenceMonth)) return true;
-
-    // Último fallback para projeções/lançamentos antigos que só possuem a
-    // data da compra e a referência mensal da fatura.
-    if (
-      bill.provisional
-      && !providerBillId
-      && monthFromIso(tx.creditCardPurchaseDate || tx.date) === monthFromIso(bill.referenceMonth)
-    ) {
-      return true;
-    }
-
-    return false;
-  };
-
-  const sortedTransactions = (Array.isArray(allTransactions) ? allTransactions : [])
-    .filter(isTransactionForThisBill)
-    .filter(tx => !representedIntermediateTransactionIds.has(String(tx.id)))
-    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-
-  const total = Number(bill.totalCents || 0);
+  const sortedTransactions = getBillTransactions(bill, card, allTransactions);
+  const total = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
   const paid = Number(bill.paidCents || 0);
   const remaining = Math.max(0, total - paid);
-  const status = bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.dueDate, provisional: bill.provisional });
+  const status = bill.status || billStatusFromValues({ totalCents: total, paidCents: paid, dueDate: bill.officialDueDate || bill.dueDate, provisional: false });
   const statusLabel = status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
-  const visibleForecastItems = (Array.isArray(bill.forecastItems) ? bill.forecastItems : [])
-    .filter(item => item?.excluded !== true)
-    .sort((a, b) => {
-      const monthDiff = String(a.dueDate || bill.forecastDueDate || '').localeCompare(String(b.dueDate || bill.forecastDueDate || ''));
-      if (monthDiff) return monthDiff;
-      return Number(a.installmentNumber || 0) - Number(b.installmentNumber || 0);
-    });
-  const forecastTotalCents = Number(bill.forecastTotalCents ?? visibleForecastItems.reduce((sum, item) => sum + Number(item.amountCents || 0), 0));
-  const hasOfficialBill = Boolean(bill.providerBillId || bill.officialTotalCents != null);
-  const officialTotalCents = Number(bill.officialTotalCents ?? (hasOfficialBill ? bill.totalCents : 0));
-  const officialDueDate = String(bill.officialDueDate || (hasOfficialBill ? bill.dueDate : '') || '').slice(0, 10);
-  const forecastDueDate = String(bill.forecastDueDate || (bill.provisional ? bill.dueDate : '') || '').slice(0, 10);
-  const estimatedBillTotalCents = forecastTotalCents + Number(bill.registeredTransactionsTotalCents || 0);
-  const amountsMatch = hasOfficialBill && officialTotalCents === estimatedBillTotalCents;
-  const datesMatch = hasOfficialBill && Boolean(officialDueDate && forecastDueDate && officialDueDate === forecastDueDate);
-  const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && bill.reconciliationStatus !== 'MATCHED_MANUAL';
-  const reconciliationStatusLabel = bill.reconciliationStatus === 'MATCHED_MANUAL'
-    ? 'Conciliada manualmente'
-    : bill.reconciliationStatus === 'MATCHED_AUTO'
-      ? 'Conferência manual obrigatória'
-      : bill.reconciliationStatus === 'READY_FOR_MANUAL'
-        ? 'Valores conferem · confirme a conciliação'
-        : bill.reconciliationStatus === 'NEEDS_REVIEW'
-          ? 'Não conciliada · confira os lançamentos'
-          : 'Aguardando conferência manual';
-  const reconciliationTone = bill.reconciliationStatus === 'MATCHED_MANUAL'
-    ? 'bg-emerald-100 text-emerald-700'
-    : bill.reconciliationStatus === 'READY_FOR_MANUAL'
-      ? 'bg-blue-100 text-blue-700'
-      : bill.reconciliationStatus === 'NEEDS_REVIEW'
-        ? 'bg-red-100 text-red-700'
-        : 'bg-amber-100 text-amber-700';
+  const hasOfficialBill = isOfficialBill(bill);
+  const totalAvailable = hasOfficialBillTotal(bill);
+  const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
+  const registeredTotalCents = getBillTransactionsTotalCents(sortedTransactions);
+  const transactionsSignature = getBillTransactionsSignature(sortedTransactions);
+  const amountsMatch = hasOfficialBill && totalAvailable && officialTotalCents === registeredTotalCents;
+  const manuallyConfirmedCurrent = bill.reconciliationStatus === 'MATCHED_MANUAL'
+    && Number(bill.reconciledAgainstOfficialTotalCents) === officialTotalCents
+    && Number(bill.reconciledAgainstTransactionsTotalCents) === registeredTotalCents
+    && Number(bill.reconciledTransactionCount) === sortedTransactions.length
+    && bill.reconciledTransactionsSignature === transactionsSignature;
+  const reconciliationStatusLabel = !hasOfficialBill
+    ? 'Aguardando fatura oficial'
+    : !totalAvailable
+      ? 'Total oficial não informado pela Pluggy'
+      : manuallyConfirmedCurrent
+      ? 'Conciliada manualmente'
+      : amountsMatch
+        ? 'Valores conferem · confirme a conciliação manual'
+        : 'Não conciliada · a soma dos lançamentos difere do total oficial';
+  const reconciliationTone = !hasOfficialBill || !totalAvailable
+    ? 'bg-amber-100 text-amber-700'
+    : manuallyConfirmedCurrent
+      ? 'bg-emerald-100 text-emerald-700'
+      : amountsMatch
+        ? 'bg-blue-100 text-blue-700'
+        : 'bg-red-100 text-red-700';
+  const canManualReconcile = hasOfficialBill && totalAvailable && amountsMatch && !manuallyConfirmedCurrent;
 
   return (
     <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>
@@ -3096,88 +2726,55 @@ function BillDetailsModal({
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-lg font-black text-slate-800">{card?.institution || 'Instituição financeira'}</p>
                 {card?.brand && <span className="text-[10px] font-black uppercase text-slate-500">{card.brand}</span>}
-                {bill.provisional && <span className="text-[9px] font-black uppercase px-2 py-1 rounded-lg bg-blue-100 text-blue-700">Fatura estimada</span>}
+
               </div>
               <p className="text-xs text-slate-500 mt-1">{card?.name || 'Cartão'} · referência {bill.referenceMonth || '—'}</p>
-              <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.closingDate)} · vencimento {dateLabel(bill.dueDate)}</p>
+              <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.officialClosingDate || bill.closingDate)} · vencimento {dateLabel(bill.officialDueDate || bill.dueDate)}</p>
             </div>
             <span className={`text-xs font-black uppercase px-3 py-2 rounded-xl ${status === 'PAID' ? 'bg-emerald-100 text-emerald-700' : status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{statusLabel}</span>
           </div>
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Metric label="Total" value={formatBRL(total)} icon={<WalletCards size={16}/>} tone="slate"/>
+          <Metric label="Total oficial" value={formatBRL(total)} icon={<WalletCards size={16}/>} tone="slate"/>
           <Metric label="Pago" value={formatBRL(paid)} icon={<Check size={16}/>} tone="green"/>
           <Metric label="Restante" value={formatBRL(remaining)} icon={<CircleAlert size={16}/>} tone={remaining > 0 ? 'red' : 'green'}/>
           <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
         </div>
 
-        {bill.forecastManaged && (
+        {hasOfficialBill && (
           <div className="border border-slate-200 rounded-2xl p-4 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h4 className="font-black text-slate-800">Conciliação da fatura</h4>
-                <p className="text-[10px] text-slate-400 mt-1">A previsão é mantida separada dos valores oficiais recebidos do banco.</p>
+                <h4 className="font-black text-slate-800">Conferência da fatura</h4>
+                <p className="text-[10px] text-slate-500 mt-1">A conciliação considera apenas lançamentos efetivamente importados da API Pluggy. Nenhuma diferença será preenchida com previsões ou parcelas estimadas.</p>
               </div>
               <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-lg ${reconciliationTone}`}>{reconciliationStatusLabel}</span>
             </div>
-
-            <div className="grid sm:grid-cols-2 gap-3">
-              <div className="p-3 rounded-xl bg-blue-50 border border-blue-100">
-                <p className="text-[10px] font-black uppercase tracking-wide text-blue-700">Estimativa total do ArquiManager</p>
-                <p className="text-xl font-black text-blue-900 mt-1">{formatBRL(forecastTotalCents + Number(bill.registeredTransactionsTotalCents || 0))}</p>
-                <p className="text-[10px] text-blue-700 mt-1">Vencimento: {dateLabel(forecastDueDate)}</p>
-                <p className="text-[10px] text-blue-700 mt-1">Já registrados: {formatBRL(Number(bill.registeredTransactionsTotalCents || 0))} · Ainda previstos: {formatBRL(forecastTotalCents)}</p>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 1 · Total oficial da Pluggy</p>
+                <p className="text-xl font-black text-slate-800 mt-1">{totalAvailable ? formatBRL(officialTotalCents) : 'Não informado'}</p>
               </div>
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Fatura oficial do banco</p>
-                <p className="text-xl font-black text-slate-800 mt-1">{hasOfficialBill ? formatBRL(officialTotalCents) : 'Aguardando'}</p>
-                <p className="text-[10px] text-slate-500 mt-1">Vencimento: {hasOfficialBill ? dateLabel(officialDueDate) : 'Ainda não disponibilizado'}</p>
+                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 2 · Lançamentos encontrados</p>
+                <p className="text-xl font-black text-slate-800 mt-1">{sortedTransactions.length} lançamento(s)</p>
+                <p className="text-[10px] text-slate-500 mt-1">Soma importada: {formatBRL(registeredTotalCents)}</p>
               </div>
-            </div>
-
-            {hasOfficialBill && (
-              <div className={`p-3 rounded-xl border text-xs ${amountsMatch && datesMatch ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-red-50 border-red-100 text-red-800'}`}>
-                {amountsMatch && datesMatch
-                  ? 'Valor e vencimento conferem com a fatura oficial.'
-                  : `Diferença de total: ${formatBRL(officialTotalCents - estimatedBillTotalCents)} · ${datesMatch ? 'vencimento igual' : 'vencimentos diferentes'}.`}
+              <div className={`p-3 rounded-xl border ${amountsMatch ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
+                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 3 · Comparação</p>
+                <p className={`text-sm font-black mt-2 ${amountsMatch ? 'text-emerald-800' : 'text-red-800'}`}>{!totalAvailable ? 'Total oficial ausente' : amountsMatch ? 'Os totais conferem' : 'Os totais não conferem'}</p>
+                <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(officialTotalCents - registeredTotalCents) : '—'}</p>
               </div>
-            )}
-
-            <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Fechamento previsto">
-                <input type="date" value={forecastDates.closingDate || ''} onChange={event => setForecastDates(prev => ({ ...prev, closingDate: event.target.value }))} className={inputCls}/>
-              </Field>
-              <Field label="Vencimento previsto">
-                <input type="date" value={forecastDates.dueDate || ''} onChange={event => setForecastDates(prev => ({ ...prev, dueDate: event.target.value }))} className={inputCls}/>
-              </Field>
             </div>
             <div className="flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                disabled={busy || !forecastDates.closingDate || !forecastDates.dueDate}
-                onClick={() => onUpdateForecastBillDates(bill.id, { forecastClosingDate: forecastDates.closingDate, forecastDueDate: forecastDates.dueDate })}
-                className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-black disabled:opacity-50"
-              >
-                Salvar datas previstas
-              </button>
               {canManualReconcile && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onManualReconcile(bill.id)}
-                  className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50"
-                >
+                <button type="button" disabled={busy} onClick={() => onManualReconcile(bill.id)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50">
                   Confirmar conciliação manual
                 </button>
               )}
+              {!amountsMatch && <p className="text-xs text-red-700 self-center">A fatura permanece não conciliada. Nenhum lançamento será criado automaticamente.</p>}
             </div>
-          </div>
-        )}
-
-        {bill.provisional && (
-          <div className="p-3 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-800">
-            Esta fatura é uma <strong>projeção do ArquiManager</strong>. Ela será atualizada para uma fatura oficial quando a instituição disponibilizar o ciclo pela Pluggy.
           </div>
         )}
 
@@ -3208,8 +2805,8 @@ function BillDetailsModal({
 
         <div className="border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <div><h4 className="font-black text-slate-800">Lançamentos registrados</h4><p className="text-[10px] text-slate-400">Movimentações já registradas no ArquiManager, incluindo as sincronizadas da Pluggy · {sortedTransactions.length} item(ns)</p></div>
-            <span className="text-[10px] font-black text-slate-400">{formatBRL(sortedTransactions.reduce((sum, tx) => sum + (tx.type === 'INCOME' ? -Number(tx.amountCents || 0) : Number(tx.amountCents || 0)), 0))}</span>
+            <div><h4 className="font-black text-slate-800">Lançamentos retornados pela Pluggy</h4><p className="text-[10px] text-slate-400">Somente movimentações da API vinculadas a esta fatura · {sortedTransactions.length} item(ns)</p></div>
+            <span className="text-[10px] text-slate-400">Soma: <strong className="text-slate-700">{formatBRL(registeredTotalCents)}</strong></span>
           </div>
           <div className="divide-y divide-slate-100">
             {sortedTransactions.map(tx => {
@@ -3225,7 +2822,7 @@ function BillDetailsModal({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`font-black text-sm ${tx.type === 'INCOME' ? 'text-emerald-600' : 'text-red-600'}`}>{tx.type === 'INCOME' ? '+' : '-'}{formatBRL(tx.amountCents)}</span>
-                    <button type="button" onClick={() => onEditTransaction(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Reclassificar / editar parcelamento">
+                    <button type="button" onClick={() => onEditTransaction(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Reclassificar lançamento">
                       <Pencil size={15}/>
                     </button>
                   </div>
@@ -3235,79 +2832,6 @@ function BillDetailsModal({
             {!sortedTransactions.length && <div className="p-8"><EmptyState text="Nenhum lançamento vinculado a esta fatura ainda."/></div>}
           </div>
         </div>
-
-        {bill.forecastManaged && (
-          <div className="border border-indigo-100 rounded-2xl overflow-hidden">
-            <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <h4 className="font-black text-indigo-900">Lançamentos previstos</h4>
-                <p className="text-[10px] text-indigo-700">{visibleForecastItems.length} item(ns) · a primeira parcela gera as futuras. Parcelas intermediárias ficam representadas nesta lista, sem criar lançamentos duplicados; compras à vista permanecem nos lançamentos registrados.</p>
-              </div>
-              <span className="text-sm font-black text-indigo-900">{formatBRL(forecastTotalCents)}</span>
-            </div>
-            <div className="divide-y divide-indigo-50">
-              {visibleForecastItems.map(item => {
-                const editing = editingForecastItemId === item.id;
-                const isInstallment = item.kind === 'INSTALLMENT_FORECAST';
-                return (
-                  <div key={item.id} className="p-4">
-                    {editing ? (
-                      <div className="grid sm:grid-cols-[minmax(0,1fr)_150px_auto] gap-2 items-end">
-                        <Field label="Descrição do lançamento">
-                          <input value={forecastItemDraft.description} onChange={event => setForecastItemDraft(prev => ({ ...prev, description: event.target.value }))} className={inputCls}/>
-                        </Field>
-                        <Field label="Valor previsto (R$)">
-                          <input type="number" step="0.01" value={forecastItemDraft.amount} onChange={event => setForecastItemDraft(prev => ({ ...prev, amount: event.target.value }))} className={inputCls}/>
-                        </Field>
-                        <div className="flex gap-1">
-                          <button type="button" disabled={busy} onClick={() => {
-                            onUpdateForecastItem(bill.id, item.id, { description: forecastItemDraft.description, amountCents: toCents(forecastItemDraft.amount) });
-                            setEditingForecastItemId('');
-                          }} className="px-3 py-2.5 rounded-lg bg-emerald-600 text-white text-xs font-black disabled:opacity-50">Salvar</button>
-                          <button type="button" onClick={() => setEditingForecastItemId('')} className="px-3 py-2.5 rounded-lg border text-xs font-bold">Cancelar</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-bold text-slate-800 break-words">{item.description || 'Lançamento previsto'}</p>
-                            {isInstallment && <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[9px] font-black">Parcela {item.installmentNumber}/{item.totalInstallments}</span>}
-                            {!isInstallment && <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[9px] font-black">Ajuste manual</span>}
-                            {item.manualOverride && <span className="text-[9px] text-amber-700 font-bold">Editado manualmente</span>}
-                          </div>
-                          <p className="text-[10px] text-slate-400 mt-1">{item.merchant || item.description || 'Previsão'} · {item.expectedTransactionDate ? `data prevista ${dateLabel(item.expectedTransactionDate)}` : `ciclo ${bill.referenceMonth}`}</p>
-                        </div>
-                        <span className={`font-black text-sm ${Number(item.amountCents || 0) < 0 ? 'text-emerald-700' : 'text-slate-800'}`}>{formatBRL(item.amountCents)}</span>
-                        <div className="flex gap-1">
-                          <button type="button" disabled={busy} onClick={() => {
-                            setEditingForecastItemId(item.id);
-                            setForecastItemDraft({ description: item.description || '', amount: (Number(item.amountCents || 0) / 100).toFixed(2) });
-                          }} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50 disabled:opacity-50" title="Editar lançamento previsto"><Pencil size={14}/></button>
-                          <button type="button" disabled={busy} onClick={() => onDeleteForecastItem(bill.id, item.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50" title="Remover da previsão"><Trash2 size={14}/></button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {!visibleForecastItems.length && <div className="p-5 text-center text-xs text-slate-400">Nenhum lançamento previsto para este ciclo.</div>}
-            </div>
-            <form onSubmit={event => {
-              event.preventDefault();
-              onAddForecastItem(bill.id, newForecastDraft);
-              setNewForecastDraft({ description: '', amount: '' });
-            }} className="p-4 bg-slate-50 border-t border-slate-100 grid sm:grid-cols-[minmax(0,1fr)_150px_auto] gap-2 items-end">
-              <Field label="Adicionar lançamento / ajuste">
-                <input required value={newForecastDraft.description} onChange={event => setNewForecastDraft(prev => ({ ...prev, description: event.target.value }))} placeholder="Ex.: outra compra ou ajuste" className={inputCls}/>
-              </Field>
-              <Field label="Valor (R$)">
-                <input required type="number" step="0.01" value={newForecastDraft.amount} onChange={event => setNewForecastDraft(prev => ({ ...prev, amount: event.target.value }))} placeholder="Pode ser negativo" className={inputCls}/>
-              </Field>
-              <button type="submit" disabled={busy} className="px-4 py-2.5 rounded-xl bg-[#1e5aa0] text-white text-xs font-black disabled:opacity-50"><Plus size={14} className="inline mr-1"/>Adicionar</button>
-            </form>
-          </div>
-        )}
 
         <div className="flex justify-end">
           <button onClick={onClose} className="px-5 py-2.5 border rounded-xl text-xs font-bold">Fechar</button>
@@ -3336,40 +2860,20 @@ function TransactionModal({ initial, accounts, cards, categories, projects, clie
         <Field label="Descrição *"><input value={data.description||''} onChange={e=>update('description',e.target.value)} className={inputCls}/></Field>
         {creditCardEdit && (
           <div className="sm:col-span-2 p-4 rounded-2xl bg-blue-50 border border-blue-100">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div>
-                <p className="text-xs font-black uppercase tracking-wide text-blue-800">Cobrança no cartão</p>
-                <p className="text-[10px] text-blue-600 mt-0.5">Ajuste o parcelamento sem alterar o fato bancário original.</p>
-              </div>
+            <div className="flex items-center gap-3 mb-2">
               <WalletCards size={18} className="text-blue-700"/>
+              <p className="text-xs font-black uppercase tracking-wide text-blue-800">Dados do cartão</p>
             </div>
-            <Field label="Tipo de cobrança">
-              <select value={data.creditCardPaymentType || 'SINGLE'} onChange={e=>update('creditCardPaymentType',e.target.value)} className={inputCls}>
-                <option value="SINGLE">Crédito à vista</option>
-                <option value="INSTALLMENT">Compra parcelada</option>
-              </select>
-            </Field>
-            {String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT' && (
-              <div className="grid sm:grid-cols-2 gap-3 mt-3">
-                <Field label="Parcela atual">
-                  <input value={data.creditCardInstallmentNumber || 1} onChange={e=>update('creditCardInstallmentNumber',e.target.value)} type="number" min="1" max="48" className={inputCls}/>
-                </Field>
-                <Field label="Quantidade total de parcelas">
-                  <input value={data.creditCardTotalInstallments || 1} onChange={e=>update('creditCardTotalInstallments',e.target.value)} type="number" min="1" max="48" className={inputCls}/>
-                </Field>
-                <Field label="Valor das próximas parcelas (R$)">
-                  <input value={data.creditCardForecastAmount ?? data.amount ?? ''} onChange={e=>update('creditCardForecastAmount',e.target.value)} type="number" min="0.01" step="0.01" className={inputCls}/>
-                </Field>
-                <Field label="Data-base da parcela atual">
-                  <input value={data.creditCardForecastAnchorDate || data.date || todayLocal()} onChange={e=>update('creditCardForecastAnchorDate',e.target.value)} type="date" className={inputCls}/>
-                </Field>
-              </div>
-            )}
-            {String(data.creditCardPaymentType || 'SINGLE').toUpperCase() === 'INSTALLMENT' && Number(data.creditCardTotalInstallments || 1) > Number(data.creditCardInstallmentNumber || 1) && (
-              <p className="mt-3 text-[10px] font-bold text-blue-700">
-                Serão projetadas {Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)} parcelas futuras, totalizando {formatBRL(Math.max(0, Number(data.creditCardTotalInstallments || 1) - Number(data.creditCardInstallmentNumber || 1)) * Math.round((Number(data.creditCardForecastAmount ?? data.amount ?? 0) || 0) * 100))}. O valor oficial deste lançamento não será alterado.
-              </p>
-            )}
+            <p className="text-[10px] text-blue-700">O ArquiManager não estima nem cria parcelas futuras. As informações abaixo são apenas metadados do lançamento importado.</p>
+            <p className="text-xs font-bold text-slate-700 mt-2">
+              {String(data.creditCardPaymentType || '').toUpperCase() === 'INSTALLMENT'
+                ? (Number(data.creditCardInstallmentNumber || 0) > 0 && Number(data.creditCardTotalInstallments || 0) > 0
+                  ? `Parcela ${data.creditCardInstallmentNumber}/${data.creditCardTotalInstallments} informada pela Pluggy`
+                  : 'Compra parcelada informada pela Pluggy')
+                : String(data.creditCardPaymentType || '').toUpperCase() === 'SINGLE'
+                  ? 'Crédito à vista informado pela Pluggy'
+                  : 'Forma de cobrança não informada pela Pluggy'}
+            </p>
           </div>
         )}
         <Field label="Valor (R$) *">

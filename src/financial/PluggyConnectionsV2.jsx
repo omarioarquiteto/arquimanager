@@ -232,75 +232,6 @@ const merchantName = (transaction) =>
     || 'Movimentação bancária'
   ).trim();
 
-const shiftDateByMonths = (value, months = 0) => {
-  const iso = String(value || '').slice(0, 10);
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!match) return '';
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const firstOfTarget = new Date(year, month - 1 + Number(months || 0), 1);
-  const lastDay = new Date(firstOfTarget.getFullYear(), firstOfTarget.getMonth() + 1, 0).getDate();
-  return [
-    firstOfTarget.getFullYear(),
-    String(firstOfTarget.getMonth() + 1).padStart(2, '0'),
-    String(Math.min(day, lastDay)).padStart(2, '0'),
-  ].join('-');
-};
-
-const normalizeInstallmentDescription = (value = '') => String(value || '')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}(?:\s*[/-]\s*\d{1,2})?\b/g, ' ')
-  .replace(/\b\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
-  .replace(/[^a-z0-9]+/g, ' ')
-  .trim()
-  .replace(/\s+/g, ' ');
-
-const installmentPlanFor = (record = {}, cardId) => {
-  const raw = record?.providerRawData || record;
-  const metadata = raw?.creditCardMetadata || record?.creditCardMetadata || {};
-  const installmentNumber = Number(record?.creditCardInstallmentNumber ?? metadata.installmentNumber ?? 0);
-  const totalInstallments = Number(record?.creditCardTotalInstallments ?? metadata.totalInstallments ?? 0);
-  if (!cardId || installmentNumber < 1 || totalInstallments < 2 || installmentNumber > totalInstallments) return null;
-
-  const transactionDate = String(record?.date || raw?.date || '').slice(0, 10);
-  const explicitPurchaseDate = dateOnly(metadata.purchaseDate);
-  const inferredPurchaseDate = explicitPurchaseDate
-    || shiftDateByMonths(transactionDate, -(installmentNumber - 1))
-    || transactionDate;
-  const purchaseMonth = inferredPurchaseDate.slice(0, 7);
-  const purchaseAnchor = explicitPurchaseDate || purchaseMonth;
-  const purchaseId = String(
-    metadata.installmentPlanId
-    || metadata.installmentGroupId
-    || metadata.purchaseId
-    || metadata.originalTransactionId
-    || raw?.parentTransactionId
-    || ''
-  ).trim();
-  const description = normalizeInstallmentDescription(
-    record?.creditCardForecastMerchant
-    || (typeof record?.merchant === 'string' ? record.merchant : '')
-    || merchantName(raw)
-    || record?.description
-  );
-  if (!purchaseId && !description) return null;
-
-  const fallbackKey = description
-    ? `${cardId}|${description}|${purchaseAnchor}|${totalInstallments}`
-    : '';
-  return {
-    key: purchaseId
-      ? `${cardId}|${purchaseId}|${totalInstallments}`
-      : fallbackKey,
-    fallbackKey,
-    installmentNumber,
-    totalInstallments,
-  };
-};
-
 const billPaymentLike = (transaction) => {
   const text = normalizeText(
     String(transaction?.description || '') + ' ' + String(transaction?.operationType || '')
@@ -349,13 +280,10 @@ const makeTransactionPayload = ({
   const providerTotalInstallments = Number(cardMetadata.totalInstallments || 0);
   const providerPaymentTypeRaw = String(cardMetadata.paymentType || '').trim().toUpperCase();
   const providerPaymentType = ['INSTALLMENT', 'A_PRAZO', 'PARCELADO'].includes(providerPaymentTypeRaw)
-    || providerTotalInstallments > 1
     ? 'INSTALLMENT'
     : ['SINGLE', 'A_VISTA', 'AVISTA'].includes(providerPaymentTypeRaw)
       ? 'SINGLE'
       : null;
-  const manualInstallmentPlan = existing?.creditCardPlanConfiguredManually === true;
-
   const base = {
     companyId,
     source: PLUGGY_SOURCE,
@@ -388,35 +316,24 @@ const makeTransactionPayload = ({
     providerId: transaction?.providerId || null,
     providerCode: transaction?.providerCode || null,
     operationType: transaction?.operationType || null,
-    creditCardPaymentType: manualInstallmentPlan
-      ? (existing?.creditCardPaymentType || 'SINGLE')
-      : (providerPaymentType || existing?.creditCardPaymentType || 'SINGLE'),
-    creditCardInstallmentNumber: manualInstallmentPlan
-      ? Number(existing?.creditCardInstallmentNumber || 1)
-      : (providerInstallmentNumber || Number(existing?.creditCardInstallmentNumber || 1)),
-    creditCardTotalInstallments: manualInstallmentPlan
-      ? Number(existing?.creditCardTotalInstallments || 1)
-      : (providerTotalInstallments || Number(existing?.creditCardTotalInstallments || 1)),
-    creditCardPurchaseDate: manualInstallmentPlan
-      ? (existing?.creditCardPurchaseDate || dateOnly(transaction.date))
-      : (cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : (existing?.creditCardPurchaseDate || dateOnly(transaction.date))),
-    // billForecastDate is the most precise cycle anchor when present (YYYY-MM).
-    // billPostDate is an actual posting date and should be retained separately.
-    creditCardBillForecastDate: existing?.creditCardBillForecastDate
-      || (cardMetadata.billForecastDate ? String(cardMetadata.billForecastDate).slice(0, 7) : null)
-      || (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null)
-      || null,
-    creditCardBillPostDate: cardMetadata.billPostDate
-      ? dateOnly(cardMetadata.billPostDate)
-      : (existing?.creditCardBillPostDate || null),
-    creditCardTotalAmountCents: cardMetadata.totalAmount == null
-      ? (existing?.creditCardTotalAmountCents ?? null)
-      : toCents(cardMetadata.totalAmount),
-    creditCardForecastAmountCents: existing?.creditCardForecastAmountCents ?? amountCents,
-    creditCardForecastPlanVersion: Number(existing?.creditCardForecastPlanVersion || 0),
-    creditCardPlanConfiguredManually: manualInstallmentPlan,
-    creditCardForecastDescription: existing?.creditCardForecastDescription || null,
-    creditCardForecastMerchant: existing?.creditCardForecastMerchant || null,
+    creditCardPaymentType: providerPaymentType,
+    creditCardInstallmentNumber: providerInstallmentNumber || null,
+    creditCardTotalInstallments: providerTotalInstallments || null,
+    creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
+    // Keep only the cycle dates actually returned by the provider.
+    creditCardBillForecastDate: cardMetadata.billForecastDate
+      ? String(cardMetadata.billForecastDate).slice(0, 7)
+      : (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null),
+    creditCardBillPostDate: cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate) : null,
+    creditCardTotalAmountCents: cardMetadata.totalAmount == null ? null : toCents(cardMetadata.totalAmount),
+    // These fields are kept for schema compatibility but are not used to
+    // create future entries; future installments are never inferred.
+    creditCardForecastAmountCents: null,
+    creditCardForecastPlanVersion: 0,
+    creditCardPlanConfiguredManually: false,
+    creditCardForecastDescription: null,
+    creditCardForecastMerchant: null,
+    creditCardInstallmentHandledAsForecast: false,
     providerRawData: transaction,
     importedAt: existing?.importedAt || new Date().toISOString(),
     updatedAt: serverTimestamp(),
@@ -619,52 +536,6 @@ export default function PluggyConnectionsV2({
       });
     }
 
-    const firstInstallmentPlanKeys = new Set();
-    const installmentPlanRecords = [
-      ...existingTransactions
-        .filter(transaction => transaction.cardId)
-        .map(transaction => ({ record: transaction, cardId: transaction.cardId })),
-      ...creditTransactions.map(transaction => ({
-        record: transaction,
-        cardId: cardByAccount.get(transaction.accountId) || null,
-      })),
-    ];
-    installmentPlanRecords.forEach(({ record, cardId }) => {
-      const plan = installmentPlanFor(record, cardId);
-      if (plan?.installmentNumber === 1 && plan.totalInstallments > 1) {
-        firstInstallmentPlanKeys.add(plan.key);
-        if (plan.fallbackKey) firstInstallmentPlanKeys.add(plan.fallbackKey);
-      }
-    });
-
-    const handledIntermediateTransactionIds = new Set();
-    const incomingProviderTransactionIds = new Set(
-      creditTransactions.map(transaction => String(transaction?.id || '')).filter(Boolean)
-    );
-    existingTransactions.forEach(existing => {
-      const plan = installmentPlanFor(existing, existing.cardId);
-      if (
-        !plan
-        || plan.installmentNumber <= 1
-        || plan.installmentNumber >= plan.totalInstallments
-        || (!firstInstallmentPlanKeys.has(plan.key) && !firstInstallmentPlanKeys.has(plan.fallbackKey))
-      ) return;
-
-      handledIntermediateTransactionIds.add(String(existing.id));
-      // Marca o legado sem excluir o registro financeiro já armazenado.
-      // Se ele vier nesta mesma sincronização, o payload atualizado abaixo o marcará.
-      if (incomingProviderTransactionIds.has(String(existing.providerTransactionId || ''))) return;
-      operations.push({
-        collection: 'financial_transactions',
-        id: existing.id,
-        type: 'set',
-        data: {
-          creditCardInstallmentHandledAsForecast: true,
-          updatedAt: serverTimestamp(),
-        },
-      });
-    });
-
     const billByProviderId = new Map();
     for (const rawBill of rawBills) {
       if (!rawBill?.id || !rawBill?.accountId) continue;
@@ -679,7 +550,8 @@ export default function PluggyConnectionsV2({
       const billId = billIdFor(companyId, cardId, referenceMonth);
       billByProviderId.set(String(rawBill.id), billId);
 
-      const totalCents = Math.abs(toCents(rawBill.totalAmount));
+      const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';
+      const totalCents = hasOfficialTotal ? Math.abs(toCents(rawBill.totalAmount)) : 0;
       const paidCents = Array.isArray(rawBill.payments)
         ? rawBill.payments.reduce((sum, payment) => sum + Math.abs(toCents(payment?.amount)), 0)
         : 0;
@@ -700,7 +572,7 @@ export default function PluggyConnectionsV2({
           referenceMonth,
           closingDate: closingDate || null,
           dueDate: dueDate || null,
-          officialTotalCents: totalCents,
+          officialTotalCents: hasOfficialTotal ? totalCents : null,
           officialDueDate: dueDate || null,
           officialClosingDate: closingDate || null,
           officialSyncedAt: data.fetchedAt || new Date().toISOString(),
@@ -713,7 +585,7 @@ export default function PluggyConnectionsV2({
           payments: Array.isArray(rawBill.payments) ? rawBill.payments : [],
           providerRawData: rawBill,
           provisional: false,
-          status: statusForBill(totalCents, paidCents, dueDate),
+          status: hasOfficialTotal ? statusForBill(totalCents, paidCents, dueDate) : 'OPEN',
           updatedAt: serverTimestamp(),
         },
       });
@@ -753,42 +625,6 @@ export default function PluggyConnectionsV2({
       transactionIds.add(transactionId);
 
       const existing = existingById.get(transactionId) || null;
-      const installmentPlan = cardId ? installmentPlanFor(transaction, cardId) : null;
-      const isHandledIntermediateInstallment = Boolean(
-        installmentPlan
-        && installmentPlan.installmentNumber > 1
-        && installmentPlan.installmentNumber < installmentPlan.totalInstallments
-        && (
-          firstInstallmentPlanKeys.has(installmentPlan.key)
-          || firstInstallmentPlanKeys.has(installmentPlan.fallbackKey)
-        )
-      );
-
-      if (isHandledIntermediateInstallment) {
-        handledIntermediateTransactionIds.add(transactionId);
-        // Preserve prior records non-destructively, but represent this invoice
-        // line through the forecast generated by installment 01/N.
-        if (existing) {
-          const handledPayload = makeTransactionPayload({
-            companyId,
-            itemId,
-            accountId,
-            transaction,
-            existing,
-            cardId,
-            billId: localBillId,
-          });
-          handledPayload.creditCardInstallmentHandledAsForecast = true;
-          operations.push({
-            collection: 'financial_transactions',
-            id: transactionId,
-            type: 'set',
-            data: handledPayload,
-          });
-        }
-        continue;
-      }
-
       const payload = makeTransactionPayload({
         companyId,
         itemId,
@@ -798,8 +634,6 @@ export default function PluggyConnectionsV2({
         cardId,
         billId: localBillId,
       });
-      payload.creditCardInstallmentHandledAsForecast = false;
-
       if (!existing) {
         const rule = reconcileExactRule(ruleMap, payload.merchant);
         if (rule) {
@@ -828,10 +662,10 @@ export default function PluggyConnectionsV2({
       if (
         data.companyId === companyId
         && data.source === PLUGGY_SOURCE
-        && (transactionIds.has(data.transactionId) || handledIntermediateTransactionIds.has(String(data.transactionId)))
+        && transactionIds.has(data.transactionId)
       ) {
         const currentTransaction = existingById.get(data.transactionId);
-        if (currentTransaction?.status === 'CLASSIFIED' || handledIntermediateTransactionIds.has(data.transactionId)) {
+        if (currentTransaction?.status === 'CLASSIFIED') {
           inboxOperations.push({
             collection: 'financial_inbox',
             id: item.id,
@@ -863,7 +697,6 @@ export default function PluggyConnectionsV2({
 
       const transactionId = `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`;
       const current = existingById.get(transactionId);
-      if (handledIntermediateTransactionIds.has(transactionId)) continue;
       const isUnclassified = !current
         ? !reconcileExactRule(ruleMap, merchantName(transaction))
         : current.status === 'IDENTIFICATION_REQUIRED';

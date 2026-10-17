@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Landmark, Link2, RefreshCw, ShieldCheck, Trash2, XCircle, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Landmark, Link2, RefreshCw, ShieldCheck, Trash2, XCircle, AlertTriangle, CheckCircle2, Pencil, Check, X } from 'lucide-react';
 import {
   collection,
   doc,
@@ -395,6 +395,9 @@ export default function PluggyConnectionsV2({
   const [progress, setProgress] = useState(null);
   const [selectedForClear, setSelectedForClear] = useState(null);
   const [selectedForDelete, setSelectedForDelete] = useState(null);
+  const [renamingItemId, setRenamingItemId] = useState('');
+  const [connectionNameDraft, setConnectionNameDraft] = useState('');
+  const [renameBusyId, setRenameBusyId] = useState('');
   const widgetRef = useRef(null);
   const clientUserId = appUser?.id ? `arquimanager:${appUser.id}` : '';
 
@@ -1476,6 +1479,31 @@ export default function PluggyConnectionsV2({
     }
   };
 
+  const saveConnectionName = async (connection) => {
+    const displayName = String(connectionNameDraft || '').trim();
+    if (!displayName) {
+      setFailure('Informe um nome para a conexão bancária.');
+      return;
+    }
+
+    setRenameBusyId(connection.itemId);
+    setError('');
+    try {
+      const connectionDocumentId = connection.id || `${companyId}_${connection.itemId}`;
+      await updateDoc(refDoc(db, 'financial_connections', connectionDocumentId), {
+        displayName,
+        updatedAt: serverTimestamp(),
+      });
+      setRenamingItemId('');
+      setConnectionNameDraft('');
+      showNotice(`Conexão bancária renomeada para "${displayName}".`);
+    } catch (error) {
+      setFailure(error.message || 'Não foi possível renomear a conexão bancária.');
+    } finally {
+      setRenameBusyId('');
+    }
+  };
+
   const totalConnections = useMemo(() => connections.length, [connections]);
 
   return (
@@ -1538,8 +1566,31 @@ export default function PluggyConnectionsV2({
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="p-2 rounded-xl bg-blue-50 text-[#1e5aa0]"><Landmark size={18}/></div>
                     <div className="min-w-0">
-                      <p className="font-black text-slate-800 truncate">{connection.connectorName || 'Instituição financeira'}</p>
-                      <p className="text-[10px] text-slate-400 truncate">{connection.itemId}</p>
+                      {renamingItemId === connection.itemId ? (
+                        <div className="space-y-2">
+                          <input
+                            value={connectionNameDraft}
+                            onChange={event => setConnectionNameDraft(event.target.value)}
+                            onKeyDown={event => { if (event.key === 'Enter') saveConnectionName(connection); if (event.key === 'Escape') { setRenamingItemId(''); setConnectionNameDraft(''); } }}
+                            maxLength={80}
+                            autoFocus
+                            aria-label="Novo nome da conexão bancária"
+                            className="w-full min-w-0 px-2 py-1.5 border border-blue-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
+                          />
+                          <div className="flex gap-1">
+                            <button onClick={() => saveConnectionName(connection)} disabled={renameBusyId === connection.itemId} className="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-black flex items-center gap-1 disabled:opacity-50"><Check size={13}/> Salvar</button>
+                            <button onClick={() => { setRenamingItemId(''); setConnectionNameDraft(''); }} disabled={renameBusyId === connection.itemId} className="px-2 py-1 rounded-lg border border-slate-200 text-slate-500 text-[10px] font-black flex items-center gap-1 disabled:opacity-50"><X size={13}/> Cancelar</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-1 min-w-0">
+                            <p className="font-black text-slate-800 truncate">{connection.displayName || connection.connectorName || 'Instituição financeira'}</p>
+                            <button onClick={() => { setRenamingItemId(connection.itemId); setConnectionNameDraft(connection.displayName || connection.connectorName || ''); }} disabled={busyId !== '' || renameBusyId !== ''} className="p-1 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50 shrink-0" title="Renomear conexão bancária" aria-label="Renomear conexão bancária"><Pencil size={13}/></button>
+                          </div>
+                          <p className="text-[10px] text-slate-400 truncate">{connection.itemId}</p>
+                        </>
+                      )}
                     </div>
                   </div>
                   <span className="text-[9px] font-black uppercase px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700">

@@ -13,7 +13,7 @@ import {
   writeBatch,
   deleteDoc,
 } from 'firebase/firestore';
-import { createConnectToken, readItemData, revokeItem } from './pluggyV2Service.js';
+import { createConnectToken, readItemData } from './pluggyV2Service.js';
 
 const PLUGGY_WIDGET_SRC = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
 const PLUGGY_SOURCE = 'PLUGGY_REBUILT';
@@ -1370,8 +1370,7 @@ export default function PluggyConnectionsV2({
       ...(scope.syncRuns || []).map(item => ({ collection: 'financial_sync_runs', id: item.id, type: 'delete' })),
     ];
 
-    // Limpeza local preserva a conexão. A conexão só é apagada no fluxo
-    // explícito de revogação/exclusão.
+    // A limpeza local é limitada ao itemId selecionado e não altera a autorização remota.
     await batchWrite(db, deleteOps);
     return {
       transactions: scope.providerTransactions.length,
@@ -1384,7 +1383,7 @@ export default function PluggyConnectionsV2({
     };
   };
 
-  const clearConnection = async (connection, revokeRemote = false) => {
+  const clearConnection = async (connection, deleteConnection = false) => {
     if (!connection?.itemId) return;
 
     setError('');
@@ -1405,21 +1404,9 @@ export default function PluggyConnectionsV2({
         || scope.installments.length
       );
 
-      if (!revokeRemote && !hasLocalData) {
+      if (!deleteConnection && !hasLocalData) {
         showNotice(`Não existem dados sincronizados para ${connection.connectorName || 'este banco'}.`);
         return;
-      }
-
-      if (revokeRemote) {
-        setProgress({
-          percent: 20,
-          status: 'Revogando a autorização no Pluggy...',
-        });
-
-        await revokeItem({
-          itemId: connection.itemId,
-          clientUserId,
-        });
       }
 
       let summary = {
@@ -1431,14 +1418,14 @@ export default function PluggyConnectionsV2({
 
       if (hasLocalData) {
         setProgress({
-          percent: revokeRemote ? 40 : 25,
-          status: 'Removendo somente os dados deste banco...',
+          percent: deleteConnection ? 40 : 25,
+          status: 'Removendo somente os dados deste banco do ArquiManager...',
         });
 
         summary = await clearLocalData(scope);
       }
 
-      if (revokeRemote) {
+      if (deleteConnection) {
         await deleteDoc(
           refDoc(db, 'financial_connections', `${companyId}_${connection.itemId}`)
         );
@@ -1446,14 +1433,14 @@ export default function PluggyConnectionsV2({
 
       setProgress({
         percent: 100,
-        status: revokeRemote
-          ? 'Conexão excluída.'
+        status: deleteConnection
+          ? 'Conexão removida do ArquiManager.'
           : 'Dados sincronizados removidos.',
       });
 
       showNotice(
-        revokeRemote
-          ? `Conexão ${connection.connectorName || 'bancária'} removida e dados locais limpos.`
+        deleteConnection
+          ? `Conexão ${connection.connectorName || 'bancária'} removida do ArquiManager e dados locais limpos. A autorização na Pluggy permanece ativa.`
           : `Dados de ${connection.connectorName || 'este banco'} removidos: ${summary.transactions} lançamento(s), ${summary.bills} fatura(s), ${summary.cards} cartão(ões) e ${summary.accounts} conta(s).`
       );
 
@@ -1461,8 +1448,8 @@ export default function PluggyConnectionsV2({
     } catch (error) {
       setFailure(
         error.message
-          || (revokeRemote
-            ? 'Não foi possível excluir a conexão.'
+          || (deleteConnection
+            ? 'Não foi possível remover a conexão e os dados locais.'
             : 'Não foi possível limpar os dados sincronizados.')
       );
       setProgress(null);
@@ -1583,7 +1570,7 @@ export default function PluggyConnectionsV2({
                     className="col-span-2 px-3 py-2 rounded-xl border border-red-200 text-red-600 text-xs font-black flex items-center justify-center gap-1 hover:bg-red-50 disabled:opacity-50"
                   >
                     <XCircle size={14}/>
-                    Excluir conexão e revogar
+                    Excluir conexão e dados locais
                   </button>
                 </div>
 
@@ -1617,8 +1604,8 @@ export default function PluggyConnectionsV2({
 
                 {selectedForDelete?.itemId === connection.itemId && (
                   <div className="mt-3 p-3 rounded-xl bg-red-50 border border-red-200">
-                    <p className="text-xs font-black text-red-900">Excluir a conexão inteira?</p>
-                    <p className="text-[10px] text-red-700 mt-1">Isso limpa os dados locais e revoga o Item na Pluggy.</p>
+                    <p className="text-xs font-black text-red-900">Excluir a conexão e todos os dados locais?</p>
+                    <p className="text-[10px] text-red-700 mt-1">Remove contas, cartões, faturas e movimentações somente do ArquiManager. A autorização na Pluggy permanecerá ativa.</p>
                     <div className="mt-3 flex gap-2 justify-end">
                       <button
                         onClick={() => setSelectedForDelete(null)}

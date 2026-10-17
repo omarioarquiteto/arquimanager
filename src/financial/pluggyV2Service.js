@@ -49,11 +49,3 @@ export const readItemData = ({
   itemId,
   ...(clientUserId ? { clientUserId } : {}),
 }, { timeoutMs: 180_000 });
-
-export const revokeItem = ({
-  itemId,
-  clientUserId = null,
-}) => call('/.netlify/functions/pluggy-v2-delete-item', {
-  itemId,
-  ...(clientUserId ? { clientUserId } : {}),
-}, { timeoutMs: 60_000 });

@@ -631,6 +631,34 @@ export default function PluggyConnectionsV2({
       }
     });
 
+    const handledIntermediateTransactionIds = new Set();
+    const incomingProviderTransactionIds = new Set(
+      creditTransactions.map(transaction => String(transaction?.id || '')).filter(Boolean)
+    );
+    existingTransactions.forEach(existing => {
+      const plan = installmentPlanFor(existing, existing.cardId);
+      if (
+        !plan
+        || plan.installmentNumber <= 1
+        || plan.installmentNumber >= plan.totalInstallments
+        || !firstInstallmentPlanKeys.has(plan.key)
+      ) return;
+
+      handledIntermediateTransactionIds.add(String(existing.id));
+      // Marca o legado sem excluir o registro financeiro já armazenado.
+      // Se ele vier nesta mesma sincronização, o payload atualizado abaixo o marcará.
+      if (incomingProviderTransactionIds.has(String(existing.providerTransactionId || ''))) return;
+      operations.push({
+        collection: 'financial_transactions',
+        id: existing.id,
+        type: 'set',
+        data: {
+          creditCardInstallmentHandledAsForecast: true,
+          updatedAt: serverTimestamp(),
+        },
+      });
+    });
+
     const billByProviderId = new Map();
     for (const rawBill of rawBills) {
       if (!rawBill?.id || !rawBill?.accountId) continue;
@@ -699,7 +727,6 @@ export default function PluggyConnectionsV2({
     ];
 
     const transactionIds = new Set();
-    const handledIntermediateTransactionIds = new Set();
 
     for (const entry of allTx) {
       const transaction = entry.transaction;
@@ -792,7 +819,7 @@ export default function PluggyConnectionsV2({
       if (
         data.companyId === companyId
         && data.source === PLUGGY_SOURCE
-        && transactionIds.has(data.transactionId)
+        && (transactionIds.has(data.transactionId) || handledIntermediateTransactionIds.has(String(data.transactionId)))
       ) {
         const currentTransaction = existingById.get(data.transactionId);
         if (currentTransaction?.status === 'CLASSIFIED' || handledIntermediateTransactionIds.has(data.transactionId)) {

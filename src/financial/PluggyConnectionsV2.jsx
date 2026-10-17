@@ -285,8 +285,6 @@ const makeTransactionPayload = ({
     : ['SINGLE', 'A_VISTA', 'AVISTA'].includes(providerPaymentTypeRaw)
       ? 'SINGLE'
       : null;
-  const manualInstallmentPlan = existing?.creditCardPlanConfiguredManually === true;
-
   const base = {
     companyId,
     source: PLUGGY_SOURCE,
@@ -319,35 +317,24 @@ const makeTransactionPayload = ({
     providerId: transaction?.providerId || null,
     providerCode: transaction?.providerCode || null,
     operationType: transaction?.operationType || null,
-    creditCardPaymentType: manualInstallmentPlan
-      ? (existing?.creditCardPaymentType || 'SINGLE')
-      : (providerPaymentType || existing?.creditCardPaymentType || 'SINGLE'),
-    creditCardInstallmentNumber: manualInstallmentPlan
-      ? Number(existing?.creditCardInstallmentNumber || 1)
-      : (providerInstallmentNumber || Number(existing?.creditCardInstallmentNumber || 1)),
-    creditCardTotalInstallments: manualInstallmentPlan
-      ? Number(existing?.creditCardTotalInstallments || 1)
-      : (providerTotalInstallments || Number(existing?.creditCardTotalInstallments || 1)),
-    creditCardPurchaseDate: manualInstallmentPlan
-      ? (existing?.creditCardPurchaseDate || dateOnly(transaction.date))
-      : (cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : (existing?.creditCardPurchaseDate || dateOnly(transaction.date))),
-    // billForecastDate is the most precise cycle anchor when present (YYYY-MM).
-    // billPostDate is an actual posting date and should be retained separately.
-    creditCardBillForecastDate: existing?.creditCardBillForecastDate
-      || (cardMetadata.billForecastDate ? String(cardMetadata.billForecastDate).slice(0, 7) : null)
-      || (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null)
-      || null,
-    creditCardBillPostDate: cardMetadata.billPostDate
-      ? dateOnly(cardMetadata.billPostDate)
-      : (existing?.creditCardBillPostDate || null),
-    creditCardTotalAmountCents: cardMetadata.totalAmount == null
-      ? (existing?.creditCardTotalAmountCents ?? null)
-      : toCents(cardMetadata.totalAmount),
-    creditCardForecastAmountCents: existing?.creditCardForecastAmountCents ?? amountCents,
-    creditCardForecastPlanVersion: Number(existing?.creditCardForecastPlanVersion || 0),
-    creditCardPlanConfiguredManually: manualInstallmentPlan,
-    creditCardForecastDescription: existing?.creditCardForecastDescription || null,
-    creditCardForecastMerchant: existing?.creditCardForecastMerchant || null,
+    creditCardPaymentType: providerPaymentType,
+    creditCardInstallmentNumber: providerInstallmentNumber || null,
+    creditCardTotalInstallments: providerTotalInstallments || null,
+    creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
+    // Keep only the cycle dates actually returned by the provider.
+    creditCardBillForecastDate: cardMetadata.billForecastDate
+      ? String(cardMetadata.billForecastDate).slice(0, 7)
+      : (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null),
+    creditCardBillPostDate: cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate) : null,
+    creditCardTotalAmountCents: cardMetadata.totalAmount == null ? null : toCents(cardMetadata.totalAmount),
+    // These fields are kept for schema compatibility but are not used to
+    // create future entries; future installments are never inferred.
+    creditCardForecastAmountCents: null,
+    creditCardForecastPlanVersion: 0,
+    creditCardPlanConfiguredManually: false,
+    creditCardForecastDescription: null,
+    creditCardForecastMerchant: null,
+    creditCardInstallmentHandledAsForecast: false,
     providerRawData: transaction,
     importedAt: existing?.importedAt || new Date().toISOString(),
     updatedAt: serverTimestamp(),

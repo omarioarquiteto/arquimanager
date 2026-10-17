@@ -288,7 +288,9 @@ const installmentPlanFor = (record = {}, cardId) => {
   );
   if (!purchaseId && !description) return null;
 
-  const fallbackKey = `${cardId}|${description}|${purchaseAnchor}|${totalInstallments}`;
+  const fallbackKey = description
+    ? `${cardId}|${description}|${purchaseAnchor}|${totalInstallments}`
+    : '';
   return {
     key: purchaseId
       ? `${cardId}|${purchaseId}|${totalInstallments}`
@@ -631,7 +633,7 @@ export default function PluggyConnectionsV2({
       const plan = installmentPlanFor(record, cardId);
       if (plan?.installmentNumber === 1 && plan.totalInstallments > 1) {
         firstInstallmentPlanKeys.add(plan.key);
-        firstInstallmentPlanKeys.add(plan.fallbackKey);
+        if (plan.fallbackKey) firstInstallmentPlanKeys.add(plan.fallbackKey);
       }
     });
 

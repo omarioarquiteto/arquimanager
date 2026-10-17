@@ -280,7 +280,6 @@ const makeTransactionPayload = ({
   const providerTotalInstallments = Number(cardMetadata.totalInstallments || 0);
   const providerPaymentTypeRaw = String(cardMetadata.paymentType || '').trim().toUpperCase();
   const providerPaymentType = ['INSTALLMENT', 'A_PRAZO', 'PARCELADO'].includes(providerPaymentTypeRaw)
-    || providerTotalInstallments > 1
     ? 'INSTALLMENT'
     : ['SINGLE', 'A_VISTA', 'AVISTA'].includes(providerPaymentTypeRaw)
       ? 'SINGLE'

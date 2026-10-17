@@ -1402,6 +1402,7 @@ export default function PluggyConnectionsV2({
         || scope.providerTransfers.length
         || scope.purchases.length
         || scope.installments.length
+        || (scope.syncRuns || []).length
       );
 
       if (!deleteConnection && !hasLocalData) {

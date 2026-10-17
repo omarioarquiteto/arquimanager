@@ -99,7 +99,7 @@ const isOfficialBill = (bill = {}) => Boolean(
 
 const hasOfficialBillTotal = (bill = {}) => Boolean(
   bill.officialTotalCents != null
-  || bill.providerRawData?.totalAmount != null
+  || (bill.providerRawData?.totalAmount != null && bill.providerRawData.totalAmount !== '')
   || (isOfficialBill(bill) && bill.provisional === false && Number(bill.totalCents || 0) > 0)
 );
 

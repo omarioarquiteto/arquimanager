@@ -41,8 +41,19 @@ const stableHash = (value = '') => {
 
 const syncDateOnly = (value) => {
   if (!value) return '';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
+  const raw = String(value).trim();
+
+  // A Pluggy billForecastDate can be YYYY-MM. Keep the billing period intact
+  // instead of parsing it as a UTC date and shifting it in negative timezones.
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+
+  // Date-only ISO values represent calendar dates, not instants to convert
+  // to the browser's timezone.
+  const isoDate = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDate) return isoDate[1];
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw.slice(0, 10);
   return [
     parsed.getFullYear(),
     String(parsed.getMonth() + 1).padStart(2, '0'),

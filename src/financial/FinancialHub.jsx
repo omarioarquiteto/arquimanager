@@ -263,6 +263,34 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bulkQuery, setBulkQuery] = useState('');
   const [bulkLimit, setBulkLimit] = useState(20);
   const [bulkBusyKey, setBulkBusyKey] = useState('');
+
+  // Keep all financial collections live from Firestore.
+  useEffect(() => {
+    if (!companyId) return undefined;
+    const attach = (name, setter) => onSnapshot(collectionPath(db, name), snap => {
+      setter(
+        snap.docs
+          .map(item => ({ id: item.id, ...item.data() }))
+          .filter(item => !item.companyId || item.companyId === companyId)
+      );
+    }, error => console.error(`Erro ao carregar ${name}`, error));
+
+    const unsubs = [
+      attach('financial_accounts', setAccounts),
+      attach('financial_cards', setCards),
+      attach('financial_bills', setBills),
+      attach('financial_payables', setPayables),
+      attach('financial_receivables', setReceivables),
+      attach('financial_transfers', setTransfers),
+      attach('financial_connections', setConnections),
+      attach('financial_categories', setCategories),
+      attach('financial_transactions', setTransactions),
+      attach('financial_inbox', setInbox),
+      attach('financial_rules', setRules),
+    ];
+    return () => unsubs.forEach(unsubscribe => unsubscribe());
+  }, [companyId, db]);
+
   useEffect(() => {
     DEFAULT_CATEGORIES.forEach(async ([id, nome]) => {
       try {
@@ -274,6 +302,86 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       }
     });
   }, [companyId]);
+
+  const invoiceReconciliationRows = useMemo(() => bills
+    .filter(isOfficialBill)
+    .map(bill => {
+      const card = cards.find(item => item.id === bill.cardId) || {};
+      const billTransactions = getBillTransactions(bill, card, transactions);
+      const totalAvailable = hasOfficialBillTotal(bill);
+      const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
+      const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
+      const transactionsSignature = getBillTransactionsSignature(billTransactions);
+      return {
+        bill,
+        totalAvailable,
+        officialTotalCents,
+        transactionsTotalCents,
+        transactionsSignature,
+        transactionCount: billTransactions.length,
+        status: totalAvailable && officialTotalCents === transactionsTotalCents
+          ? 'MATCHED_AUTO'
+          : 'NEEDS_REVIEW',
+      };
+    })
+    .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id))),
+  [bills, cards, transactions]);
+
+  const invoiceReconciliationSignature = useMemo(() => JSON.stringify(
+    invoiceReconciliationRows.map(row => [
+      row.bill.id,
+      row.totalAvailable,
+      row.officialTotalCents,
+      row.transactionsTotalCents,
+      row.transactionsSignature,
+      row.transactionCount,
+      row.status,
+    ])
+  ), [invoiceReconciliationRows]);
+
+  useEffect(() => {
+    if (!companyId || !invoiceReconciliationRows.length) return undefined;
+    let cancelled = false;
+
+    const persistInvoiceStatuses = async () => {
+      try {
+        const pending = invoiceReconciliationRows.filter(row => {
+          const bill = row.bill;
+          const officialTotalSnapshotMatches = row.totalAvailable
+            ? Number(bill.reconciledAgainstOfficialTotalCents) === row.officialTotalCents
+            : bill.reconciledAgainstOfficialTotalCents == null;
+          return (
+            bill.reconciliationStatus !== row.status
+            || !officialTotalSnapshotMatches
+            || Number(bill.reconciledAgainstTransactionsTotalCents) !== row.transactionsTotalCents
+            || String(bill.reconciledTransactionsSignature || '') !== row.transactionsSignature
+            || Number(bill.reconciledTransactionCount || 0) !== row.transactionCount
+          );
+        });
+        for (let start = 0; start < pending.length; start += 400) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          pending.slice(start, start + 400).forEach(row => {
+            batch.update(docPath(db, 'financial_bills', row.bill.id), {
+              reconciliationStatus: row.status,
+              reconciledAgainstOfficialTotalCents: row.totalAvailable ? row.officialTotalCents : null,
+              reconciledAgainstTransactionsTotalCents: row.transactionsTotalCents,
+              reconciledTransactionsSignature: row.transactionsSignature,
+              reconciledTransactionCount: row.transactionCount,
+              reconciliationCheckedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          });
+          await batch.commit();
+        }
+      } catch (error) {
+        console.error('Falha ao atualizar o status de conciliação das faturas', error);
+      }
+    };
+
+    persistInvoiceStatuses();
+    return () => { cancelled = true; };
+  }, [companyId, invoiceReconciliationSignature, db]);
 
   const monthTransactions = useMemo(
     () => transactions.filter(t => monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth),
@@ -866,45 +974,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
   const openNewTransaction = (type = 'EXPENSE') =>
     setModal({ type: 'transaction', initial: { type, date: todayLocal(), status: 'CLASSIFIED', amount: '', description: '' } });
-
-  const manuallyReconcileBill = async (billId) => {
-    const bill = bills.find(item => item.id === billId);
-    if (!bill || !isOfficialBill(bill)) {
-      setNotice('A fatura oficial da Pluggy ainda não está disponível.');
-      return;
-    }
-
-    const card = cards.find(item => item.id === bill.cardId) || {};
-    const billTransactions = getBillTransactions(bill, card, transactions);
-    if (!hasOfficialBillTotal(bill)) {
-      setNotice('A Pluggy não informou o total oficial desta fatura. Não é possível conciliá-la.');
-      return;
-    }
-    const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-    const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
-    if (officialTotalCents !== transactionsTotalCents) {
-      setNotice(`Fatura não conciliada. Total oficial: ${formatBRL(officialTotalCents)}; lançamentos importados: ${formatBRL(transactionsTotalCents)}; diferença: ${formatBRL(officialTotalCents - transactionsTotalCents)}. Nenhum lançamento foi criado.`);
-      return;
-    }
-
-    setBusy(true);
-    try {
-      await updateDoc(docPath(db, 'financial_bills', bill.id), {
-        reconciliationStatus: 'MATCHED_MANUAL',
-        reconciledAgainstOfficialTotalCents: officialTotalCents,
-        reconciledAgainstTransactionsTotalCents: transactionsTotalCents,
-        reconciledTransactionsSignature: getBillTransactionsSignature(billTransactions),
-        reconciledTransactionCount: billTransactions.length,
-        reconciledAt: new Date().toISOString(),
-        updatedAt: serverTimestamp(),
-      });
-      setNotice('Fatura conciliada manualmente: o somatório dos lançamentos da Pluggy confere com o total oficial.');
-    } catch (error) {
-      setNotice(error.message || 'Não foi possível conciliar a fatura.');
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const openEditTransaction = (tx) => {
     const lockedCore = tx.status === 'RECONCILED' || tx.reconciliationType === 'TRANSFER' || !!tx.billId || !!tx.payableId || !!tx.receivableId;
@@ -2350,19 +2419,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const billTransactions = getBillTransactions(b, card, transactions);
                 const transactionTotal = getBillTransactionsTotalCents(billTransactions);
                 const valuesMatch = totalAvailable && officialTotal === transactionTotal;
-                const manuallyConfirmed = b.reconciliationStatus === 'MATCHED_MANUAL'
-                  && Number(b.reconciledAgainstOfficialTotalCents) === officialTotal
-                  && Number(b.reconciledAgainstTransactionsTotalCents) === transactionTotal
-                  && Number(b.reconciledTransactionCount) === billTransactions.length
-                  && b.reconciledTransactionsSignature === getBillTransactionsSignature(billTransactions);
                 const statusLabel = !totalAvailable
                   ? 'total oficial indisponível'
-                  : manuallyConfirmed ? 'conciliada' : valuesMatch ? 'conferir conciliação' : 'não conciliada';
+                  : valuesMatch ? 'conciliada' : 'não conciliada';
                 const statusClass = !totalAvailable
                   ? 'bg-amber-100 text-amber-700'
-                  : manuallyConfirmed
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : valuesMatch ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700';
+                  : valuesMatch ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';
                 return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
                   <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy</p></div>
                   <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
@@ -2386,8 +2448,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         transactions={transactions}
         categories={categories}
         onEditTransaction={openEditTransaction}
-        onManualReconcile={manuallyReconcileBill}
-        busy={busy}
         onClose={() => setModal(null)}
       />}
       {modal?.type === 'transaction' && <TransactionModal
@@ -2676,8 +2736,6 @@ function BillDetailsModal({
   transactions: allTransactions,
   categories,
   onEditTransaction,
-  onManualReconcile,
-  busy = false,
   onClose,
 }) {
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
@@ -2692,30 +2750,19 @@ function BillDetailsModal({
   const totalAvailable = hasOfficialBillTotal(bill);
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
   const registeredTotalCents = getBillTransactionsTotalCents(sortedTransactions);
-  const transactionsSignature = getBillTransactionsSignature(sortedTransactions);
   const amountsMatch = hasOfficialBill && totalAvailable && officialTotalCents === registeredTotalCents;
-  const manuallyConfirmedCurrent = bill.reconciliationStatus === 'MATCHED_MANUAL'
-    && Number(bill.reconciledAgainstOfficialTotalCents) === officialTotalCents
-    && Number(bill.reconciledAgainstTransactionsTotalCents) === registeredTotalCents
-    && Number(bill.reconciledTransactionCount) === sortedTransactions.length
-    && bill.reconciledTransactionsSignature === transactionsSignature;
   const reconciliationStatusLabel = !hasOfficialBill
     ? 'Aguardando fatura oficial'
     : !totalAvailable
       ? 'Total oficial não informado pela Pluggy'
-      : manuallyConfirmedCurrent
-      ? 'Conciliada manualmente'
       : amountsMatch
-        ? 'Valores conferem · confirme a conciliação manual'
-        : 'Não conciliada · a soma dos lançamentos difere do total oficial';
+        ? 'Conciliada: a soma dos lançamentos confere'
+        : 'Não conciliada: a soma dos lançamentos difere do total oficial';
   const reconciliationTone = !hasOfficialBill || !totalAvailable
     ? 'bg-amber-100 text-amber-700'
-    : manuallyConfirmedCurrent
+    : amountsMatch
       ? 'bg-emerald-100 text-emerald-700'
-      : amountsMatch
-        ? 'bg-blue-100 text-blue-700'
-        : 'bg-red-100 text-red-700';
-  const canManualReconcile = hasOfficialBill && totalAvailable && amountsMatch && !manuallyConfirmedCurrent;
+      : 'bg-red-100 text-red-700';
 
   return (
     <Modal title={`Fatura · ${card?.name || 'Cartão'}`} onClose={onClose}>
@@ -2767,14 +2814,7 @@ function BillDetailsModal({
                 <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(officialTotalCents - registeredTotalCents) : '—'}</p>
               </div>
             </div>
-            <div className="flex flex-wrap justify-end gap-2">
-              {canManualReconcile && (
-                <button type="button" disabled={busy} onClick={() => onManualReconcile(bill.id)} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50">
-                  Confirmar conciliação manual
-                </button>
-              )}
-              {!amountsMatch && <p className="text-xs text-red-700 self-center">A fatura permanece não conciliada. Nenhum lançamento será criado automaticamente.</p>}
-            </div>
+            {!amountsMatch && <p className="text-xs text-red-700">A fatura permanece não conciliada. Nenhum lançamento será criado automaticamente.</p>}
           </div>
         )}
 

@@ -2509,7 +2509,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     </div>
                     <div className="flex items-center gap-1">
                       {renamingCardId !== card.id && <button onClick={() => { setRenamingCardId(card.id); setCardNameDraft(card.displayName || card.name || ''); }} className="p-1.5 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Renomear cartão" aria-label="Renomear cartão"><Pencil size={14}/></button>}
-                      <WalletCards size={19} className="text-[#1e5aa0}"/>
+                      <WalletCards size={19} className="text-[#1e5aa0]"/>
                       {card.source !== 'PLUGGY' && !card.provider && !card.providerCardId && !card.providerAccountId && !card.providerItemId && (
                         <button
                           onClick={() => deleteManualCard(card)}
@@ -2543,7 +2543,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               {officialBillGroups.map(group => (
                 <section key={group.key} className="space-y-2">
                   <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
-                    <h5 className="font-black text-sm text-slate-700 flex items-center gap-2"><Landmark size={15} className="text-[#1e5aa0}"/>{group.title}</h5>
+                    <h5 className="font-black text-sm text-slate-700 flex items-center gap-2"><Landmark size={15} className="text-[#1e5aa0]"/>{group.title}</h5>
                     <span className="text-[10px] font-bold text-slate-400">{group.bills.length} fatura(s)</span>
                   </div>
                   {group.bills.map(b => {

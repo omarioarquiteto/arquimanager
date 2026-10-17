@@ -271,6 +271,7 @@ const installmentPlanFor = (record = {}, cardId) => {
     || shiftDateByMonths(transactionDate, -(installmentNumber - 1))
     || transactionDate;
   const purchaseMonth = inferredPurchaseDate.slice(0, 7);
+  const purchaseAnchor = explicitPurchaseDate || purchaseMonth;
   const purchaseId = String(
     metadata.installmentPlanId
     || metadata.installmentGroupId
@@ -287,10 +288,12 @@ const installmentPlanFor = (record = {}, cardId) => {
   );
   if (!purchaseId && !description) return null;
 
+  const fallbackKey = `${cardId}|${description}|${purchaseAnchor}|${totalInstallments}`;
   return {
     key: purchaseId
       ? `${cardId}|${purchaseId}|${totalInstallments}`
-      : `${cardId}|${description}|${purchaseMonth}|${totalInstallments}`,
+      : fallbackKey,
+    fallbackKey,
     installmentNumber,
     totalInstallments,
   };
@@ -628,6 +631,7 @@ export default function PluggyConnectionsV2({
       const plan = installmentPlanFor(record, cardId);
       if (plan?.installmentNumber === 1 && plan.totalInstallments > 1) {
         firstInstallmentPlanKeys.add(plan.key);
+        firstInstallmentPlanKeys.add(plan.fallbackKey);
       }
     });
 
@@ -641,7 +645,7 @@ export default function PluggyConnectionsV2({
         !plan
         || plan.installmentNumber <= 1
         || plan.installmentNumber >= plan.totalInstallments
-        || !firstInstallmentPlanKeys.has(plan.key)
+        || (!firstInstallmentPlanKeys.has(plan.key) && !firstInstallmentPlanKeys.has(plan.fallbackKey))
       ) return;
 
       handledIntermediateTransactionIds.add(String(existing.id));
@@ -752,7 +756,10 @@ export default function PluggyConnectionsV2({
         installmentPlan
         && installmentPlan.installmentNumber > 1
         && installmentPlan.installmentNumber < installmentPlan.totalInstallments
-        && firstInstallmentPlanKeys.has(installmentPlan.key)
+        && (
+          firstInstallmentPlanKeys.has(installmentPlan.key)
+          || firstInstallmentPlanKeys.has(installmentPlan.fallbackKey)
+        )
       );
 
       if (isHandledIntermediateInstallment) {

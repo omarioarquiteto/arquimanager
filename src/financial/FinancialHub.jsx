@@ -13,11 +13,7 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
-import {
-  buildInstallmentForecastWrites,
-  getBillReconciliationDecision,
-  reconciliationSignature,
-} from './cardForecasting.js';
+import { buildInstallmentForecastWrites } from './cardForecasting.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -88,6 +84,34 @@ const dateForMonthDay = (yearMonth, day = 1) => {
 };
 
 const monthFromIso = (value) => String(value || '').slice(0, 7);
+
+const normalizeInstallmentDescription = (value = '') => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}(?:\s*[/-]\s*\d{1,2})?\b/g, ' ')
+  .replace(/\b\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim()
+  .replace(/\s+/g, ' ');
+
+const installmentPlanFingerprint = (tx = {}) => {
+  const current = Number(tx.creditCardInstallmentNumber || 0);
+  const total = Number(tx.creditCardTotalInstallments || 0);
+  const rawPurchaseDate = tx.providerRawData?.creditCardMetadata?.purchaseDate;
+  const storedPurchaseDate = tx.creditCardPurchaseDate;
+  const explicitPurchaseDate = rawPurchaseDate
+    || (tx.creditCardPlanConfiguredManually === true ? storedPurchaseDate : '')
+    || (storedPurchaseDate && syncDateOnly(storedPurchaseDate) !== syncDateOnly(tx.date) ? storedPurchaseDate : '');
+  const inferredPurchaseDate = addMonthsToIsoDate(tx.date, -(current - 1))
+    || syncDateOnly(storedPurchaseDate)
+    || syncDateOnly(tx.date);
+  const purchaseAnchor = syncDateOnly(explicitPurchaseDate) || (monthFromIso(inferredPurchaseDate) + '-01');
+  const description = normalizeInstallmentDescription(
+    tx.creditCardForecastMerchant || tx.merchant || tx.creditCardForecastDescription || tx.description
+  );
+  return [tx.cardId || tx.accountId || '', description, purchaseAnchor, total].join('|');
+};
 
 const billStatusFromValues = ({ totalCents = 0, paidCents = 0, dueDate = '', provisional = false }) => {
   const total = Number(totalCents || 0);
@@ -197,7 +221,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bulkLimit, setBulkLimit] = useState(20);
   const [bulkBusyKey, setBulkBusyKey] = useState('');
   const forecastPlanSignatureRef = useRef('');
-  const billReconciliationSignatureRef = useRef('');
 
   useEffect(() => {
     if (!companyId) return;
@@ -247,6 +270,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         paymentType: tx.creditCardPaymentType || null,
         installmentNumber: Number(tx.creditCardInstallmentNumber || 0),
         totalInstallments: Number(tx.creditCardTotalInstallments || 0),
+        handledAsForecast: tx.creditCardInstallmentHandledAsForecast === true,
         forecastAmountCents: tx.creditCardForecastAmountCents ?? null,
         planVersion: Number(tx.creditCardForecastPlanVersion || 0),
         purchaseDate: tx.creditCardPurchaseDate || null,
@@ -324,47 +348,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     rebuildForecasts();
     return () => { cancelled = true; };
   }, [companyId, installmentPlanSignature, cards, transactions, db]);
-  const billReconciliationPlanSignature = useMemo(
-    () => reconciliationSignature(bills),
-    [bills]
-  );
-
-  useEffect(() => {
-    if (!companyId || billReconciliationSignatureRef.current === billReconciliationPlanSignature) return undefined;
-    let cancelled = false;
-
-    const reconcileForecastBills = async () => {
-      try {
-        const pending = bills.flatMap(bill => {
-          const decision = getBillReconciliationDecision(bill);
-          if (!decision) return [];
-          if (bill.reconciliationStatus === decision.status) return [];
-          return [{ bill, decision }];
-        });
-        if (cancelled) return;
-
-        for (let start = 0; start < pending.length; start += 400) {
-          if (cancelled) return;
-          const batch = writeBatch(db);
-          pending.slice(start, start + 400).forEach(({ bill, decision }) => {
-            batch.update(docPath(db, 'financial_bills', bill.id), {
-              reconciliationStatus: decision.status,
-              reconciliationCheckedAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          });
-          await batch.commit();
-        }
-        if (!cancelled) billReconciliationSignatureRef.current = billReconciliationPlanSignature;
-      } catch (error) {
-        console.error('Falha ao conciliar faturas previstas e oficiais', error);
-      }
-    };
-
-    reconcileForecastBills();
-    return () => { cancelled = true; };
-  }, [companyId, billReconciliationPlanSignature, bills, db]);
-
   useEffect(() => {
     DEFAULT_CATEGORIES.forEach(async ([id, nome]) => {
       try {
@@ -377,9 +360,33 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   }, [companyId]);
 
+  const representedIntermediateTransactionIds = useMemo(() => {
+    const firstPlanIdentities = new Set(
+      transactions
+        .filter(tx =>
+          tx.creditCardInstallmentHandledAsForecast !== true
+          && Number(tx.creditCardInstallmentNumber || 0) === 1
+          && Number(tx.creditCardTotalInstallments || 0) > 1
+        )
+        .map(installmentPlanFingerprint)
+    );
+    return new Set(
+      transactions
+        .filter(tx => {
+          const current = Number(tx.creditCardInstallmentNumber || 0);
+          const total = Number(tx.creditCardTotalInstallments || 0);
+          return current > 1 && current < total && firstPlanIdentities.has(installmentPlanFingerprint(tx));
+        })
+        .map(tx => String(tx.id))
+    );
+  }, [transactions]);
+
   const monthTransactions = useMemo(
-    () => transactions.filter(t => monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth),
-    [transactions, selectedMonth]
+    () => transactions.filter(t =>
+      !representedIntermediateTransactionIds.has(String(t.id))
+      && monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth
+    ),
+    [transactions, representedIntermediateTransactionIds, selectedMonth]
   );
 
   const totals = useMemo(() => {
@@ -405,6 +412,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         ...item,
         transaction: transactions.find(t => t.id === item.transactionId) || null,
       }))
+      .filter(item => !item.transaction || !representedIntermediateTransactionIds.has(String(item.transaction.id)))
       .sort((a, b) => {
         const priorityDiff = (priority[a.kind] || 9) - (priority[b.kind] || 9);
         if (priorityDiff) return priorityDiff;
@@ -412,9 +420,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         if (confidenceDiff) return confidenceDiff;
         return String(a.createdAt?.seconds || 0).localeCompare(String(b.createdAt?.seconds || 0));
       });
-  }, [inbox, transactions]);
+  }, [inbox, transactions, representedIntermediateTransactionIds]);
 
-  const attentionCount = inbox.filter(item => item.status !== 'RESOLVED').length;
+  const attentionCount = attentionItems.length;
 
   const bulkClassificationGroups = tab === 'attention'
     ? buildBulkClassificationGroups(attentionItems, bulkQuery)
@@ -430,9 +438,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const filteredTransactions = useMemo(() => {
     const q = normalizeText(queryText);
     return [...transactions]
+      .filter(t => !representedIntermediateTransactionIds.has(String(t.id)))
       .filter(t => !q || normalizeText(`${t.description || ''} ${t.merchant || ''}`).includes(q))
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
-  }, [transactions, queryText]);
+  }, [transactions, queryText, representedIntermediateTransactionIds]);
 
   const days = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);
@@ -2647,7 +2656,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 const remaining = Math.max(0, Number(b.totalCents||0) - Number(b.paidCents||0));
                 const paid = remaining === 0 && Number(b.totalCents||0) > 0;
                 return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p>{b.provisional && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">prevista</span>}{b.reconciliationStatus === 'NEEDS_REVIEW' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">não conciliada</span>}{['MATCHED_AUTO','MATCHED_MANUAL'].includes(b.reconciliationStatus) && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliada</span>}</div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.forecastClosingDate || b.closingDate)} · Vencimento {dateLabel(b.forecastDueDate || b.dueDate)} · {b.providerBillId || b.source === 'PLUGGY_REBUILT' || b.provider === 'PLUGGY' && !b.provisional ? 'sincronizada' : 'prevista/local'}</p></div>
+                  <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{card?.name || 'Cartão não identificado'} · {b.referenceMonth}</p>{b.provisional && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">prevista</span>}{b.reconciliationStatus === 'NEEDS_REVIEW' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700">não conciliada</span>}{b.reconciliationStatus === 'MATCHED_AUTO' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">conferência manual</span>}{b.reconciliationStatus === 'READY_FOR_MANUAL' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">conferir</span>}{b.reconciliationStatus === 'MATCHED_MANUAL' && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">conciliada</span>}</div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.forecastClosingDate || b.closingDate)} · Vencimento {dateLabel(b.forecastDueDate || b.dueDate)} · {b.providerBillId || b.source === 'PLUGGY_REBUILT' || b.provider === 'PLUGGY' && !b.provisional ? 'sincronizada' : 'prevista/local'}</p></div>
                   <div className="text-right"><p className="font-black text-slate-800">{formatBRL(b.totalCents)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                 </button>;
               })}
@@ -2668,6 +2677,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         card={cards.find(item => item.id === bills.find(bill => bill.id === modal.billId)?.cardId)}
         transactions={transactions}
         categories={categories}
+        representedIntermediateTransactionIds={representedIntermediateTransactionIds}
         onEditTransaction={openEditTransaction}
         onUpdateForecastItem={updateForecastItem}
         onAddForecastItem={addForecastItem}
@@ -2962,6 +2972,7 @@ function BillDetailsModal({
   card,
   transactions: allTransactions,
   categories,
+  representedIntermediateTransactionIds = new Set(),
   onEditTransaction,
   onUpdateForecastItem,
   onAddForecastItem,
@@ -3035,6 +3046,7 @@ function BillDetailsModal({
 
   const sortedTransactions = (Array.isArray(allTransactions) ? allTransactions : [])
     .filter(isTransactionForThisBill)
+    .filter(tx => !representedIntermediateTransactionIds.has(String(tx.id)))
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 
   const total = Number(bill.totalCents || 0);
@@ -3057,17 +3069,17 @@ function BillDetailsModal({
   const estimatedBillTotalCents = forecastTotalCents + Number(bill.registeredTransactionsTotalCents || 0);
   const amountsMatch = hasOfficialBill && officialTotalCents === estimatedBillTotalCents;
   const datesMatch = hasOfficialBill && Boolean(officialDueDate && forecastDueDate && officialDueDate === forecastDueDate);
-  const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && !['MATCHED_MANUAL', 'MATCHED_AUTO'].includes(bill.reconciliationStatus);
-  const reconciliationStatusLabel = bill.reconciliationStatus === 'MATCHED_AUTO'
-    ? 'Conciliada automaticamente'
-    : bill.reconciliationStatus === 'MATCHED_MANUAL'
-      ? 'Conciliada manualmente'
+  const canManualReconcile = hasOfficialBill && amountsMatch && datesMatch && bill.reconciliationStatus !== 'MATCHED_MANUAL';
+  const reconciliationStatusLabel = bill.reconciliationStatus === 'MATCHED_MANUAL'
+    ? 'Conciliada manualmente'
+    : bill.reconciliationStatus === 'MATCHED_AUTO'
+      ? 'Conferência manual obrigatória'
       : bill.reconciliationStatus === 'READY_FOR_MANUAL'
         ? 'Valores conferem · confirme a conciliação'
         : bill.reconciliationStatus === 'NEEDS_REVIEW'
-          ? 'Não conciliada'
-          : 'Aguardando fatura oficial';
-  const reconciliationTone = ['MATCHED_AUTO', 'MATCHED_MANUAL'].includes(bill.reconciliationStatus)
+          ? 'Não conciliada · confira os lançamentos'
+          : 'Aguardando conferência manual';
+  const reconciliationTone = bill.reconciliationStatus === 'MATCHED_MANUAL'
     ? 'bg-emerald-100 text-emerald-700'
     : bill.reconciliationStatus === 'READY_FOR_MANUAL'
       ? 'bg-blue-100 text-blue-700'
@@ -3229,7 +3241,7 @@ function BillDetailsModal({
             <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h4 className="font-black text-indigo-900">Lançamentos previstos</h4>
-                <p className="text-[10px] text-indigo-700">{visibleForecastItems.length} item(ns) · previsões ainda não encontradas na Pluggy ou ajustes manuais. Quando descrição, data, valor e parcela conferem, a previsão é removida e fica o lançamento registrado.</p>
+                <p className="text-[10px] text-indigo-700">{visibleForecastItems.length} item(ns) · a primeira parcela gera as futuras. Parcelas intermediárias ficam representadas nesta lista, sem criar lançamentos duplicados; compras à vista permanecem nos lançamentos registrados.</p>
               </div>
               <span className="text-sm font-black text-indigo-900">{formatBRL(forecastTotalCents)}</span>
             </div>

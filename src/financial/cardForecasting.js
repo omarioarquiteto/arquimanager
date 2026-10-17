@@ -94,7 +94,7 @@ const normalizeInstallmentDescription = (value) => String(value || '')
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
-  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
+  .replace(/\b(?:parcela|parc\.?|prestacao|installment)\s*#?\s*\d{1,2}(?:\s*[/-]\s*\d{1,2})?\b/g, ' ')
   .replace(/\b\d{1,2}\s*[/-]\s*\d{1,2}\b/g, ' ')
   .replace(/[^a-z0-9]+/g, ' ')
   .trim()
@@ -225,7 +225,8 @@ export const buildInstallmentForecastWrites = ({
       card
       && (transaction.accountType === 'CREDIT_CARD' || transaction.isCreditCardTransaction || transaction.cardId)
       && paymentType === 'INSTALLMENT'
-      && current >= 1
+      && transaction.creditCardInstallmentHandledAsForecast !== true
+      && current === 1
       && total > current
       && total <= 48
     );
@@ -243,18 +244,35 @@ export const buildInstallmentForecastWrites = ({
     const explicitPurchaseDate = rawPurchaseDate
       || (transaction.creditCardPlanConfiguredManually === true ? storedPurchaseDate : '')
       || (storedPurchaseDate && dateOnly(storedPurchaseDate) !== dateOnly(transaction.date) ? storedPurchaseDate : '');
-    const purchaseDate = dateOnly(explicitPurchaseDate)
-      || shiftDateByMonths(transaction.date, -(current - 1))
+    const inferredPurchaseDate = shiftDateByMonths(transaction.date, -(current - 1))
       || dateOnly(storedPurchaseDate)
       || dateOnly(transaction.date);
+    // Sem data de compra explícita, use o mês estimado como âncora. Isso mantém
+    // a mesma identidade quando o dia do mês muda entre parcelas (ex.: 31 -> 30).
+    const purchaseAnchor = dateOnly(explicitPurchaseDate) || (monthOf(inferredPurchaseDate) + '-01');
     const purchaseDescription = normalizeInstallmentDescription(
       transaction.creditCardForecastMerchant
         || transaction.merchant
         || transaction.creditCardForecastDescription
         || transaction.description
     );
-    return [card?.id || transaction.cardId, purchaseDescription, purchaseDate, total].join('|');
+    return [card?.id || transaction.cardId, purchaseDescription, purchaseAnchor, total].join('|');
   };
+
+  const firstPlanIdentities = new Set(
+    plans
+      .filter(transaction => Number(transaction.creditCardInstallmentNumber || 0) === 1)
+      .map(planIdentityFor)
+  );
+  const isForecastRepresentedIntermediate = (transaction = {}) => {
+    const current = Number(transaction.creditCardInstallmentNumber || 0);
+    const total = Number(transaction.creditCardTotalInstallments || 0);
+    if (current <= 1 || total <= current) return false;
+    return firstPlanIdentities.has(planIdentityFor(transaction));
+  };
+  const forecastCalculationTransactions = transactions.filter(
+    transaction => !isForecastRepresentedIntermediate(transaction)
+  );
 
   const sourceIdsByPlanIdentity = new Map();
   plans.forEach(transaction => {
@@ -342,7 +360,7 @@ export const buildInstallmentForecastWrites = ({
       // Uma compra pode ter várias parcelas históricas importadas. Se a parcela
       // oficial já existe e coincide em todos os campos, retirar qualquer
       // projeção gerada anteriormente para a mesma compra/parcela.
-      if (matchesOfficialInstallment({ item: candidate, card, transactions, bills })) {
+      if (matchesOfficialInstallment({ item: candidate, card, transactions: forecastCalculationTransactions, bills })) {
         group.generatedItems = group.generatedItems.filter(existingItem => !(
           existingItem.planIdentity === planIdentity
           && Number(existingItem.installmentNumber || 0) === installmentNumber
@@ -387,7 +405,11 @@ export const buildInstallmentForecastWrites = ({
   const registeredTotalsByBillId = new Map();
   for (const transaction of transactions) {
     const card = cardsById.get(transaction.cardId);
-    if (!card || transaction.reconciliationType === 'CARD_BILL_PAYMENT') continue;
+    if (
+      !card
+      || transaction.reconciliationType === 'CARD_BILL_PAYMENT'
+      || isForecastRepresentedIntermediate(transaction)
+    ) continue;
 
     const hasExplicitProviderCycle = isPluggyTransaction(transaction) && Boolean(
       transaction.creditCardBillForecastDate

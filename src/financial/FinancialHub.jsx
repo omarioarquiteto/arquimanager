@@ -2298,7 +2298,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {cards.map(card => {
-                const openBills = bills.filter(b => b.cardId === card.id && b.status !== 'PAID' && Number(b.totalCents || 0) > Number(b.paidCents || 0));
+                const openBills = bills.filter(b => isOfficialBill(b) && b.cardId === card.id && b.status !== 'PAID' && Number(b.officialTotalCents ?? b.totalCents ?? 0) > Number(b.paidCents || 0));
                 const openTotal = openBills.reduce((s,b) => s + Number(b.totalCents || 0) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
@@ -2361,7 +2361,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                   <div className="text-right"><p className="font-black text-slate-800">{formatBRL(officialTotal)}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                 </button>;
               })}
-              {!bills.length && <EmptyState text="As faturas aparecerão aqui quando você lançar compras no cartão."/>}
+              {!bills.some(isOfficialBill) && <EmptyState text="As faturas oficiais aparecerão aqui quando forem recebidas pela Pluggy."/>}
             </div>
           </Card>
         </div>
@@ -2719,7 +2719,7 @@ function BillDetailsModal({
 
               </div>
               <p className="text-xs text-slate-500 mt-1">{card?.name || 'Cartão'} · referência {bill.referenceMonth || '—'}</p>
-              <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.closingDate)} · vencimento {dateLabel(bill.dueDate)}</p>
+              <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.officialClosingDate || bill.closingDate)} · vencimento {dateLabel(bill.officialDueDate || bill.dueDate)}</p>
             </div>
             <span className={`text-xs font-black uppercase px-3 py-2 rounded-xl ${status === 'PAID' ? 'bg-emerald-100 text-emerald-700' : status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{statusLabel}</span>
           </div>

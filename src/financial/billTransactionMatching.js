@@ -88,7 +88,7 @@ const getLinkedBillMonth = (tx = {}, allBills = []) => {
 };
 
 const getTransactionBillMonth = (tx = {}, allBills = []) => (
-  getExplicitTransactionBillMonth(tx) || getLinkedBillMonth(tx, allBills)
+  getLinkedBillMonth(tx, allBills) || getExplicitTransactionBillMonth(tx)
 );
 
 const transactionMatchesCard = (tx = {}, card = {}) => {
@@ -223,8 +223,8 @@ export const transactionBelongsToBill = (
 
   const transactionProviderBillId = getTransactionProviderBillId(tx);
   const providerBillId = asText(bill.providerBillId);
-  if (transactionProviderBillId && providerBillId) {
-    return transactionProviderBillId === providerBillId;
+  if (transactionProviderBillId) {
+    return Boolean(providerBillId && transactionProviderBillId === providerBillId);
   }
 
   if (!transactionMatchesCard(tx, card)) return false;

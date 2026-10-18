@@ -13,6 +13,7 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
+import { getBillTransactions } from './billTransactionMatching.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -96,15 +97,6 @@ const dateForMonthDay = (yearMonth, day = 1) => {
   ].join('-');
 };
 
-const monthFromIso = (value) => String(value || '').slice(0, 7);
-
-const isPluggyTransaction = (tx = {}) => (
-  String(tx.provider || '').toUpperCase() === 'PLUGGY'
-  || String(tx.source || '').toUpperCase().startsWith('PLUGGY')
-  || Boolean(tx.providerTransactionId)
-  || String(tx.externalId || '').startsWith('pluggy-v2:')
-);
-
 const isOfficialBill = (bill = {}) => Boolean(
   bill.providerBillId
   || bill.officialTotalCents != null
@@ -132,47 +124,6 @@ const getBillTotalCents = (bill = {}) => (
   hasAppliedReconciledBillTotal(bill)
     ? Number(bill.reconciledTotalCents || 0)
     : Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
-);
-
-const transactionBelongsToBill = (tx = {}, bill = {}, card = {}) => {
-  if (!isCreditCardTransaction(tx) || !isPluggyTransaction(tx)) return false;
-  if (tx.billId && String(tx.billId) === String(bill.id)) return true;
-
-  const providerBillId = String(bill.providerBillId || '').trim();
-  const transactionProviderBillId = String(
-    tx.providerBillId
-    || tx.creditCardBillId
-    || tx.providerRawData?.creditCardMetadata?.billId
-    || tx.providerRawData?.billId
-    || ''
-  ).trim();
-  if (providerBillId && transactionProviderBillId === providerBillId) return true;
-
-  const sameCard = (
-    String(tx.cardId || '') === String(card.id || '')
-    || String(tx.accountId || '') === String(card.id || '')
-    || Boolean(card.providerAccountId && String(tx.providerAccountId || '') === String(card.providerAccountId))
-  );
-  if (!sameCard) return false;
-
-  const providerCycle = (
-    tx.creditCardBillForecastDate
-    || tx.providerRawData?.creditCardMetadata?.billForecastDate
-    || tx.providerRawData?.billForecastDate
-    || tx.creditCardBillPostDate
-    || tx.providerRawData?.creditCardMetadata?.billPostDate
-    || ''
-  );
-  return Boolean(
-    providerCycle
-    && monthFromIso(syncDateOnly(providerCycle)) === monthFromIso(bill.referenceMonth)
-  );
-};
-
-const getBillTransactions = (bill, card, transactions = []) => (
-  (Array.isArray(transactions) ? transactions : [])
-    .filter(tx => transactionBelongsToBill(tx, bill, card))
-    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
 );
 
 const getCheckedInvoiceTransactionIds = (bill = {}) => new Set(
@@ -353,7 +304,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     .filter(isOfficialBill)
     .map(bill => {
       const card = cards.find(item => item.id === bill.cardId) || {};
-      const billTransactions = getBillTransactions(bill, card, transactions);
+      const billTransactions = getBillTransactions(bill, card, transactions, bills);
       const totalAvailable = hasOfficialBillTotal(bill);
       const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
       const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
@@ -1067,7 +1018,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!bill?.id || !transaction?.id) return;
 
     const card = cards.find(item => item.id === bill.cardId) || {};
-    const billTransactions = getBillTransactions(bill, card, transactions);
+    const billTransactions = getBillTransactions(bill, card, transactions, bills);
     const nextCheckedIds = getCheckedInvoiceTransactionIds(bill);
     if (checked) nextCheckedIds.add(String(transaction.id));
     else nextCheckedIds.delete(String(transaction.id));
@@ -1126,7 +1077,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const markBillPaidWithAdvance = async (bill) => {
     if (!bill?.id || bill.paidWithAdvance || invoiceAdvanceBusy) return;
     const card = cards.find(item => item.id === bill.cardId) || {};
-    const billTransactions = getBillTransactions(bill, card, transactions);
+    const billTransactions = getBillTransactions(bill, card, transactions, bills);
     if (!billTransactions.length) {
       setNotice('Não é possível marcar esta fatura como paga com adiantamento: ainda não há lançamentos importados vinculados a ela.');
       return;
@@ -2694,7 +2645,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     const paidCents = Number(b.paidCents || 0);
                     const remaining = Math.max(0, officialTotal - paidCents);
                     const paid = b.paidWithAdvance === true || (remaining === 0 && officialTotal > 0);
-                    const billTransactions = getBillTransactions(b, card, transactions);
+                    const billTransactions = getBillTransactions(b, card, transactions, bills);
                     const checkedTransactionCount = getCheckedInvoiceTransactionCount(b, billTransactions);
                     const allTransactionsChecked = (
                       billTransactions.length > 0
@@ -2734,6 +2685,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {modal?.type === 'billDetails' && modal.billId && <BillDetailsModal
         bill={bills.find(item => item.id === modal.billId)}
         card={cards.find(item => item.id === bills.find(bill => bill.id === modal.billId)?.cardId)}
+        bills={bills}
         transactions={transactions}
         categories={categories}
         onEditTransaction={openEditTransaction}
@@ -3027,6 +2979,7 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
 function BillDetailsModal({
   bill,
   card,
+  bills: allBills = [],
   transactions: allTransactions,
   categories,
   onEditTransaction,
@@ -3039,7 +2992,7 @@ function BillDetailsModal({
 }) {
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
 
-  const sortedTransactions = getBillTransactions(bill, card, allTransactions);
+  const sortedTransactions = getBillTransactions(bill, card, allTransactions, allBills);
   const total = getBillTotalCents(bill);
   const paid = Number(bill.paidCents || 0);
   const remaining = Math.max(0, total - paid);

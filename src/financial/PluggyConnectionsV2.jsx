@@ -14,6 +14,7 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
+import { getExplicitTransactionBillMonth } from './billTransactionMatching.js';
 
 const PLUGGY_WIDGET_SRC = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
 const PLUGGY_SOURCE = 'PLUGGY_REBUILT';
@@ -563,6 +564,7 @@ export default function PluggyConnectionsV2({
     }
 
     const billByProviderId = new Map();
+    const billByAccountMonth = new Map();
     for (const rawBill of rawBills) {
       if (!rawBill?.id || !rawBill?.accountId) continue;
       const cardId = cardByAccount.get(rawBill.accountId);
@@ -581,6 +583,10 @@ export default function PluggyConnectionsV2({
       const existingBill = existingBillsByProviderId.get(String(rawBill.id));
       const billId = existingBill?.id || billIdFor(companyId, cardId, referenceMonth);
       billByProviderId.set(String(rawBill.id), billId);
+      const periodKey = String(rawBill.accountId) + '|' + referenceMonth;
+      if (!billByAccountMonth.has(periodKey)) billByAccountMonth.set(periodKey, []);
+      const periodBillIds = billByAccountMonth.get(periodKey);
+      if (!periodBillIds.includes(billId)) periodBillIds.push(billId);
 
       const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';
       const totalCents = hasOfficialTotal ? Math.abs(toCents(rawBill.totalAmount)) : 0;
@@ -649,9 +655,17 @@ export default function PluggyConnectionsV2({
         || transaction?.billId
         || ''
       ).trim();
-      const localBillId = providerBillId
+      const localBillIdByProvider = providerBillId
         ? (billByProviderId.get(providerBillId) || null)
         : null;
+      const transactionBillMonth = getExplicitTransactionBillMonth(transaction);
+      const billsForCycle = (cardId && !providerBillId && transactionBillMonth)
+        ? (billByAccountMonth.get(String(accountId) + '|' + transactionBillMonth) || [])
+        : [];
+      // O vínculo por mês só é usado quando o provedor não forneceu billId
+      // e há uma única fatura possível para aquele cartão e ciclo.
+      const localBillId = localBillIdByProvider
+        || (billsForCycle.length === 1 ? billsForCycle[0] : null);
 
       const transactionId = `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`;
       transactionIds.add(transactionId);

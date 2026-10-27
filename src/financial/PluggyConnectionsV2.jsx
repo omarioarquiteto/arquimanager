@@ -401,6 +401,9 @@ export default function PluggyConnectionsV2({
   const [renameBusyId, setRenameBusyId] = useState('');
   const widgetRef = useRef(null);
   const clientUserId = appUser?.id ? `arquimanager:${appUser.id}` : '';
+  const clientUserIdForConnection = (connection) => (
+    String(connection?.clientUserId || '').trim() || clientUserId
+  );
 
   useEffect(() => () => {
     try { widgetRef.current?.destroy?.(); } catch {}
@@ -855,6 +858,7 @@ export default function PluggyConnectionsV2({
   };
 
   const openWidget = async ({ existingConnection = null, forceCredentials = false }) => {
+    const effectiveClientUserId = clientUserIdForConnection(existingConnection);
     setError('');
     setBusyId(existingConnection?.itemId || 'new');
     setProgress({
@@ -871,7 +875,7 @@ export default function PluggyConnectionsV2({
 
       const tokenData = await createConnectToken({
         itemId: existingConnection?.itemId || null,
-        clientUserId,
+        clientUserId: effectiveClientUserId,
       });
 
       const itemId = existingConnection?.itemId || null;
@@ -906,7 +910,7 @@ export default function PluggyConnectionsV2({
               id: item.id,
               connectorId: item?.connector?.id || item?.connectorId || null,
               connectorName: item?.connector?.name || item?.connectorName || existingConnection?.connectorName || 'Instituição financeira',
-              clientUserId: item?.clientUserId || clientUserId || null,
+              clientUserId: item?.clientUserId || effectiveClientUserId || null,
               status: item?.status || 'UPDATED',
               executionStatus: item?.executionStatus || null,
               lastUpdatedAt: item?.lastUpdatedAt || null,
@@ -917,13 +921,13 @@ export default function PluggyConnectionsV2({
               itemId: item.id,
               connectorId: item?.connector?.id || item?.connectorId || existingConnection?.connectorId || null,
               connectorName: item?.connector?.name || item?.connectorName || existingConnection?.connectorName || 'Instituição financeira',
-              clientUserId: item?.clientUserId || clientUserId || null,
+              clientUserId: item?.clientUserId || effectiveClientUserId || null,
               lastConnectedAt: existingConnection?.lastConnectedAt || new Date().toISOString(),
             };
 
             const data = await readItemData({
               itemId: item.id,
-              clientUserId,
+              clientUserId: item?.clientUserId || effectiveClientUserId,
             });
 
             setProgress({
@@ -1089,7 +1093,7 @@ export default function PluggyConnectionsV2({
     try {
       const data = await readItemData({
         itemId: connection.itemId,
-        clientUserId,
+        clientUserId: clientUserIdForConnection(connection),
       });
 
       setProgress({ percent: 45, status: 'Gravando dados no ArquiManager...' });

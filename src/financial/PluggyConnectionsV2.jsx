@@ -12,6 +12,7 @@ import {
   updateDoc,
   writeBatch,
   deleteDoc,
+  deleteField,
 } from 'firebase/firestore';
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
 import { getExplicitTransactionBillMonth } from './billTransactionMatching.js';
@@ -103,10 +104,39 @@ const hash = (value = '') => {
   return (result >>> 0).toString(36);
 };
 
-const batchWrite = async (db, operations, chunkSize = 350) => {
-  for (let start = 0; start < operations.length; start += chunkSize) {
+const FIRESTORE_BATCH_SLOW_MS = 60_000;
+
+const commitBatchWithWatchdog = async (batch, batchNumber, totalBatches, onSlow) => {
+  let timeoutId;
+  try {
+    const pendingCommit = batch.commit();
+    timeoutId = window.setTimeout(() => {
+      onSlow?.({ batchNumber, totalBatches });
+    }, FIRESTORE_BATCH_SLOW_MS);
+    // Do not race this promise against a timeout: the Firestore write can still
+    // finish after 60 seconds, and reporting a failure would invite duplicate retries.
+    await pendingCommit;
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
+};
+
+const batchWrite = async (db, operations, chunkSize = 50, onProgress = null) => {
+  const totalOperations = operations.length;
+  const totalBatches = Math.ceil(totalOperations / chunkSize);
+
+  for (let start = 0; start < totalOperations; start += chunkSize) {
     const batch = writeBatch(db);
     const chunk = operations.slice(start, start + chunkSize);
+    const batchNumber = Math.floor(start / chunkSize) + 1;
+
+    onProgress?.({
+      phase: 'writing',
+      completedOperations: start,
+      totalOperations,
+      batchNumber,
+      totalBatches,
+    });
 
     chunk.forEach(operation => {
       const target = refDoc(db, operation.collection, operation.id);
@@ -120,7 +150,30 @@ const batchWrite = async (db, operations, chunkSize = 350) => {
       }
     });
 
-    await batch.commit();
+    try {
+      await commitBatchWithWatchdog(batch, batchNumber, totalBatches, () => {
+        onProgress?.({
+          phase: 'slow',
+          completedOperations: start,
+          totalOperations,
+          batchNumber,
+          totalBatches,
+        });
+      });
+    } catch (error) {
+      const detail = error?.message || 'Erro desconhecido ao gravar no Firestore.';
+      throw new Error(
+        `Falha ao gravar o lote ${batchNumber}/${totalBatches} (${start + 1}–${Math.min(start + chunk.length, totalOperations)} de ${totalOperations} registros): ${detail}`
+      );
+    }
+
+    onProgress?.({
+      phase: 'writing',
+      completedOperations: Math.min(start + chunk.length, totalOperations),
+      totalOperations,
+      batchNumber,
+      totalBatches,
+    });
   }
 };
 
@@ -278,6 +331,7 @@ const makeTransactionPayload = ({
   existing,
   cardId = null,
   billId = null,
+  providerBillId = null,
 }) => {
   const type = financialType(transaction);
   const amountCents = financialAmount(transaction)
@@ -303,6 +357,7 @@ const makeTransactionPayload = ({
     providerItemId: itemId,
     providerTransactionId: transaction.id,
     providerAccountId: accountId || transaction.accountId || null,
+    providerBillId: providerBillId || null,
     externalId,
     accountId: cardId || `${companyId}_pluggy_v2_account_${accountId}`,
     financialAccountId: cardId || `${companyId}_pluggy_v2_account_${accountId}`,
@@ -345,7 +400,9 @@ const makeTransactionPayload = ({
     creditCardForecastDescription: null,
     creditCardForecastMerchant: null,
     creditCardInstallmentHandledAsForecast: false,
-    providerRawData: transaction,
+    // Canonical fields above replace the duplicate raw transaction payload.
+    // This merge also removes the field from transactions imported previously.
+    providerRawData: deleteField(),
     importedAt: existing?.importedAt || new Date().toISOString(),
     updatedAt: serverTimestamp(),
   };
@@ -390,6 +447,7 @@ export default function PluggyConnectionsV2({
   db,
   connections = [],
   onNotice,
+  onSyncStateChange,
 }) {
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
@@ -681,6 +739,7 @@ export default function PluggyConnectionsV2({
         transaction,
         existing,
         cardId,
+        providerBillId,
         billId: localBillId,
       });
       if (!existing) {
@@ -814,7 +873,22 @@ export default function PluggyConnectionsV2({
       status: 'Gravando dados no ArquiManager...',
     });
 
-    await batchWrite(db, operations);
+    await batchWrite(db, operations, 50, ({
+      phase,
+      completedOperations,
+      totalOperations,
+      batchNumber,
+      totalBatches,
+    }) => {
+      const ratio = totalOperations > 0 ? completedOperations / totalOperations : 1;
+      const percent = Math.min(82, 58 + Math.round(ratio * 24));
+      setProgress({
+        percent,
+        status: phase === 'slow'
+          ? `Aguardando confirmação do Firestore — lote ${batchNumber}/${totalBatches}. A gravação continua pendente; não inicie outra sincronização.`
+          : `Gravando dados no ArquiManager — lote ${batchNumber}/${totalBatches} (${completedOperations}/${totalOperations} registros)...`,
+      });
+    });
 
     setProgress({
       percent: 84,
@@ -855,6 +929,15 @@ export default function PluggyConnectionsV2({
       bills: rawBills.length,
       warnings: data.warnings || [],
     };
+  };
+
+  const materializeWithSyncState = async (connection, data) => {
+    onSyncStateChange?.(true);
+    try {
+      return await materialize(connection, data);
+    } finally {
+      onSyncStateChange?.(false);
+    }
   };
 
   const openWidget = async ({ existingConnection = null, forceCredentials = false }) => {
@@ -935,7 +1018,7 @@ export default function PluggyConnectionsV2({
               status: 'Dados recebidos. Atualizando contas, cartões e faturas...',
             });
 
-            const summary = await materialize(connection, data);
+            const summary = await materializeWithSyncState(connection, data);
 
             setProgress({
               percent: 100,
@@ -1019,7 +1102,7 @@ export default function PluggyConnectionsV2({
                   lastUpdatedAt: existingItem.lastUpdatedAt || null,
                 });
 
-                const summary = await materialize(connection, data);
+                const summary = await materializeWithSyncState(connection, data);
                 imported += 1;
                 totalAccounts += summary.bankAccounts + summary.creditAccounts;
                 totalTransactions += summary.transactions + summary.creditTransactions;
@@ -1097,7 +1180,7 @@ export default function PluggyConnectionsV2({
       });
 
       setProgress({ percent: 45, status: 'Gravando dados no ArquiManager...' });
-      const summary = await materialize(connection, data);
+      const summary = await materializeWithSyncState(connection, data);
 
       setProgress({ percent: 100, status: 'Dados atualizados.' });
       showNotice(

@@ -260,6 +260,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bulkQuery, setBulkQuery] = useState('');
   const [bulkLimit, setBulkLimit] = useState(20);
   const [bulkBusyKey, setBulkBusyKey] = useState('');
+  const [pluggySyncing, setPluggySyncing] = useState(false);
 
   // Keep all financial collections live from Firestore.
   useEffect(() => {
@@ -300,7 +301,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   }, [companyId]);
 
-  const invoiceReconciliationRows = useMemo(() => bills
+  const invoiceReconciliationRows = useMemo(() => {
+    if (pluggySyncing) return [];
+    return bills
     .filter(isOfficialBill)
     .map(bill => {
       const card = cards.find(item => item.id === bill.cardId) || {};
@@ -327,8 +330,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         status: allTransactionsChecked ? 'MATCHED_MANUAL' : 'NEEDS_REVIEW',
       };
     })
-    .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id))),
-  [bills, cards, transactions]);
+    .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id)));
+  }, [bills, cards, transactions, pluggySyncing]);
 
   const invoiceReconciliationSignature = useMemo(() => JSON.stringify(
     invoiceReconciliationRows.map(row => [
@@ -345,7 +348,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   ), [invoiceReconciliationRows]);
 
   useEffect(() => {
-    if (!companyId || !invoiceReconciliationRows.length) return undefined;
+    if (!companyId || pluggySyncing || !invoiceReconciliationRows.length) return undefined;
     let cancelled = false;
 
     const persistInvoiceStatuses = async () => {
@@ -386,7 +389,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
     persistInvoiceStatuses();
     return () => { cancelled = true; };
-  }, [companyId, invoiceReconciliationSignature, db]);
+  }, [companyId, pluggySyncing, invoiceReconciliationSignature, db]);
 
   const monthTransactions = useMemo(
     () => transactions.filter(t => monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth),
@@ -2482,6 +2485,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               companyId={companyId}
               connections={connections}
               onNotice={setNotice}
+              onSyncStateChange={setPluggySyncing}
             />
           </Card>
 

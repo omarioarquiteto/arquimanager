@@ -103,23 +103,35 @@ export const getCorrectedTransactionBillProviderId = (
   allBills = []
 ) => {
   const bills = Array.isArray(allBills) ? allBills : [];
-  const metadata = tx.creditCardMetadata || {};
   const raw = tx.providerRawData || {};
+  const metadata = tx.creditCardMetadata || raw.creditCardMetadata || {};
   const sourceAccountId = asText(accountId || tx.accountId);
   if (!sourceAccountId) return '';
 
   const providerBillId = asText(
     metadata.billId
+    || tx.creditCardBillId
     || tx.billId
     || raw.creditCardMetadata?.billId
     || raw.billId
   );
-  const explicitMonth = [
+
+  // Forecast cycle is the most direct signal for the bill receiving the
+  // movement. A provider billId may still point at the prior/closed cycle.
+  const explicitForecastMonth = [
     metadata.billForecastDate,
+    tx.creditCardBillForecastDate,
     tx.billForecastDate,
+    raw.creditCardMetadata?.billForecastDate,
     raw.billForecastDate,
+  ].map(monthFromValue).find(Boolean) || '';
+
+  const explicitMonth = [
+    explicitForecastMonth,
     metadata.billPostDate,
+    tx.creditCardBillPostDate,
     tx.billPostDate,
+    raw.creditCardMetadata?.billPostDate,
     raw.billPostDate,
   ].map(monthFromValue).find(Boolean) || '';
 
@@ -129,6 +141,19 @@ export const getCorrectedTransactionBillProviderId = (
         && asText(bill.accountId) === sourceAccountId
       ))
     : null;
+
+  // If Pluggy explicitly forecasts a later cycle, honor it only when exactly
+  // one bill for this same card/account matches that cycle.
+  if (linkedBill && explicitForecastMonth) {
+    const linkedMonth = getRawBillMonth(linkedBill);
+    if (linkedMonth && explicitForecastMonth > linkedMonth) {
+      const forecastBills = bills.filter(bill => (
+        asText(bill.accountId) === sourceAccountId
+        && getRawBillMonth(bill) === explicitForecastMonth
+      ));
+      if (forecastBills.length === 1) return asText(forecastBills[0].id);
+    }
+  }
 
   if (!linkedBill && explicitMonth) {
     const matchingBills = bills.filter(bill => (
@@ -140,15 +165,19 @@ export const getCorrectedTransactionBillProviderId = (
 
   if (!linkedBill) return '';
 
+  // The transaction's real date is primary. Provider metadata can lag behind
+  // and must not trap a later movement in a previously closed billing cycle.
   const postedDate = dateOnlyValue(
-    metadata.billPostDate
+    tx.date
+    || tx.transactionDateTime
+    || raw.date
+    || raw.transactionDateTime
+    || metadata.transactionDateTime
+    || metadata.billPostDate
+    || tx.creditCardBillPostDate
     || tx.billPostDate
     || raw.creditCardMetadata?.billPostDate
     || raw.billPostDate
-    || tx.transactionDateTime
-    || metadata.transactionDateTime
-    || tx.date
-    || raw.date
   );
   const linkedClosingDate = dateOnlyValue(linkedBill.billClosingDate);
   if (!postedDate || !linkedClosingDate || postedDate <= linkedClosingDate) return '';

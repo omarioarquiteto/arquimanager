@@ -694,7 +694,7 @@ export default function PluggyConnectionsV2({
         ? rawBills.find(bill => String(bill?.id || '') === effectiveProviderBillId)
         : null;
       const rawForecastMonth = String(effectiveRawBill?.billForecastDate || '').trim().slice(0, 7);
-      const effectiveBillForecastDate = /^\\d{4}-\\d{2}$/.test(rawForecastMonth)
+      const effectiveBillForecastDate = /^\d{4}-\d{2}$/.test(rawForecastMonth)
         ? rawForecastMonth
         : (
           dateOnly(effectiveRawBill?.dueDate || effectiveRawBill?.billClosingDate).slice(0, 7)

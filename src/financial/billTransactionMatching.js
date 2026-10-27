@@ -74,9 +74,9 @@ export const getExplicitTransactionBillMonth = (tx = {}) => {
 const dateOnlyValue = value => {
   const raw = asText(value);
   if (!raw) return '';
-  const directDate = raw.match(/^(\\d{4}-\\d{2}-\\d{2})/);
+  const directDate = raw.match(/^(\d{4}-\d{2}-\d{2})/);
   if (directDate) return directDate[1];
-  if (/^\\d{4}-\\d{2}$/.test(raw)) return raw + '-01';
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw + '-01';
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return '';
   return parsed.getFullYear() + '-' + String(parsed.getMonth() + 1).padStart(2, '0') + '-' + String(parsed.getDate()).padStart(2, '0');
@@ -84,7 +84,7 @@ const dateOnlyValue = value => {
 
 const getRawBillMonth = (bill = {}) => {
   const forecastMonth = asText(bill.billForecastDate).slice(0, 7);
-  if (/^\\d{4}-\\d{2}$/.test(forecastMonth)) return forecastMonth;
+  if (/^\d{4}-\d{2}$/.test(forecastMonth)) return forecastMonth;
   return monthFromValue(bill.dueDate) || monthFromValue(bill.billClosingDate);
 };
 

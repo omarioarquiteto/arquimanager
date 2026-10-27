@@ -672,7 +672,7 @@ export default function PluggyConnectionsV2({
         || transaction?.billId
         || ''
       ).trim();
-      // Não manter um crédito/pagamento lançado depois do fechamento preso a
+      // Não manter uma transação lançada depois do fechamento presa a
       // uma fatura já fechada só porque o billId da instituição aponta para ela.
       // A correção só acontece quando há uma fatura posterior inequívoca.
       const correctedProviderBillId = cardId

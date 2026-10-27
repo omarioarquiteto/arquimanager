@@ -180,3 +180,18 @@ test('reads nested provider metadata when the normalized field is absent', () =>
     'bill-nov',
   );
 });
+
+test('corrects the card cycle from normalized fields without the raw Pluggy payload', () => {
+  const refund = {
+    accountId: 'c6-card',
+    date: '2026-10-08',
+    providerBillId: 'bill-oct',
+    creditCardBillForecastDate: '2026-11',
+    creditCardBillPostDate: '2026-09-08',
+  };
+
+  assert.equal(
+    getCorrectedTransactionBillProviderId(refund, 'c6-card', bills),
+    'bill-nov',
+  );
+});

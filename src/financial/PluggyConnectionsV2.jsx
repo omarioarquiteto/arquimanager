@@ -12,6 +12,7 @@ import {
   updateDoc,
   writeBatch,
   deleteDoc,
+  deleteField,
 } from 'firebase/firestore';
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
 import { getCorrectedTransactionBillProviderId, getExplicitTransactionBillMonth } from './billTransactionMatching.js';
@@ -124,7 +125,7 @@ const commitBatchWithTimeout = async (batch, batchNumber, totalBatches) => {
   }
 };
 
-const batchWrite = async (db, operations, chunkSize = 100, onProgress = null) => {
+const batchWrite = async (db, operations, chunkSize = 50, onProgress = null) => {
   const totalOperations = operations.length;
   const totalBatches = Math.ceil(totalOperations / chunkSize);
 
@@ -325,6 +326,7 @@ const makeTransactionPayload = ({
   cardId = null,
   billId = null,
   billForecastDate = null,
+  providerBillId = null,
 }) => {
   const type = financialType(transaction);
   const amountCents = financialAmount(transaction)
@@ -350,6 +352,7 @@ const makeTransactionPayload = ({
     providerItemId: itemId,
     providerTransactionId: transaction.id,
     providerAccountId: accountId || transaction.accountId || null,
+    providerBillId: providerBillId || null,
     externalId,
     accountId: cardId || `${companyId}_pluggy_v2_account_${accountId}`,
     financialAccountId: cardId || `${companyId}_pluggy_v2_account_${accountId}`,
@@ -394,7 +397,10 @@ const makeTransactionPayload = ({
     creditCardForecastDescription: null,
     creditCardForecastMerchant: null,
     creditCardInstallmentHandledAsForecast: false,
-    providerRawData: transaction,
+    // Os campos normalizados acima substituem o payload bruto, que duplicava
+    // metadados e tornava os lotes de gravação desnecessariamente grandes.
+    // Também removemos o payload antigo de documentos já importados.
+    providerRawData: deleteField(),
     importedAt: existing?.importedAt || new Date().toISOString(),
     updatedAt: serverTimestamp(),
   };
@@ -757,6 +763,7 @@ export default function PluggyConnectionsV2({
         transaction,
         existing,
         cardId,
+        providerBillId: effectiveProviderBillId,
         billId: localBillId,
         billForecastDate: effectiveBillForecastDate,
       });
@@ -891,7 +898,7 @@ export default function PluggyConnectionsV2({
       status: 'Gravando dados no ArquiManager...',
     });
 
-    await batchWrite(db, operations, 100, ({
+    await batchWrite(db, operations, 50, ({
       completedOperations,
       totalOperations,
       batchNumber,

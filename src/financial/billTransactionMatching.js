@@ -103,8 +103,8 @@ export const getCorrectedTransactionBillProviderId = (
   allBills = []
 ) => {
   const bills = Array.isArray(allBills) ? allBills : [];
-  const metadata = tx.creditCardMetadata || {};
   const raw = tx.providerRawData || {};
+  const metadata = tx.creditCardMetadata || raw.creditCardMetadata || {};
   const sourceAccountId = asText(accountId || tx.accountId);
   if (!sourceAccountId) return '';
 
@@ -114,12 +114,23 @@ export const getCorrectedTransactionBillProviderId = (
     || raw.creditCardMetadata?.billId
     || raw.billId
   );
-  const explicitMonth = [
+
+  // The forecast month is the institution's explicit billing-cycle signal.
+  // A stale billId must not override a later cycle reported by billForecastDate.
+  const explicitForecastMonth = [
     metadata.billForecastDate,
+    tx.creditCardBillForecastDate,
     tx.billForecastDate,
+    raw.creditCardMetadata?.billForecastDate,
     raw.billForecastDate,
+  ].map(monthFromValue).find(Boolean) || '';
+
+  const explicitMonth = [
+    explicitForecastMonth,
     metadata.billPostDate,
+    tx.creditCardBillPostDate,
     tx.billPostDate,
+    raw.creditCardMetadata?.billPostDate,
     raw.billPostDate,
   ].map(monthFromValue).find(Boolean) || '';
 
@@ -129,6 +140,20 @@ export const getCorrectedTransactionBillProviderId = (
         && asText(bill.accountId) === sourceAccountId
       ))
     : null;
+
+  // If Pluggy links a movement to October but explicitly forecasts November,
+  // use the November bill when it is uniquely identified for this card.
+  // This prevents a stale provider billId from trapping a refund in a closed bill.
+  if (linkedBill && explicitForecastMonth) {
+    const linkedMonth = getRawBillMonth(linkedBill);
+    if (linkedMonth && explicitForecastMonth > linkedMonth) {
+      const forecastBills = bills.filter(bill => (
+        asText(bill.accountId) === sourceAccountId
+        && getRawBillMonth(bill) === explicitForecastMonth
+      ));
+      if (forecastBills.length === 1) return asText(forecastBills[0].id);
+    }
+  }
 
   if (!linkedBill && explicitMonth) {
     const matchingBills = bills.filter(bill => (

@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
 import { getExplicitTransactionBillMonth } from './billTransactionMatching.js';
+import { resolveBillPaymentSettlement } from './billPaymentSettlement.js';
 
 const PLUGGY_WIDGET_SRC = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
 const PLUGGY_SOURCE = 'PLUGGY_REBUILT';
@@ -592,10 +593,14 @@ export default function PluggyConnectionsV2({
       if (!periodBillIds.includes(billId)) periodBillIds.push(billId);
 
       const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';
+      const paymentSettlement = resolveBillPaymentSettlement(rawBill, rawBills);
       const totalCents = hasOfficialTotal ? Math.abs(toCents(rawBill.totalAmount)) : 0;
-      const paidCents = Array.isArray(rawBill.payments)
-        ? rawBill.payments.reduce((sum, payment) => sum + Math.abs(toCents(payment?.amount)), 0)
-        : 0;
+      const providerReportedPaidCents = paymentSettlement.providerPaidCents;
+      // Use the whole invoice amount only when Pluggy provides evidence of full
+      // settlement. Always preserve the exact payment amount returned by Pluggy.
+      const paidCents = paymentSettlement.settled
+        ? totalCents
+        : providerReportedPaidCents;
 
       operations.push({
         collection: 'financial_bills',
@@ -620,13 +625,19 @@ export default function PluggyConnectionsV2({
           projectedCents: 0,
           totalCents,
           paidCents,
+          providerReportedPaidCents,
+          paymentSettlementSource: paymentSettlement.source,
+          paymentSettlementEvidenceBillId: paymentSettlement.evidenceBillId,
+          paymentSettlementEvidenceCents: paymentSettlement.evidenceCents,
           minimumPaymentCents: rawBill.minimumPaymentAmount == null ? null : toCents(rawBill.minimumPaymentAmount),
           allowsInstallments: Boolean(rawBill.allowsInstallments),
           financeCharges: Array.isArray(rawBill.financeCharges) ? rawBill.financeCharges : [],
           payments: Array.isArray(rawBill.payments) ? rawBill.payments : [],
           providerRawData: rawBill,
           provisional: false,
-          status: hasOfficialTotal ? statusForBill(totalCents, paidCents, dueDate) : 'OPEN',
+          status: hasOfficialTotal
+            ? (paymentSettlement.settled ? 'PAID' : statusForBill(totalCents, paidCents, dueDate))
+            : 'OPEN',
           updatedAt: serverTimestamp(),
         },
       });

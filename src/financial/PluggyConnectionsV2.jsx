@@ -504,10 +504,23 @@ export default function PluggyConnectionsV2({
       status: 'Verificando a conexão com o Firestore...',
     });
     const connectionRef = refDoc(db, 'financial_connections', `${companyId}_${itemId}`);
+    // Primeiro confirma leitura no servidor: isso diferencia indisponibilidade
+    // geral do Firestore de um problema específico na confirmação de escrita.
     try {
-      // Testa primeiro uma gravação real no mesmo documento que a integração
-      // já atualiza. Isso separa falha de escrita/regras/quota de problemas no
-      // grande lote de movimentações. O campo é apenas diagnóstico e persistente.
+      await withTimeout(
+        getDocFromServer(connectionRef),
+        FIRESTORE_BATCH_TIMEOUT_MS,
+        'O Firestore não respondeu à leitura online em 15 segundos.'
+      );
+    } catch (error) {
+      const code = error?.code ? ` [${error.code}]` : '';
+      throw new Error(
+        `Falha ao ler do servidor Firestore antes da importação${code}: ${error?.message || 'Verifique conexão, autenticação e configuração do projeto.'}`
+      );
+    }
+
+    try {
+      // Metadado diagnóstico no documento de conexão já existente.
       await withTimeout(
         setDoc(connectionRef, {
           companyId,
@@ -520,11 +533,12 @@ export default function PluggyConnectionsV2({
       await withTimeout(
         getDocFromServer(connectionRef),
         FIRESTORE_BATCH_TIMEOUT_MS,
-        'O Firestore não confirmou uma leitura online em 15 segundos.'
+        'A gravação terminou, mas o Firestore não confirmou a leitura de verificação em 15 segundos.'
       );
     } catch (error) {
+      const code = error?.code ? ` [${error.code}]` : '';
       throw new Error(
-        `O teste de escrita/leitura do Firestore falhou antes de importar os dados. ${error?.message || 'Verifique conexão, autenticação, regras de acesso e cotas do Firestore.'}`
+        `A leitura do servidor funcionou, mas a verificação de escrita falhou${code}: ${error?.message || 'Verifique permissões de gravação, estado da rede e cotas do Firestore.'}`
       );
     }
     const bankAccounts = Array.isArray(data.bankAccounts) ? data.bankAccounts : [];

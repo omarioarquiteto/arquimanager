@@ -146,3 +146,43 @@ test('does not treat a refund of R$ 5.83 as invoice payment evidence', () => {
   assert.equal(result.settled, false);
   assert.equal(result.paidCents, 0);
 });
+
+
+test('does not assign one bank debit to two invoices with the same total', () => {
+  const octoberBill = {
+    id: 'bill-c6-october',
+    accountId: 'c6-card',
+    billForecastDate: '2026-10',
+    billClosingDate: '2026-09-25',
+    dueDate: '2026-10-10',
+    totalAmount: 4782.62,
+    payments: [{ id: 'provider-underreported-payment', valueType: 'OTHER', amount: 4776.79 }],
+  };
+  const competingBill = {
+    id: 'bill-other-card-october',
+    accountId: 'other-card',
+    billForecastDate: '2026-10',
+    billClosingDate: '2026-09-25',
+    dueDate: '2026-10-10',
+    totalAmount: 4782.62,
+    payments: [],
+  };
+  const bankTransactions = [{
+    id: 'single-bank-payment',
+    date: '2026-10-05',
+    type: 'DEBIT',
+    amount: 4782.62,
+    description: 'Pagamento fatura cartão',
+    operationType: 'BILL_PAYMENT',
+  }];
+
+  const result = resolveBillPaymentSettlement(
+    octoberBill,
+    [octoberBill, competingBill],
+    bankTransactions
+  );
+
+  assert.equal(result.settled, false);
+  assert.equal(result.source, 'CURRENT_PARTIAL_PAYMENTS');
+  assert.equal(result.paidCents, 477679);
+});

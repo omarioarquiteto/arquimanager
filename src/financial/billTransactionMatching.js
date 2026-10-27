@@ -70,6 +70,116 @@ export const getExplicitTransactionBillMonth = (tx = {}) => {
   return '';
 };
 
+
+const dateOnlyValue = value => {
+  const raw = asText(value);
+  if (!raw) return '';
+  const directDate = raw.match(/^(\\d{4}-\\d{2}-\\d{2})/);
+  if (directDate) return directDate[1];
+  if (/^\\d{4}-\\d{2}$/.test(raw)) return raw + '-01';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.getFullYear() + '-' + String(parsed.getMonth() + 1).padStart(2, '0') + '-' + String(parsed.getDate()).padStart(2, '0');
+};
+
+const getRawBillMonth = (bill = {}) => {
+  const forecastMonth = asText(bill.billForecastDate).slice(0, 7);
+  if (/^\\d{4}-\\d{2}$/.test(forecastMonth)) return forecastMonth;
+  return monthFromValue(bill.dueDate) || monthFromValue(bill.billClosingDate);
+};
+
+/**
+ * Corrects a provider's transaction-to-bill link when the transaction date is
+ * after the linked bill's close date. A closed bill cannot receive a later
+ * posting: the transaction belongs to the first subsequent bill that closes
+ * on or after the posting date.
+ *
+ * Returns the corrected provider bill ID, or an empty string when the input
+ * does not provide enough dates/bills to make an unambiguous correction.
+ */
+export const getCorrectedTransactionBillProviderId = (
+  tx = {},
+  accountId = '',
+  allBills = []
+) => {
+  const bills = Array.isArray(allBills) ? allBills : [];
+  const metadata = tx.creditCardMetadata || {};
+  const raw = tx.providerRawData || {};
+  const sourceAccountId = asText(accountId || tx.accountId);
+  if (!sourceAccountId) return '';
+
+  const providerBillId = asText(
+    metadata.billId
+    || tx.billId
+    || raw.creditCardMetadata?.billId
+    || raw.billId
+  );
+  const explicitMonth = [
+    metadata.billForecastDate,
+    tx.billForecastDate,
+    raw.billForecastDate,
+    metadata.billPostDate,
+    tx.billPostDate,
+    raw.billPostDate,
+  ].map(monthFromValue).find(Boolean) || '';
+
+  let linkedBill = providerBillId
+    ? bills.find(bill => (
+        asText(bill.id) === providerBillId
+        && asText(bill.accountId) === sourceAccountId
+      ))
+    : null;
+
+  if (!linkedBill && explicitMonth) {
+    const matchingBills = bills.filter(bill => (
+      asText(bill.accountId) === sourceAccountId
+      && getRawBillMonth(bill) === explicitMonth
+    ));
+    if (matchingBills.length === 1) linkedBill = matchingBills[0];
+  }
+
+  if (!linkedBill) return '';
+
+  const postedDate = dateOnlyValue(
+    metadata.billPostDate
+    || tx.billPostDate
+    || raw.creditCardMetadata?.billPostDate
+    || raw.billPostDate
+    || tx.transactionDateTime
+    || metadata.transactionDateTime
+    || tx.date
+    || raw.date
+  );
+  const linkedClosingDate = dateOnlyValue(linkedBill.billClosingDate);
+  if (!postedDate || !linkedClosingDate || postedDate <= linkedClosingDate) return '';
+
+  const linkedMonth = getRawBillMonth(linkedBill);
+  const nextBills = bills
+    .filter(bill => {
+      if (asText(bill.id) === asText(linkedBill.id)) return false;
+      if (asText(bill.accountId) !== sourceAccountId) return false;
+
+      const billMonth = getRawBillMonth(bill);
+      const closingDate = dateOnlyValue(bill.billClosingDate);
+      return Boolean(
+        billMonth
+        && (!linkedMonth || billMonth > linkedMonth)
+        && closingDate
+        && closingDate >= postedDate
+      );
+    })
+    .sort((left, right) => (
+      dateOnlyValue(left.billClosingDate).localeCompare(dateOnlyValue(right.billClosingDate))
+    ));
+
+  if (!nextBills.length) return '';
+  const earliestClosingDate = dateOnlyValue(nextBills[0].billClosingDate);
+  const earliestBills = nextBills.filter(bill => dateOnlyValue(bill.billClosingDate) === earliestClosingDate);
+
+  // Do not guess if two bills for this account have the same closest close date.
+  return earliestBills.length === 1 ? asText(earliestBills[0].id) : '';
+};
+
 const getLinkedBillMonth = (tx = {}, allBills = []) => {
   const localBillId = asText(tx.billId);
   if (localBillId) {

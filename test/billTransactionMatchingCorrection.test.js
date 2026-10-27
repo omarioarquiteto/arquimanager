@@ -110,3 +110,35 @@ test('does not attach a transaction to a bill from another card account', () => 
     '',
   );
 });
+
+test('prioritizes the November forecast when Pluggy still links the refund to October', () => {
+  const billsWithStaleLink = [
+    {
+      id: 'bill-oct',
+      accountId: 'c6-card',
+      billForecastDate: '2026-10',
+      billClosingDate: '2026-10-25',
+    },
+    {
+      id: 'bill-nov',
+      accountId: 'c6-card',
+      billForecastDate: '2026-11',
+      billClosingDate: '2026-11-25',
+    },
+  ];
+  const refund = {
+    accountId: 'c6-card',
+    date: '2026-10-08',
+    operationType: 'ESTORNO',
+    creditCardMetadata: {
+      billId: 'bill-oct',
+      billForecastDate: '2026-11',
+      billPostDate: '2026-10-08',
+    },
+  };
+
+  assert.equal(
+    getCorrectedTransactionBillProviderId(refund, 'c6-card', billsWithStaleLink),
+    'bill-nov',
+  );
+});

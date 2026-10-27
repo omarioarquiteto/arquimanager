@@ -3066,7 +3066,7 @@ function BillDetailsModal({
           <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs text-emerald-900 space-y-2">
             <p className="font-black">Estorno / reembolso identificado na movimentação do cartão</p>
             <p>
-              A Pluggy retornou um crédito descrito como “Refund”. Esse lançamento é um estorno, não um pagamento adicional da fatura. O crédito reconhecido nesta fatura soma {formatBRL(recognizedRefundCents || Math.abs(getBillTransactionsTotalCents(refundTransactions)))}; deste valor, {formatBRL(appliedRefundCents)} foi aplicado para reconciliar a diferença em aberto.
+              A Pluggy retornou uma movimentação de crédito classificada como estorno/reembolso (a descrição pode aparecer como “Refund”). Ela reduz o valor líquido devido; não é um pagamento adicional da fatura. O crédito reconhecido nesta fatura soma {formatBRL(recognizedRefundCents || Math.abs(getBillTransactionsTotalCents(refundTransactions)))}; deste valor, {formatBRL(appliedRefundCents)} foi aplicado para reconciliar a diferença em aberto.
             </p>
             <div className="grid sm:grid-cols-2 gap-2 rounded-lg bg-white/70 p-3">
               <p><strong>Descrição devolvida:</strong> {String(refundSourceDescription)}</p>
@@ -3079,6 +3079,9 @@ function BillDetailsModal({
               <p className="font-bold">
                 Total oficial {formatBRL(officialTotalCents)} − estorno aplicado {formatBRL(appliedRefundCents)} = total líquido considerado {formatBRL(total)}. O valor original da Pluggy foi preservado.
               </p>
+            )}
+            {!primaryRefundTransaction && appliedRefundCents > 0 && (
+              <p>A Pluggy informou um estorno que reduziu o saldo, mas não foi possível vinculá-lo a um lançamento detalhado desta fatura. O valor bruto e o ajuste continuam registrados para auditoria.</p>
             )}
             {primaryRefundTransaction && !primaryRefundTransaction.providerCode && !primaryRefundTransaction.providerId && !primaryRefundTransaction.providerRawData?.providerCode && !primaryRefundTransaction.providerRawData?.providerId && (
               <p>A Pluggy não forneceu um código de transação ou identificador do provedor para vincular este estorno à compra original. O ArquiManager preserva o registro e não inventa essa associação.</p>

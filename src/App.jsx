@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { initializeFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { 
   LayoutDashboard, Users, FolderKanban, CalendarDays, LogOut, Plus, X, Check,
   ChevronLeft, ChevronRight, Building2, Wallet, TrendingUp, AlertCircle, Edit, Trash2,
@@ -27,7 +27,13 @@ const firebaseConfig = {
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+// Em alguns navegadores/redes, o transporte WebChannel pode não confirmar
+// gravações mesmo quando a aplicação consegue abrir e ler dados do cache.
+// Forçamos long-polling para evitar respostas HTTP mantidas abertas por proxy,
+// antivírus ou filtros de rede, causa conhecida de confirmações pendentes.
+const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+});
 
 // EXTRAÇÃO RIGOROSA DO APP ID
 let safeAppId = 'arquimanager-producao';

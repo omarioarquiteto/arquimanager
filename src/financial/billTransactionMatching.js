@@ -109,7 +109,8 @@ export const getCorrectedTransactionBillProviderId = (
   if (!sourceAccountId) return '';
 
   const providerBillId = asText(
-    metadata.billId
+    tx.providerBillId
+    || metadata.billId
     || tx.creditCardBillId
     || tx.billId
     || raw.creditCardMetadata?.billId

@@ -41,13 +41,13 @@ const sumFinanceChargesCents = (bill = {}) => (
 
 const normalizedPaymentText = (value) => String(value == null ? '' : value)
   .normalize('NFD')
-  .replace(/[\\u0300-\\u036f]/g, '')
+  .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, ' ')
   .trim();
 
 const dateOnly = (value) => {
-  const match = String(value == null ? '' : value).trim().match(/^(\\d{4}-\\d{2}-\\d{2})/);
+  const match = String(value == null ? '' : value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
   return match ? match[1] : '';
 };
 
@@ -87,13 +87,13 @@ const matchesExactBankBillPayment = (bill = {}, transactions = []) => {
     ].filter(Boolean).join(' '));
 
     // Do not treat refunds, reversals, or card purchases as invoice payments.
-    if (/\\b(refund|estorno|chargeback|reversao|cancelamento)\\b/.test(operation + ' ' + description)) {
+    if (/\b(refund|estorno|chargeback|reversao|cancelamento)\b/.test(operation + ' ' + description)) {
       return false;
     }
 
-    const referencesCardOrBill = /\\b(fatura|cartao|credito|card|bill)\\b/.test(description);
-    const referencesPayment = /\\b(pagamento|pagto|pgto|payment|quitar|quitacao|debito automatico)\\b/.test(description)
-      || /\\b(pagamento|payment)\\b/.test(operation);
+    const referencesCardOrBill = /\b(fatura|cartao|credito|card|bill)\b/.test(description);
+    const referencesPayment = /\b(pagamento|pagto|pgto|payment|quitar|quitacao|debito automatico)\b/.test(description)
+      || /\b(pagamento|payment)\b/.test(operation);
     if (!referencesCardOrBill || !referencesPayment) return false;
 
     const date = dateOnly(transaction?.date);

@@ -14,6 +14,7 @@ import {
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
 import { getBillTransactions } from './billTransactionMatching.js';
+import { isRefundCreditTransaction } from './billPaymentSettlement.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -123,7 +124,7 @@ const hasEffectiveBillTotal = (bill = {}) => (
 const getBillTotalCents = (bill = {}) => (
   hasAppliedReconciledBillTotal(bill)
     ? Number(bill.reconciledTotalCents || 0)
-    : Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
+    : Number(bill.refundAdjustedTotalCents ?? bill.officialTotalCents ?? bill.totalCents ?? 0)
 );
 
 const getCheckedInvoiceTransactionIds = (bill = {}) => new Set(
@@ -3006,8 +3007,24 @@ function BillDetailsModal({
   const totalAvailable = hasOfficialBillTotal(bill);
   const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
   const registeredTotalCents = getBillTransactionsTotalCents(sortedTransactions);
-  const amountsMatch = hasOfficialBill && totalAvailable && officialTotalCents === registeredTotalCents;
+  const amountsMatch = hasOfficialBill && totalAvailable && total === registeredTotalCents;
   const checkedTransactionIds = getCheckedInvoiceTransactionIds(bill);
+  const refundTransactions = sortedTransactions.filter(isRefundCreditTransaction);
+  const refundTransactionIds = new Set((Array.isArray(bill.refundTransactionIds) ? bill.refundTransactionIds : []).map(String));
+  const primaryRefundTransaction = refundTransactions.find(transaction => (
+    refundTransactionIds.has(String(transaction.providerTransactionId || transaction.id))
+  )) || refundTransactions[0] || null;
+  const recognizedRefundCents = Number(bill.recognizedRefundCents || 0);
+  const appliedRefundCents = Number(bill.appliedRefundCents || 0);
+  const refundSourceDescription = primaryRefundTransaction?.descriptionRaw
+    || primaryRefundTransaction?.providerRawData?.descriptionRaw
+    || primaryRefundTransaction?.description
+    || primaryRefundTransaction?.merchant
+    || 'Refund';
+  const refundOperationType = primaryRefundTransaction?.operationType
+    || primaryRefundTransaction?.providerRawData?.operationType
+    || primaryRefundTransaction?.providerRawData?.operationTypeAdditionalInfo
+    || '';
   const checkedTransactionCount = getCheckedInvoiceTransactionCount(bill, sortedTransactions);
   const allTransactionsChecked = (
     sortedTransactions.length > 0
@@ -3044,6 +3061,36 @@ function BillDetailsModal({
           <Metric label="Restante" value={formatBRL(remaining)} icon={<CircleAlert size={16}/>} tone={remaining > 0 ? 'red' : 'green'}/>
           <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
         </div>
+
+        {(appliedRefundCents > 0 || refundTransactions.length > 0) && (
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs text-emerald-900 space-y-2">
+            <p className="font-black">Estorno / reembolso identificado na movimentação do cartão</p>
+            <p>
+              A Pluggy retornou um crédito descrito como “Refund”. Esse lançamento é um estorno, não um pagamento adicional da fatura. O crédito reconhecido nesta fatura soma {formatBRL(recognizedRefundCents || getBillTransactionsTotalCents(refundTransactions). * -1)}; deste valor, {formatBRL(appliedRefundCents)} foi aplicado para reconciliar a diferença em aberto.
+            </p>
+            <div className="grid sm:grid-cols-2 gap-2 rounded-lg bg-white/70 p-3">
+              <p><strong>Descrição devolvida:</strong> {String(refundSourceDescription)}</p>
+              {refundOperationType && <p><strong>Tipo informado:</strong> {String(refundOperationType)}</p>}
+              {primaryRefundTransaction?.date && <p><strong>Data:</strong> {dateLabel(primaryRefundTransaction.date)}</p>}
+              {(primaryRefundTransaction?.providerCode || primaryRefundTransaction?.providerRawData?.providerCode) && <p><strong>Código do provedor:</strong> {String(primaryRefundTransaction.providerCode || primaryRefundTransaction.providerRawData.providerCode)}</p>}
+              {(primaryRefundTransaction?.providerId || primaryRefundTransaction?.providerRawData?.providerId) && <p><strong>ID do provedor:</strong> {String(primaryRefundTransaction.providerId || primaryRefundTransaction.providerRawData.providerId)}</p>}
+            </div>
+            {appliedRefundCents > 0 && (
+              <p className="font-bold">
+                Total oficial {formatBRL(officialTotalCents)} − estorno aplicado {formatBRL(appliedRefundCents)} = total líquido considerado {formatBRL(total)}. O valor original da Pluggy foi preservado.
+              </p>
+            )}
+            {refundTransactions.length > 0 && !primaryRefundTransaction && (
+              <p>O estorno aparece na lista, mas os metadados retornados pela Pluggy não permitem identificar com segurança a compra original nesta tela.</p>
+            )}
+          </div>
+        )}
+
+        {bill.paymentSettlementSource === 'CURRENT_REFUND_NETTING' && (
+          <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-900">
+            A quitação foi conciliada com o crédito de estorno informado pelo provedor, que reduz o valor líquido devido. O valor pago original continua registrado.
+          </div>
+        )}
 
         {bill.paymentSettlementSource === 'CURRENT_FULL_PAYMENT'
           && Number(bill.providerReportedPaidCents ?? 0) !== Number(bill.officialTotalCents ?? bill.totalCents ?? 0) && (
@@ -3092,6 +3139,7 @@ function BillDetailsModal({
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 1 · Total oficial da Pluggy</p>
                 <p className="text-xl font-black text-slate-800 mt-1">{totalAvailable ? formatBRL(officialTotalCents) : 'Não informado'}</p>
+                {appliedRefundCents > 0 && <p className="text-[10px] text-emerald-700 mt-1">Líquido após estorno: {formatBRL(total)}</p>}
               </div>
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 2 · Lançamentos encontrados</p>
@@ -3101,7 +3149,7 @@ function BillDetailsModal({
               <div className={`p-3 rounded-xl border ${amountsMatch ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
                 <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 3 · Comparação</p>
                 <p className={`text-sm font-black mt-2 ${amountsMatch ? 'text-emerald-800' : 'text-red-800'}`}>{!totalAvailable ? 'Total oficial ausente' : amountsMatch ? 'Os totais conferem' : 'Os totais não conferem'}</p>
-                <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(officialTotalCents - registeredTotalCents) : '—'}</p>
+                <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(total - registeredTotalCents) : '—'}</p>
               </div>
             </div>
             {!allTransactionsChecked && <p className="text-xs text-red-700">Confira os lançamentos acima e marque cada um. A fatura será marcada como conciliada quando todos estiverem selecionados.</p>}
@@ -3144,6 +3192,7 @@ function BillDetailsModal({
               const category = categories.find(item => item.id === tx.categoryId);
               const installment = Number(tx.creditCardInstallmentNumber || 0);
               const installments = Number(tx.creditCardTotalInstallments || 0);
+              const isRefund = isRefundCreditTransaction(tx);
               return (
                 <div key={tx.id} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
                   <label className="inline-flex items-center gap-2 shrink-0 cursor-pointer" title="Marcar lançamento como conferido">
@@ -3159,7 +3208,7 @@ function BillDetailsModal({
                   </label>
                   <div className="w-12 shrink-0"><p className="text-[10px] font-black text-slate-500">{dateLabel(tx.date)}</p></div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${tx.provider === 'PLUGGY' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{tx.provider === 'PLUGGY' ? 'Pluggy' : 'Registrado'}</span>{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>
+                    <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${tx.provider === 'PLUGGY' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{tx.provider === 'PLUGGY' ? 'Pluggy' : 'Registrado'}</span>{isRefund && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Estorno / reembolso</span>}{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>
                     <p className="text-[10px] text-slate-400 truncate">{tx.description}{category ? ` · ${category.nome}` : ' · categoria não definida'}{tx.notes ? ` · ${tx.notes}` : ''}</p>
                   </div>
                   <div className="flex items-center gap-2">

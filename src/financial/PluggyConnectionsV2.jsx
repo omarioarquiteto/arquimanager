@@ -596,7 +596,7 @@ export default function PluggyConnectionsV2({
       if (!periodBillIds.includes(billId)) periodBillIds.push(billId);
 
       const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';
-      const paymentSettlement = resolveBillPaymentSettlement(rawBill, rawBills);
+      const paymentSettlement = resolveBillPaymentSettlement(rawBill, rawBills, transactions);
       const totalCents = hasOfficialTotal ? Math.abs(toCents(rawBill.totalAmount)) : 0;
       const providerReportedPaidCents = paymentSettlement.providerPaidCents;
       // Use the whole invoice amount only when Pluggy provides evidence of full

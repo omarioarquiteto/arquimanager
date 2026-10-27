@@ -4,6 +4,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   query,
   where,
@@ -34,7 +35,7 @@ const loadPluggyWidget = () => {
         if (window.PluggyConnect) resolve(window.PluggyConnect);
         else reject(new Error('O Pluggy Connect foi carregado sem disponibilizar o widget.'));
       }, { once: true });
-      existing.addEventListener('error', () => reject(new Error('Não foi possível carregar o Pluggy Connect.')), { once: true });
+      existing.addEventListener('error', () => { pluggyWidgetPromise = null; reject(new Error('Não foi possível carregar o Pluggy Connect.')); }, { once: true });
       return;
     }
 
@@ -46,7 +47,7 @@ const loadPluggyWidget = () => {
       if (window.PluggyConnect) resolve(window.PluggyConnect);
       else reject(new Error('O Pluggy Connect foi carregado sem disponibilizar o widget.'));
     };
-    script.onerror = () => reject(new Error('Não foi possível carregar o Pluggy Connect.'));
+    script.onerror = () => { pluggyWidgetPromise = null; reject(new Error('Não foi possível carregar o Pluggy Connect.')); };
     document.head.appendChild(script);
   });
 
@@ -104,29 +105,63 @@ const hash = (value = '') => {
   return (result >>> 0).toString(36);
 };
 
-const FIRESTORE_BATCH_SLOW_MS = 60_000;
+const FIRESTORE_BATCH_TIMEOUT_MS = 15_000;
+
+const applyOperationToBatch = (db, batch, operation) => {
+  const target = refDoc(db, operation.collection, operation.id);
+
+  if (operation.type === 'delete') {
+    batch.delete(target);
+  } else if (operation.type === 'set') {
+    batch.set(target, operation.data, { merge: true });
+  } else if (operation.type === 'update') {
+    batch.update(target, operation.data);
+  } else {
+    throw new Error(`Operação Firestore desconhecida: ${operation.type}`);
+  }
+};
 
 const commitBatchWithWatchdog = async (batch, batchNumber, totalBatches, onSlow) => {
   let timeoutId;
   try {
     const pendingCommit = batch.commit();
-    timeoutId = window.setTimeout(() => {
-      onSlow?.({ batchNumber, totalBatches });
-    }, FIRESTORE_BATCH_SLOW_MS);
-    // Do not race this promise against a timeout: the Firestore write can still
-    // finish after 60 seconds, and reporting a failure would invite duplicate retries.
-    await pendingCommit;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        onSlow?.({ batchNumber, totalBatches });
+        const error = new Error(
+          `O Firestore não confirmou o lote ${batchNumber}/${totalBatches} em ${FIRESTORE_BATCH_TIMEOUT_MS / 1000} segundos.`
+        );
+        error.code = 'FIRESTORE_COMMIT_TIMEOUT';
+        error.retryableTimeout = true;
+        reject(error);
+      }, FIRESTORE_BATCH_TIMEOUT_MS);
+    });
+    await Promise.race([pendingCommit, timeout]);
   } finally {
     if (timeoutId) window.clearTimeout(timeoutId);
   }
 };
 
-const batchWrite = async (db, operations, chunkSize = 50, onProgress = null) => {
+const describeOperations = (operations) => {
+  const collections = [...new Set(operations.map(operation => operation.collection))];
+  const sample = operations.slice(0, 3)
+    .map(operation => `${operation.collection}/${operation.id}`)
+    .join(', ');
+  return `coleções: ${collections.join(', ') || 'nenhuma'}; documentos iniciais: ${sample || 'nenhum'}`;
+};
+
+const batchWrite = async (
+  db,
+  operations,
+  chunkSize = 50,
+  onProgress = null,
+  { retryOnTimeout = false, probeRef = null } = {}
+) => {
   const totalOperations = operations.length;
+  if (!totalOperations) return;
   const totalBatches = Math.ceil(totalOperations / chunkSize);
 
   for (let start = 0; start < totalOperations; start += chunkSize) {
-    const batch = writeBatch(db);
     const chunk = operations.slice(start, start + chunkSize);
     const batchNumber = Math.floor(start / chunkSize) + 1;
 
@@ -138,33 +173,77 @@ const batchWrite = async (db, operations, chunkSize = 50, onProgress = null) => 
       totalBatches,
     });
 
-    chunk.forEach(operation => {
-      const target = refDoc(db, operation.collection, operation.id);
-
-      if (operation.type === 'delete') {
-        batch.delete(target);
-      } else if (operation.type === 'set') {
-        batch.set(target, operation.data, { merge: true });
-      } else if (operation.type === 'update') {
-        batch.update(target, operation.data);
-      }
-    });
-
-    try {
-      await commitBatchWithWatchdog(batch, batchNumber, totalBatches, () => {
+    const commitOperations = async (subset, label) => {
+      const batch = writeBatch(db);
+      subset.forEach(operation => applyOperationToBatch(db, batch, operation));
+      await commitBatchWithWatchdog(batch, label, totalBatches, () => {
         onProgress?.({
           phase: 'slow',
+          completedOperations: start,
+          totalOperations,
+          batchNumber: label,
+          totalBatches,
+        });
+      });
+    };
+
+    try {
+      await commitOperations(chunk, batchNumber);
+    } catch (error) {
+      let finalError = error;
+
+      if (retryOnTimeout && error?.code === 'FIRESTORE_COMMIT_TIMEOUT') {
+        onProgress?.({
+          phase: 'retrying',
           completedOperations: start,
           totalOperations,
           batchNumber,
           totalBatches,
         });
-      });
-    } catch (error) {
-      const detail = error?.message || 'Erro desconhecido ao gravar no Firestore.';
-      throw new Error(
-        `Falha ao gravar o lote ${batchNumber}/${totalBatches} (${start + 1}–${Math.min(start + chunk.length, totalOperations)} de ${totalOperations} registros): ${detail}`
-      );
+
+        if (!probeRef) {
+          throw new Error(
+            `A gravação do lote ${batchNumber}/${totalBatches} ficou pendente e não há referência de verificação do Firestore. ${error.message}`
+          );
+        }
+
+        // Confirma a conexão ao servidor antes de tentar novamente. Uma leitura
+        // local de cache não é suficiente para afirmar que o Firestore está online.
+        try {
+          await getDocFromServer(probeRef);
+        } catch (probeError) {
+          throw new Error(
+            `O Firestore não confirmou o lote ${batchNumber}/${totalBatches} e também não respondeu à verificação online. ${probeError?.message || 'Sem detalhe adicional.'} Verifique conexão, autenticação e regras do Firestore antes de sincronizar novamente.`
+          );
+        }
+
+        // Importação determinística: as operações são set/merge ou atualizações
+        // de estado idempotentes. Dividir o lote reduz o payload e ajuda a
+        // contornar um lote específico que não recebeu confirmação. Não usamos
+        // este caminho para estornos/exclusões manuais, que nunca são repetidos
+        // automaticamente.
+        const halves = chunk.length > 1
+          ? [chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2))]
+          : [chunk];
+
+        try {
+          for (let index = 0; index < halves.length; index += 1) {
+            await commitOperations(halves[index], `${batchNumber}.${index + 1}`);
+          }
+          finalError = null;
+        } catch (retryError) {
+          finalError = retryError;
+        }
+      }
+
+      if (finalError) {
+        const range = `${start + 1}–${Math.min(start + chunk.length, totalOperations)} de ${totalOperations}`;
+        const detail = finalError?.message || 'Erro desconhecido ao gravar no Firestore.';
+        const code = finalError?.code ? ` [${finalError.code}]` : '';
+        throw new Error(
+          `Falha ao gravar o lote ${batchNumber}/${totalBatches} (${range} registros; ${describeOperations(chunk)}): ${detail}${code}`
+        );
+      }
     }
 
     onProgress?.({
@@ -175,105 +254,6 @@ const batchWrite = async (db, operations, chunkSize = 50, onProgress = null) => 
       totalBatches,
     });
   }
-};
-
-const purgePreviousPluggyIntegration = async (db, companyId, itemId) => {
-  const legacyQueries = await Promise.all([
-    getDocs(query(coll(db, 'financial_accounts'), where('providerItemId', '==', itemId))),
-    getDocs(query(coll(db, 'financial_cards'), where('providerItemId', '==', itemId))),
-    getDocs(query(coll(db, 'financial_bills'), where('providerItemId', '==', itemId))),
-    getDocs(query(coll(db, 'financial_transactions'), where('providerItemId', '==', itemId))),
-    getDocs(query(coll(db, 'financial_purchases'), where('providerItemId', '==', itemId))),
-    getDocs(query(coll(db, 'financial_sync_runs'), where('itemId', '==', itemId))),
-  ]);
-
-  const [accountSnapshot, cardSnapshot, billSnapshot, transactionSnapshot, purchaseSnapshot, syncRunSnapshot] = legacyQueries;
-  const legacy = (snapshot) => snapshot.docs
-    .map(item => ({ id: item.id, ...item.data() }))
-    .filter(item => item.companyId === companyId && item.source !== PLUGGY_SOURCE);
-
-  const legacyAccounts = legacy(accountSnapshot);
-  const legacyCards = legacy(cardSnapshot);
-  // Projeções criadas pelo ArquiManager são necessárias para a conciliação
-  // posterior e nunca devem ser removidas como se fossem dados legados.
-  const legacyBills = legacy(billSnapshot).filter(item =>
-    item.source !== 'ARQUIMANAGER_FORECAST' && item.forecastManaged !== true
-  );
-  const legacyTransactions = legacy(transactionSnapshot).filter(item =>
-    item.source === 'PLUGGY' || item.source === 'PLUGGY_PROJECTION' || item.provider === 'PLUGGY'
-  );
-  const legacyPurchases = legacy(purchaseSnapshot);
-  const legacySyncRuns = syncRunSnapshot.docs
-    .map(item => ({ id: item.id, ...item.data() }))
-    .filter(item => item.companyId === companyId && item.source !== PLUGGY_SOURCE);
-
-  const transactionIds = new Set(legacyTransactions.map(item => String(item.id)));
-  const purchaseIds = new Set(legacyPurchases.map(item => String(item.id)));
-
-  const transactionIdGroups = [];
-  const transactionIdList = Array.from(transactionIds);
-  for (let index = 0; index < transactionIdList.length; index += 30) {
-    transactionIdGroups.push(transactionIdList.slice(index, index + 30));
-  }
-
-  const purchaseIdGroups = [];
-  const purchaseIdList = Array.from(purchaseIds);
-  for (let index = 0; index < purchaseIdList.length; index += 30) {
-    purchaseIdGroups.push(purchaseIdList.slice(index, index + 30));
-  }
-
-  const inboxSnapshots = transactionIdGroups.length
-    ? await Promise.all(transactionIdGroups.map(ids =>
-        getDocs(query(coll(db, 'financial_inbox'), where('transactionId', 'in', ids)))
-      ))
-    : [];
-  const transferOutgoingSnapshots = transactionIdGroups.length
-    ? await Promise.all(transactionIdGroups.map(ids =>
-        getDocs(query(coll(db, 'financial_transfers'), where('outgoingTransactionId', 'in', ids)))
-      ))
-    : [];
-  const transferIncomingSnapshots = transactionIdGroups.length
-    ? await Promise.all(transactionIdGroups.map(ids =>
-        getDocs(query(coll(db, 'financial_transfers'), where('incomingTransactionId', 'in', ids)))
-      ))
-    : [];
-  const installmentSnapshots = purchaseIdGroups.length
-    ? await Promise.all(purchaseIdGroups.map(ids =>
-        getDocs(query(coll(db, 'financial_installments'), where('purchaseId', 'in', ids)))
-      ))
-    : [];
-
-  const legacyInbox = inboxSnapshots.flatMap(snapshot =>
-    snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
-  ).filter(item => item.companyId === companyId);
-  const legacyTransfers = [
-    ...transferOutgoingSnapshots.flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() }))),
-    ...transferIncomingSnapshots.flatMap(snapshot => snapshot.docs.map(item => ({ id: item.id, ...item.data() }))),
-  ].filter(item => item.companyId === companyId && item.source === 'AUTO_RECONCILIATION')
-   .reduce((map, item) => map.set(item.id, item), new Map());
-  const legacyInstallments = installmentSnapshots.flatMap(snapshot =>
-    snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
-  ).filter(item => item.companyId === companyId);
-
-  const operations = [
-    ...Array.from(legacyTransfers.keys()).map(id => ({ collection: 'financial_transfers', id, type: 'delete' })),
-    ...legacyTransactions.map(item => ({ collection: 'financial_transactions', id: item.id, type: 'delete' })),
-    ...legacyBills.map(item => ({ collection: 'financial_bills', id: item.id, type: 'delete' })),
-    ...legacyInstallments.map(item => ({ collection: 'financial_installments', id: item.id, type: 'delete' })),
-    ...legacyPurchases.map(item => ({ collection: 'financial_purchases', id: item.id, type: 'delete' })),
-    ...legacyInbox.map(item => ({ collection: 'financial_inbox', id: item.id, type: 'delete' })),
-    ...legacyCards.map(item => ({ collection: 'financial_cards', id: item.id, type: 'delete' })),
-    ...legacyAccounts.map(item => ({ collection: 'financial_accounts', id: item.id, type: 'delete' })),
-    ...legacySyncRuns.map(item => ({ collection: 'financial_sync_runs', id: item.id, type: 'delete' })),
-  ];
-
-  if (operations.length) await batchWrite(db, operations);
-  return {
-    transactions: legacyTransactions.length,
-    accounts: legacyAccounts.length,
-    cards: legacyCards.length,
-    bills: legacyBills.length,
-  };
 };
 
 const financialAmount = (transaction) =>
@@ -503,8 +483,18 @@ export default function PluggyConnectionsV2({
   };
 
   const materialize = async (connection, data) => {
-    await purgePreviousPluggyIntegration(db, companyId, connection.itemId);
     const itemId = connection.itemId;
+    setProgress({
+      percent: 52,
+      status: 'Verificando a conexão com o Firestore...',
+    });
+    try {
+      await getDocFromServer(refDoc(db, 'financial_connections', `${companyId}_${itemId}`));
+    } catch (error) {
+      throw new Error(
+        `Não foi possível confirmar comunicação com o Firestore antes da importação. ${error?.message || 'Verifique conexão, autenticação e regras de acesso.'}`
+      );
+    }
     const bankAccounts = Array.isArray(data.bankAccounts) ? data.bankAccounts : [];
     const creditAccounts = Array.isArray(data.creditAccounts) ? data.creditAccounts : [];
     const bankTransactions = Array.isArray(data.transactions) ? data.transactions : [];
@@ -873,7 +863,7 @@ export default function PluggyConnectionsV2({
       status: 'Gravando dados no ArquiManager...',
     });
 
-    await batchWrite(db, operations, 50, ({
+    await batchWrite(db, operations, 25, ({
       phase,
       completedOperations,
       totalOperations,
@@ -882,12 +872,15 @@ export default function PluggyConnectionsV2({
     }) => {
       const ratio = totalOperations > 0 ? completedOperations / totalOperations : 1;
       const percent = Math.min(82, 58 + Math.round(ratio * 24));
-      setProgress({
-        percent,
-        status: phase === 'slow'
-          ? `Aguardando confirmação do Firestore — lote ${batchNumber}/${totalBatches}. A gravação continua pendente; não inicie outra sincronização.`
-          : `Gravando dados no ArquiManager — lote ${batchNumber}/${totalBatches} (${completedOperations}/${totalOperations} registros)...`,
-      });
+      const status = phase === 'slow'
+        ? `Confirmação pendente no lote ${batchNumber}/${totalBatches}; verificando a comunicação com o Firestore...`
+        : phase === 'retrying'
+          ? `Firestore respondeu à verificação; tentando novamente o lote ${batchNumber}/${totalBatches} em partes menores...`
+          : `Gravando dados no ArquiManager — lote ${batchNumber}/${totalBatches} (${completedOperations}/${totalOperations} registros)...`;
+      setProgress({ percent, status });
+    }, {
+      retryOnTimeout: true,
+      probeRef: refDoc(db, 'financial_connections', `${companyId}_${itemId}`),
     });
 
     setProgress({
@@ -917,7 +910,10 @@ export default function PluggyConnectionsV2({
         status: 'COMPLETED',
         completedAt: serverTimestamp(),
       },
-    }]);
+    }], 1, null, {
+      retryOnTimeout: true,
+      probeRef: refDoc(db, 'financial_connections', `${companyId}_${itemId}`),
+    });
 
     return {
       newTransactions,

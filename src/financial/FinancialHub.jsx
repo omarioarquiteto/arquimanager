@@ -3053,6 +3053,13 @@ function BillDetailsModal({
             </div>
           )}
 
+        {bill.paymentSettlementSource === 'BANK_TRANSACTION_EXACT_TOTAL' && (
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-800">
+            <p className="font-black">Pagamento integral confirmado pelo débito bancário</p>
+            <p className="mt-1">Foi encontrado um débito bancário único compatível com o valor total oficial desta fatura ({formatBRL(Number(bill.officialTotalCents ?? bill.totalCents ?? 0))}). O valor bruto de {formatBRL(Number(bill.providerReportedPaidCents || 0))} informado pela Pluggy permanece disponível para auditoria, mas não reduz o valor confirmado como pago.</p>
+          </div>
+        )}
+
         {bill.paymentSettlementSource === 'NEXT_CYCLE_SETTLEMENT' && (
           <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-800">
             <p className="font-black">Quitação confirmada pelo ciclo seguinte</p>
@@ -3117,9 +3124,17 @@ function BillDetailsModal({
             </div>
             <div className="space-y-2">
               {bill.payments.map((payment, index) => {
-                const isConfirmedFullPayment = (
+                const isProviderConfirmedFullPayment = (
                   bill.paymentSettlementSource === 'CURRENT_FULL_PAYMENT'
                   && String(payment?.valueType || '').toUpperCase().replace(/[^A-Z]/g, '') === 'FULLPAYMENT'
+                );
+                const isBankConfirmedSinglePayment = (
+                  bill.paymentSettlementSource === 'BANK_TRANSACTION_EXACT_TOTAL'
+                  && Array.isArray(bill.payments)
+                  && bill.payments.length === 1
+                );
+                const isConfirmedFullPayment = (
+                  isProviderConfirmedFullPayment || isBankConfirmedSinglePayment
                 );
                 const reportedPaymentCents = toCents(payment.amount);
                 const displayedPaymentCents = isConfirmedFullPayment

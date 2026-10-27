@@ -107,6 +107,21 @@ const hash = (value = '') => {
 
 const FIRESTORE_BATCH_TIMEOUT_MS = 15_000;
 
+const withTimeout = (promise, timeoutMs, message) => {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      const error = new Error(message);
+      error.code = 'FIRESTORE_PREFLIGHT_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  });
+};
+
 const applyOperationToBatch = (db, batch, operation) => {
   const target = refDoc(db, operation.collection, operation.id);
 
@@ -488,11 +503,28 @@ export default function PluggyConnectionsV2({
       percent: 52,
       status: 'Verificando a conexão com o Firestore...',
     });
+    const connectionRef = refDoc(db, 'financial_connections', `${companyId}_${itemId}`);
     try {
-      await getDocFromServer(refDoc(db, 'financial_connections', `${companyId}_${itemId}`));
+      // Testa primeiro uma gravação real no mesmo documento que a integração
+      // já atualiza. Isso separa falha de escrita/regras/quota de problemas no
+      // grande lote de movimentações. O campo é apenas diagnóstico e persistente.
+      await withTimeout(
+        setDoc(connectionRef, {
+          companyId,
+          itemId,
+          firestoreWriteProbeAt: serverTimestamp(),
+        }, { merge: true }),
+        FIRESTORE_BATCH_TIMEOUT_MS,
+        'O Firestore não confirmou a gravação de verificação em 15 segundos.'
+      );
+      await withTimeout(
+        getDocFromServer(connectionRef),
+        FIRESTORE_BATCH_TIMEOUT_MS,
+        'O Firestore não confirmou uma leitura online em 15 segundos.'
+      );
     } catch (error) {
       throw new Error(
-        `Não foi possível confirmar comunicação com o Firestore antes da importação. ${error?.message || 'Verifique conexão, autenticação e regras de acesso.'}`
+        `O teste de escrita/leitura do Firestore falhou antes de importar os dados. ${error?.message || 'Verifique conexão, autenticação, regras de acesso e cotas do Firestore.'}`
       );
     }
     const bankAccounts = Array.isArray(data.bankAccounts) ? data.bankAccounts : [];

@@ -165,15 +165,18 @@ export const getCorrectedTransactionBillProviderId = (
 
   if (!linkedBill) return '';
 
+  // Use the transaction's actual movement date first. Provider billPostDate
+  // metadata can be stale and must not keep a post-close movement in an old bill.
   const postedDate = dateOnlyValue(
-    metadata.billPostDate
+    tx.date
+    || tx.transactionDateTime
+    || raw.date
+    || raw.transactionDateTime
+    || metadata.transactionDateTime
+    || metadata.billPostDate
     || tx.billPostDate
     || raw.creditCardMetadata?.billPostDate
     || raw.billPostDate
-    || tx.transactionDateTime
-    || metadata.transactionDateTime
-    || tx.date
-    || raw.date
   );
   const linkedClosingDate = dateOnlyValue(linkedBill.billClosingDate);
   if (!postedDate || !linkedClosingDate || postedDate <= linkedClosingDate) return '';

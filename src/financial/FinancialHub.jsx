@@ -301,7 +301,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   }, [companyId]);
 
-  const invoiceReconciliationRows = useMemo(() => bills
+  const invoiceReconciliationRows = useMemo(() => {
+    if (pluggySyncing) return [];
+    return bills
     .filter(isOfficialBill)
     .map(bill => {
       const card = cards.find(item => item.id === bill.cardId) || {};
@@ -328,8 +330,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         status: allTransactionsChecked ? 'MATCHED_MANUAL' : 'NEEDS_REVIEW',
       };
     })
-    .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id))),
-  [bills, cards, transactions]);
+    .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id)));
+  }, [bills, cards, transactions, pluggySyncing]);
 
   const invoiceReconciliationSignature = useMemo(() => JSON.stringify(
     invoiceReconciliationRows.map(row => [

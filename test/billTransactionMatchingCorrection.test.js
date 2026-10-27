@@ -110,3 +110,73 @@ test('does not attach a transaction to a bill from another card account', () => 
     '',
   );
 });
+
+
+test('uses the real movement date when Pluggy billPostDate metadata is stale', () => {
+  const refund = {
+    accountId: 'c6-card',
+    date: '2026-10-08',
+    operationType: 'ESTORNO',
+    creditCardMetadata: {
+      billId: 'bill-oct',
+      billForecastDate: '2026-10',
+      billPostDate: '2026-09-08',
+    },
+  };
+
+  assert.equal(
+    getCorrectedTransactionBillProviderId(refund, 'c6-card', bills),
+    'bill-nov',
+  );
+});
+
+test('prioritizes an explicit November forecast over a stale October billId', () => {
+  const billsWithStaleLink = [
+    {
+      id: 'bill-oct',
+      accountId: 'c6-card',
+      billForecastDate: '2026-10',
+      billClosingDate: '2026-10-25',
+    },
+    {
+      id: 'bill-nov',
+      accountId: 'c6-card',
+      billForecastDate: '2026-11',
+      billClosingDate: '2026-11-25',
+    },
+  ];
+  const refund = {
+    accountId: 'c6-card',
+    date: '2026-10-08',
+    operationType: 'ESTORNO',
+    creditCardMetadata: {
+      billId: 'bill-oct',
+      billForecastDate: '2026-11',
+      billPostDate: '2026-09-08',
+    },
+  };
+
+  assert.equal(
+    getCorrectedTransactionBillProviderId(refund, 'c6-card', billsWithStaleLink),
+    'bill-nov',
+  );
+});
+
+test('reads nested provider metadata when the normalized field is absent', () => {
+  const refund = {
+    accountId: 'c6-card',
+    date: '2026-10-08',
+    providerRawData: {
+      creditCardMetadata: {
+        billId: 'bill-oct',
+        billForecastDate: '2026-11',
+        billPostDate: '2026-09-08',
+      },
+    },
+  };
+
+  assert.equal(
+    getCorrectedTransactionBillProviderId(refund, 'c6-card', bills),
+    'bill-nov',
+  );
+});

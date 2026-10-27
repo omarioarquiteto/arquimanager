@@ -39,6 +39,67 @@ const sumFinanceChargesCents = (bill = {}) => (
     .reduce((sum, charge) => sum + Math.abs(amountToCents(charge?.amount)), 0)
 );
 
+const normalizedPaymentText = value => String(value == null ? '' : value)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+
+const dateOnly = value => {
+  const match = String(value == null ? '' : value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+};
+
+const shiftDate = (value, days) => {
+  const date = dateOnly(value);
+  if (!date) return '';
+  const parsed = new Date(date + 'T00:00:00Z');
+  if (Number.isNaN(parsed.getTime())) return '';
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+};
+
+const matchesExactBankBillPayment = (bill = {}, transactions = []) => {
+  const totalCents = Math.abs(amountToCents(bill.totalAmount));
+  const closingDate = dateOnly(bill.billClosingDate);
+  const dueDate = dateOnly(bill.dueDate);
+  if (!totalCents || (!closingDate && !dueDate)) return [];
+
+  const startDate = shiftDate(closingDate || shiftDate(dueDate, -45), -3);
+  const endDate = shiftDate(dueDate || shiftDate(closingDate, 45), 15);
+  if (!startDate || !endDate) return [];
+
+  return (Array.isArray(transactions) ? transactions : []).filter(transaction => {
+    const amountCents = Math.abs(amountToCents(
+      transaction?.amountInAccountCurrency ?? transaction?.amount
+    ));
+    if (amountCents !== totalCents) return false;
+
+    const type = normalizedPaymentText(transaction?.type);
+    if (/\b(credit|income|refund|estorno|chargeback|reversal|reversao)\b/.test(type)) return false;
+
+    const operation = normalizedPaymentText(transaction?.operationType);
+    const description = normalizedPaymentText([
+      transaction?.description,
+      transaction?.descriptionRaw,
+      transaction?.operationType,
+    ].filter(Boolean).join(' '));
+
+    // A refund/reversal can never prove that the invoice was paid.
+    if (/\b(refund|estorno|chargeback|reversal|reversao|cancelamento|devolucao)\b/.test(operation + ' ' + description)) {
+      return false;
+    }
+
+    const referencesCardOrBill = /\b(fatura|cartao|credito|card|bill)\b/.test(description);
+    const referencesPayment = /\b(pagamento|pagto|pgto|payment|quitar|quitacao|debito automatico)\b/.test(description);
+    if (!referencesCardOrBill || !referencesPayment) return false;
+
+    const date = dateOnly(transaction?.date);
+    return Boolean(date && date >= startDate && date <= endDate);
+  });
+};
+
 /**
  * Determines whether a Pluggy bill has credible evidence of full settlement.
  *
@@ -46,10 +107,40 @@ const sumFinanceChargesCents = (bill = {}) => (
  * amount differs slightly from the bill total. Its docs also describe verifying
  * bill N using payments in bill N+1, including finance charges in that next cycle.
  */
-export const resolveBillPaymentSettlement = (bill = {}, allBills = []) => {
+export const resolveBillPaymentSettlement = (bill = {}, allBills = [], bankTransactions = []) => {
   const totalCents = Math.abs(amountToCents(bill.totalAmount));
   const providerPaidCents = sumPaymentsCents(bill);
   const payments = Array.isArray(bill.payments) ? bill.payments : [];
+
+  // Prefer one unambiguous, exact bank debit over the provider's underreported
+  // payment amount. Multiple matching debits are treated as ambiguous.
+  const exactBankPayments = matchesExactBankBillPayment(bill, bankTransactions);
+  if (exactBankPayments.length === 1) {
+    const exactBankPayment = exactBankPayments[0];
+    const competingBills = (Array.isArray(allBills) ? allBills : []).filter(candidate => (
+      String(candidate?.id || '') !== String(bill.id || '')
+      && Math.abs(amountToCents(candidate?.totalAmount)) === totalCents
+      && matchesExactBankBillPayment(candidate, [exactBankPayment]).length === 1
+    ));
+
+    // A single bank debit must not settle two different invoices that happen
+    // to share the same total and overlapping payment window. Without a unique
+    // bill match, leave the provider settlement rules to decide.
+    if (competingBills.length === 0) {
+      const evidenceCents = Math.abs(amountToCents(
+        exactBankPayment?.amountInAccountCurrency ?? exactBankPayment?.amount
+      ));
+      return {
+        settled: true,
+        totalCents,
+        providerPaidCents,
+        paidCents: totalCents,
+        source: 'BANK_TRANSACTION_EXACT_TOTAL',
+        evidenceBillId: bill.id || null,
+        evidenceCents,
+      };
+    }
+  }
 
   if (totalCents > 0 && payments.some(payment => (
     String(payment?.valueType || '').toUpperCase().replace(/[^A-Z]/g, '') === 'FULLPAYMENT'

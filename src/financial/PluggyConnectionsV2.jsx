@@ -445,6 +445,7 @@ export default function PluggyConnectionsV2({
   db,
   connections = [],
   onNotice,
+  onSyncStateChange,
 }) {
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
@@ -953,6 +954,15 @@ export default function PluggyConnectionsV2({
     };
   };
 
+  const materializeWithSyncState = async (connection, data) => {
+    onSyncStateChange?.(true);
+    try {
+      return await materialize(connection, data);
+    } finally {
+      onSyncStateChange?.(false);
+    }
+  };
+
   const openWidget = async ({ existingConnection = null, forceCredentials = false }) => {
     const effectiveClientUserId = clientUserIdForConnection(existingConnection);
     setError('');
@@ -1031,7 +1041,7 @@ export default function PluggyConnectionsV2({
               status: 'Dados recebidos. Atualizando contas, cartões e faturas...',
             });
 
-            const summary = await materialize(connection, data);
+            const summary = await materializeWithSyncState(connection, data);
 
             setProgress({
               percent: 100,
@@ -1115,7 +1125,7 @@ export default function PluggyConnectionsV2({
                   lastUpdatedAt: existingItem.lastUpdatedAt || null,
                 });
 
-                const summary = await materialize(connection, data);
+                const summary = await materializeWithSyncState(connection, data);
                 imported += 1;
                 totalAccounts += summary.bankAccounts + summary.creditAccounts;
                 totalTransactions += summary.transactions + summary.creditTransactions;
@@ -1193,7 +1203,7 @@ export default function PluggyConnectionsV2({
       });
 
       setProgress({ percent: 45, status: 'Gravando dados no ArquiManager...' });
-      const summary = await materialize(connection, data);
+      const summary = await materializeWithSyncState(connection, data);
 
       setProgress({ percent: 100, status: 'Dados atualizados.' });
       showNotice(

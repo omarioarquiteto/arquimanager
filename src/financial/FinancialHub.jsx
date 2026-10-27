@@ -3045,6 +3045,21 @@ function BillDetailsModal({
           <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
         </div>
 
+        {bill.paymentSettlementSource === 'CURRENT_FULL_PAYMENT'
+          && Number(bill.providerReportedPaidCents ?? 0) !== Number(bill.officialTotalCents ?? bill.totalCents ?? 0) && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-800">
+              <p className="font-black">Pagamento integral confirmado pela Pluggy</p>
+              <p className="mt-1">A instituição classificou o pagamento como integral. O valor bruto informado foi {formatBRL(Number(bill.providerReportedPaidCents || 0))}, mas a fatura é considerada quitada com base nessa confirmação. O valor original permanece registrado para conferência.</p>
+            </div>
+          )}
+
+        {bill.paymentSettlementSource === 'NEXT_CYCLE_SETTLEMENT' && (
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-800">
+            <p className="font-black">Quitação confirmada pelo ciclo seguinte</p>
+            <p className="mt-1">Os pagamentos registrados no ciclo seguinte cobrem o total desta fatura e os encargos reportados nesse ciclo, conforme a regra de conciliação documentada pela Pluggy.</p>
+          </div>
+        )}
+
         {hasOfficialBill && (
           <div className="border border-blue-100 bg-blue-50/50 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>

@@ -14,7 +14,7 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
-import { getExplicitTransactionBillMonth } from './billTransactionMatching.js';
+import { getCorrectedTransactionBillProviderId, getExplicitTransactionBillMonth } from './billTransactionMatching.js';
 import { resolveBillPaymentSettlement } from './billPaymentSettlement.js';
 
 const PLUGGY_WIDGET_SRC = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
@@ -279,6 +279,7 @@ const makeTransactionPayload = ({
   existing,
   cardId = null,
   billId = null,
+  billForecastDate = null,
 }) => {
   const type = financialType(transaction);
   const amountCents = financialAmount(transaction)
@@ -333,9 +334,11 @@ const makeTransactionPayload = ({
     creditCardTotalInstallments: providerTotalInstallments || null,
     creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
     // Keep only the cycle dates actually returned by the provider.
-    creditCardBillForecastDate: cardMetadata.billForecastDate
-      ? String(cardMetadata.billForecastDate).slice(0, 7)
-      : (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null),
+    creditCardBillForecastDate: billForecastDate
+      ? String(billForecastDate).slice(0, 7)
+      : (cardMetadata.billForecastDate
+        ? String(cardMetadata.billForecastDate).slice(0, 7)
+        : (cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate).slice(0, 7) : null)),
     creditCardBillPostDate: cardMetadata.billPostDate ? dateOnly(cardMetadata.billPostDate) : null,
     creditCardTotalAmountCents: cardMetadata.totalAmount == null ? null : toCents(cardMetadata.totalAmount),
     // These fields are kept for schema compatibility but are not used to
@@ -669,17 +672,34 @@ export default function PluggyConnectionsV2({
         || transaction?.billId
         || ''
       ).trim();
-      const localBillIdByProvider = providerBillId
-        ? (billByProviderId.get(providerBillId) || null)
+      // Não manter um crédito/pagamento lançado depois do fechamento preso a
+      // uma fatura já fechada só porque o billId da instituição aponta para ela.
+      // A correção só acontece quando há uma fatura posterior inequívoca.
+      const correctedProviderBillId = cardId
+        ? getCorrectedTransactionBillProviderId(transaction, accountId, rawBills)
+        : '';
+      const effectiveProviderBillId = correctedProviderBillId || providerBillId;
+      const localBillIdByProvider = effectiveProviderBillId
+        ? (billByProviderId.get(effectiveProviderBillId) || null)
         : null;
       const transactionBillMonth = getExplicitTransactionBillMonth(transaction);
-      const billsForCycle = (cardId && !providerBillId && transactionBillMonth)
+      const billsForCycle = (cardId && !effectiveProviderBillId && transactionBillMonth)
         ? (billByAccountMonth.get(String(accountId) + '|' + transactionBillMonth) || [])
         : [];
-      // O vínculo por mês só é usado quando o provedor não forneceu billId
-      // e há uma única fatura possível para aquele cartão e ciclo.
+      // O vínculo por mês só é usado quando não há billId confiável e há
+      // uma única fatura possível para aquele cartão e ciclo.
       const localBillId = localBillIdByProvider
         || (billsForCycle.length === 1 ? billsForCycle[0] : null);
+      const effectiveRawBill = effectiveProviderBillId
+        ? rawBills.find(bill => String(bill?.id || '') === effectiveProviderBillId)
+        : null;
+      const rawForecastMonth = String(effectiveRawBill?.billForecastDate || '').trim().slice(0, 7);
+      const effectiveBillForecastDate = /^\\d{4}-\\d{2}$/.test(rawForecastMonth)
+        ? rawForecastMonth
+        : (
+          dateOnly(effectiveRawBill?.dueDate || effectiveRawBill?.billClosingDate).slice(0, 7)
+          || null
+        );
 
       const transactionId = `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`;
       transactionIds.add(transactionId);
@@ -693,6 +713,7 @@ export default function PluggyConnectionsV2({
         existing,
         cardId,
         billId: localBillId,
+        billForecastDate: effectiveBillForecastDate,
       });
       if (!existing) {
         const rule = reconcileExactRule(ruleMap, payload.merchant);

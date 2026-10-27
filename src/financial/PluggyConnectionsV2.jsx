@@ -593,17 +593,13 @@ export default function PluggyConnectionsV2({
       if (!periodBillIds.includes(billId)) periodBillIds.push(billId);
 
       const hasOfficialTotal = rawBill.totalAmount != null && rawBill.totalAmount !== '';
-      const paymentSettlement = resolveBillPaymentSettlement(rawBill, rawBills, creditTransactions);
+      const paymentSettlement = resolveBillPaymentSettlement(rawBill, rawBills);
       const totalCents = hasOfficialTotal ? Math.abs(toCents(rawBill.totalAmount)) : 0;
-      const effectiveTotalCents = paymentSettlement.effectiveTotalCents;
       const providerReportedPaidCents = paymentSettlement.providerPaidCents;
-      const refundAdjustedTotalCents = paymentSettlement.appliedRefundCents > 0
-        ? effectiveTotalCents
-        : null;
-      // Preserve Pluggy's gross official total while using a refund-adjusted
-      // net amount for the paid/open status and outstanding balance.
+      // Use the whole invoice amount only when Pluggy provides evidence of full
+      // settlement. Always preserve the exact payment amount returned by Pluggy.
       const paidCents = paymentSettlement.settled
-        ? paymentSettlement.paidCents
+        ? totalCents
         : providerReportedPaidCents;
 
       operations.push({
@@ -629,10 +625,6 @@ export default function PluggyConnectionsV2({
           projectedCents: 0,
           totalCents,
           paidCents,
-          refundAdjustedTotalCents,
-          recognizedRefundCents: paymentSettlement.recognizedRefundCents,
-          appliedRefundCents: paymentSettlement.appliedRefundCents,
-          refundTransactionIds: paymentSettlement.refundTransactionIds,
           providerReportedPaidCents,
           paymentSettlementSource: paymentSettlement.source,
           paymentSettlementEvidenceBillId: paymentSettlement.evidenceBillId,
@@ -644,7 +636,7 @@ export default function PluggyConnectionsV2({
           providerRawData: rawBill,
           provisional: false,
           status: hasOfficialTotal
-            ? (paymentSettlement.settled ? 'PAID' : statusForBill(effectiveTotalCents, paidCents, dueDate))
+            ? (paymentSettlement.settled ? 'PAID' : statusForBill(totalCents, paidCents, dueDate))
             : 'OPEN',
           updatedAt: serverTimestamp(),
         },

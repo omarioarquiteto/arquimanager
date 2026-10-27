@@ -41,13 +41,13 @@ const sumFinanceChargesCents = (bill = {}) => (
 
 const normalizedPaymentText = value => String(value == null ? '' : value)
   .normalize('NFD')
-  .replace(/[\\u0300-\\u036f]/g, '')
+  .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, ' ')
   .trim();
 
 const dateOnly = value => {
-  const match = String(value == null ? '' : value).trim().match(/^(\\d{4}-\\d{2}-\\d{2})/);
+  const match = String(value == null ? '' : value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
   return match ? match[1] : '';
 };
 
@@ -77,7 +77,7 @@ const matchesExactBankBillPayment = (bill = {}, transactions = []) => {
     if (amountCents !== totalCents) return false;
 
     const type = normalizedPaymentText(transaction?.type);
-    if (/\\b(credit|income|refund|estorno|chargeback|reversal|reversao)\\b/.test(type)) return false;
+    if (/\b(credit|income|refund|estorno|chargeback|reversal|reversao)\b/.test(type)) return false;
 
     const operation = normalizedPaymentText(transaction?.operationType);
     const description = normalizedPaymentText([
@@ -87,12 +87,12 @@ const matchesExactBankBillPayment = (bill = {}, transactions = []) => {
     ].filter(Boolean).join(' '));
 
     // A refund/reversal can never prove that the invoice was paid.
-    if (/\\b(refund|estorno|chargeback|reversal|reversao|cancelamento|devolucao)\\b/.test(operation + ' ' + description)) {
+    if (/\b(refund|estorno|chargeback|reversal|reversao|cancelamento|devolucao)\b/.test(operation + ' ' + description)) {
       return false;
     }
 
-    const referencesCardOrBill = /\\b(fatura|cartao|credito|card|bill)\\b/.test(description);
-    const referencesPayment = /\\b(pagamento|pagto|pgto|payment|quitar|quitacao|debito automatico)\\b/.test(description);
+    const referencesCardOrBill = /\b(fatura|cartao|credito|card|bill)\b/.test(description);
+    const referencesPayment = /\b(pagamento|pagto|pgto|payment|quitar|quitacao|debito automatico)\b/.test(description);
     if (!referencesCardOrBill || !referencesPayment) return false;
 
     const date = dateOnly(transaction?.date);

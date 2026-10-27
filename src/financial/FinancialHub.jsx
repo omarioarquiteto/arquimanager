@@ -3048,8 +3048,8 @@ function BillDetailsModal({
         {bill.paymentSettlementSource === 'CURRENT_FULL_PAYMENT'
           && Number(bill.providerReportedPaidCents ?? 0) !== Number(bill.officialTotalCents ?? bill.totalCents ?? 0) && (
             <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-800">
-              <p className="font-black">Pagamento integral confirmado pela Pluggy</p>
-              <p className="mt-1">A instituição classificou o pagamento como integral. O valor bruto informado foi {formatBRL(Number(bill.providerReportedPaidCents || 0))}, mas a fatura é considerada quitada com base nessa confirmação. O valor original permanece registrado para conferência.</p>
+              <p className="font-black">Quitação integral confirmada</p>
+              <p className="mt-1">O valor considerado efetivamente pago é o total oficial da fatura ({formatBRL(Number(bill.officialTotalCents ?? bill.totalCents ?? 0))}). A Pluggy retornou {formatBRL(Number(bill.providerReportedPaidCents || 0))} no campo bruto do pagamento; esse dado fica preservado para auditoria, mas não reduz o valor quitado.</p>
             </div>
           )}
 
@@ -3116,13 +3116,29 @@ function BillDetailsModal({
               <span className="text-[10px] font-black text-emerald-600">{formatBRL(paid)}</span>
             </div>
             <div className="space-y-2">
-              {bill.payments.map((payment, index) => (
-                <div key={payment.id || index} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50">
-                  <Check className="text-emerald-600 shrink-0" size={16}/>
-                  <div className="flex-1"><p className="font-bold text-slate-700">{payment.valueType || 'Pagamento'}</p><p className="text-[10px] text-slate-400">{dateLabel(syncDateOnly(payment.paymentDate))} · {payment.paymentMode || '—'}</p></div>
-                  <span className="font-black text-emerald-600 text-sm">{formatBRL(toCents(payment.amount))}</span>
-                </div>
-              ))}
+              {bill.payments.map((payment, index) => {
+                const isConfirmedFullPayment = (
+                  bill.paymentSettlementSource === 'CURRENT_FULL_PAYMENT'
+                  && String(payment?.valueType || '').toUpperCase().replace(/[^A-Z]/g, '') === 'FULLPAYMENT'
+                );
+                const reportedPaymentCents = toCents(payment.amount);
+                const displayedPaymentCents = isConfirmedFullPayment
+                  ? Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
+                  : reportedPaymentCents;
+                return (
+                  <div key={payment.id || index} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50">
+                    <Check className="text-emerald-600 shrink-0" size={16}/>
+                    <div className="flex-1">
+                      <p className="font-bold text-slate-700">{payment.valueType || 'Pagamento'}</p>
+                      <p className="text-[10px] text-slate-400">{dateLabel(syncDateOnly(payment.paymentDate))} · {payment.paymentMode || '—'}</p>
+                      {isConfirmedFullPayment && reportedPaymentCents !== displayedPaymentCents && (
+                        <p className="text-[10px] text-slate-500 mt-1">Valor bruto informado pela Pluggy: {formatBRL(reportedPaymentCents)}</p>
+                      )}
+                    </div>
+                    <span className="font-black text-emerald-600 text-sm">{formatBRL(displayedPaymentCents)}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

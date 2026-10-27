@@ -117,18 +117,29 @@ export const resolveBillPaymentSettlement = (bill = {}, allBills = [], bankTrans
   const exactBankPayments = matchesExactBankBillPayment(bill, bankTransactions);
   if (exactBankPayments.length === 1) {
     const exactBankPayment = exactBankPayments[0];
-    const evidenceCents = Math.abs(amountToCents(
-      exactBankPayment?.amountInAccountCurrency ?? exactBankPayment?.amount
+    const competingBills = (Array.isArray(allBills) ? allBills : []).filter(candidate => (
+      String(candidate?.id || '') !== String(bill.id || '')
+      && Math.abs(amountToCents(candidate?.totalAmount)) === totalCents
+      && matchesExactBankBillPayment(candidate, [exactBankPayment]).length === 1
     ));
-    return {
-      settled: true,
-      totalCents,
-      providerPaidCents,
-      paidCents: totalCents,
-      source: 'BANK_TRANSACTION_EXACT_TOTAL',
-      evidenceBillId: bill.id || null,
-      evidenceCents,
-    };
+
+    // A single bank debit must not settle two different invoices that happen
+    // to share the same total and overlapping payment window. Without a unique
+    // bill match, leave the provider settlement rules to decide.
+    if (competingBills.length === 0) {
+      const evidenceCents = Math.abs(amountToCents(
+        exactBankPayment?.amountInAccountCurrency ?? exactBankPayment?.amount
+      ));
+      return {
+        settled: true,
+        totalCents,
+        providerPaidCents,
+        paidCents: totalCents,
+        source: 'BANK_TRANSACTION_EXACT_TOTAL',
+        evidenceBillId: bill.id || null,
+        evidenceCents,
+      };
+    }
   }
 
   if (totalCents > 0 && payments.some(payment => (

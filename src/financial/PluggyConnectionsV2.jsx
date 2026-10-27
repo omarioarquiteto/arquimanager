@@ -104,10 +104,42 @@ const hash = (value = '') => {
   return (result >>> 0).toString(36);
 };
 
-const batchWrite = async (db, operations, chunkSize = 350) => {
-  for (let start = 0; start < operations.length; start += chunkSize) {
+const FIRESTORE_BATCH_TIMEOUT_MS = 60_000;
+
+const commitBatchWithTimeout = async (batch, batchNumber, totalBatches) => {
+  let timeoutId;
+  try {
+    await Promise.race([
+      batch.commit(),
+      new Promise((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(
+            `O Firestore não confirmou o lote ${batchNumber}/${totalBatches} em 60 segundos. Verifique a conexão e tente novamente; nenhum sucesso será informado sem confirmação.`
+          ));
+        }, FIRESTORE_BATCH_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
+};
+
+const batchWrite = async (db, operations, chunkSize = 100, onProgress = null) => {
+  const totalOperations = operations.length;
+  const totalBatches = Math.ceil(totalOperations / chunkSize);
+
+  for (let start = 0; start < totalOperations; start += chunkSize) {
     const batch = writeBatch(db);
     const chunk = operations.slice(start, start + chunkSize);
+    const batchNumber = Math.floor(start / chunkSize) + 1;
+
+    onProgress?.({
+      phase: 'writing',
+      completedOperations: start,
+      totalOperations,
+      batchNumber,
+      totalBatches,
+    });
 
     chunk.forEach(operation => {
       const target = refDoc(db, operation.collection, operation.id);
@@ -121,7 +153,20 @@ const batchWrite = async (db, operations, chunkSize = 350) => {
       }
     });
 
-    await batch.commit();
+    try {
+      await commitBatchWithTimeout(batch, batchNumber, totalBatches);
+    } catch (error) {
+      const detail = error?.message || 'Erro desconhecido ao gravar no Firestore.';
+      throw new Error(`Falha ao gravar o lote ${batchNumber}/${totalBatches} (${start + 1}–${Math.min(start + chunk.length, totalOperations)} de ${totalOperations} registros): ${detail}`);
+    }
+
+    onProgress?.({
+      phase: 'writing',
+      completedOperations: Math.min(start + chunk.length, totalOperations),
+      totalOperations,
+      batchNumber,
+      totalBatches,
+    });
   }
 };
 
@@ -846,7 +891,19 @@ export default function PluggyConnectionsV2({
       status: 'Gravando dados no ArquiManager...',
     });
 
-    await batchWrite(db, operations);
+    await batchWrite(db, operations, 100, ({
+      completedOperations,
+      totalOperations,
+      batchNumber,
+      totalBatches,
+    }) => {
+      const ratio = totalOperations > 0 ? completedOperations / totalOperations : 1;
+      const percent = Math.min(82, 58 + Math.floor(ratio * 24));
+      setProgress({
+        percent,
+        status: `Gravando dados no ArquiManager — lote ${batchNumber}/${totalBatches} (${completedOperations}/${totalOperations} registros)...`,
+      });
+    });
 
     setProgress({
       percent: 84,

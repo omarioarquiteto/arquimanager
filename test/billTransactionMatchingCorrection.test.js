@@ -142,3 +142,22 @@ test('prioritizes the November forecast when Pluggy still links the refund to Oc
     'bill-nov',
   );
 });
+
+
+test('uses the real movement date when billPostDate metadata is stale', () => {
+  const refund = {
+    accountId: 'c6-card',
+    date: '2026-10-08',
+    operationType: 'ESTORNO',
+    creditCardMetadata: {
+      billId: 'bill-oct',
+      billForecastDate: '2026-10',
+      billPostDate: '2026-09-08',
+    },
+  };
+
+  assert.equal(
+    getCorrectedTransactionBillProviderId(refund, 'c6-card', bills),
+    'bill-nov',
+  );
+});

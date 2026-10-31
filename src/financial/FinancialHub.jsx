@@ -448,75 +448,91 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }, [transactions, queryText]);
 
-  // Compras parceladas reconstruídas exclusivamente a partir das últimas parcelas N/N.
-  // Não usamos metadados de parcelamento, IDs ou datas auxiliares da Pluggy.
+  // Agrupa todas as parcelas reais de compras de cartão em uma única compra.
+  // Cada parcela ocupa apenas uma posição (número da parcela) dentro da compra.
+  // Não cria lançamentos financeiros nem inventa parcelas ausentes.
   const installmentPurchases = useMemo(() => {
-    const lastInstallments = new Map();
+    const purchases = new Map();
     const shiftMonth = (value, offset) => {
       if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return '';
-      const [year, month] = value.split('-').map(Number);
+      const [year, month] = String(value).split('-').map(Number);
       const date = new Date(year, month - 1 + offset, 1);
       return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0');
     };
     const normalizeDescription = value => normalizeText(String(value || ''))
-      .replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*\/\s*\d+\s*$/i, '')
+      .replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
       .replace(/\s+/g, ' ')
       .trim();
 
     transactions.forEach(tx => {
+      if (!isCreditCardTransaction(tx) || tx.status === 'CANCELLED') return;
       const rawDescription = String(tx.description || tx.merchant || '').trim();
-      const match = rawDescription.match(/(?:\s+|\b)(?:(?:parcela|parc)\s*)?(\d+)\s*\/\s*(\d+)\s*$/i);
-      if (!match) return;
+      const descriptionMatch = rawDescription.match(/(?:\s+|\b)(?:(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
+      const installmentNumber = Number(tx.creditCardInstallmentNumber || descriptionMatch?.[1] || 0);
+      const totalInstallments = Number(tx.creditCardTotalInstallments || descriptionMatch?.[2] || 0);
+      if (!Number.isInteger(installmentNumber) || !Number.isInteger(totalInstallments)
+        || totalInstallments < 2 || installmentNumber < 1 || installmentNumber > totalInstallments) return;
 
-      const installmentNumber = Number(match[1]);
-      const totalInstallments = Number(match[2]);
-      if (!Number.isInteger(totalInstallments) || totalInstallments < 2
-        || installmentNumber !== totalInstallments) return;
-
-      const description = normalizeDescription(rawDescription);
-      const lastMonth = String(tx.date || '').slice(0, 7);
+      const description = normalizeDescription(rawDescription) || String(tx.merchant || rawDescription);
       const amountCents = Math.abs(Number(tx.amountCents || 0));
-      if (!description || !/^\d{4}-\d{2}$/.test(lastMonth) || !amountCents) return;
+      const cardId = String(tx.cardId || tx.accountId || '');
+      const transactionDate = String(tx.date || '').slice(0, 10);
+      if (!description || !amountCents || !cardId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) return;
 
-      // Identidade formada somente pelos dados visíveis da última parcela.
+      const inferredPurchaseDate = shiftMonth(transactionDate.slice(0, 7), -(installmentNumber - 1));
+      const purchaseDate = String(tx.creditCardPurchaseDate || (inferredPurchaseDate ? inferredPurchaseDate + transactionDate.slice(7, 10) : '')).slice(0, 10);
+      const cycleMonth = String(tx.creditCardBillForecastDate || tx.creditCardBillPostDate || transactionDate).slice(0, 7);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate) || !/^\d{4}-\d{2}$/.test(cycleMonth)) return;
+
+      // Cartão + descrição + data da compra + plano + valor separam compras distintas.
       const key = [
+        cardId,
         normalizeText(description),
+        purchaseDate,
         totalInstallments,
         amountCents,
-        lastMonth,
+        String(tx.type || 'EXPENSE').toUpperCase(),
       ].join('|');
-
-      if (!lastInstallments.has(key)) {
-        lastInstallments.set(key, {
+      if (!purchases.has(key)) {
+        purchases.set(key, {
           key,
-          description,
+          cardId,
+          description: String(rawDescription.replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '').trim() || description),
           totalInstallments,
-          amountCents,
-          lastMonth,
+          purchaseDate,
+          monthly: {},
+          installmentSlots: new Map(),
+          observedInstallments: 0,
+          endMonth: '',
+          referenceAmountCents: amountCents,
         });
+      }
+
+      const purchase = purchases.get(key);
+      // Se a Pluggy repetir o mesmo lançamento, a parcela só conta uma vez.
+      // Em caso de duplicata, mantém o registro com data/ciclo mais específico.
+      const slotKey = String(installmentNumber);
+      const previous = purchase.installmentSlots.get(slotKey);
+      const candidate = {
+        installmentNumber,
+        amountCents,
+        cycleMonth,
+        transactionId: String(tx.id || tx.providerTransactionId || ''),
+      };
+      if (!previous || (!previous.cycleMonth && candidate.cycleMonth)) {
+        purchase.installmentSlots.set(slotKey, candidate);
       }
     });
 
-    return Array.from(lastInstallments.values()).map(last => {
-      const firstMonth = shiftMonth(last.lastMonth, -(last.totalInstallments - 1));
-      const monthly = {};
-      if (firstMonth) {
-        for (let number = 0; number < last.totalInstallments; number += 1) {
-          const month = shiftMonth(firstMonth, number);
-          if (month) monthly[month] = last.amountCents;
-        }
-      }
-
-      return {
-        key: last.key,
-        description: last.description,
-        totalInstallments: last.totalInstallments,
-        purchaseDate: firstMonth ? firstMonth + '-01' : '',
-        monthly,
-        endMonth: last.lastMonth,
-        referenceAmountCents: last.amountCents,
-      };
-    }).sort((a, b) => String(a.endMonth).localeCompare(String(b.endMonth))
+    return Array.from(purchases.values()).map(purchase => {
+      purchase.installmentSlots.forEach(slot => {
+        purchase.monthly[slot.cycleMonth] = Number(purchase.monthly[slot.cycleMonth] || 0) + slot.amountCents;
+        purchase.observedInstallments += 1;
+        if (slot.cycleMonth > purchase.endMonth) purchase.endMonth = slot.cycleMonth;
+      });
+      delete purchase.installmentSlots;
+      return purchase;
+    }).sort((a, b) => String(a.purchaseDate).localeCompare(String(b.purchaseDate))
       || String(a.description).localeCompare(String(b.description), 'pt-BR'));
   }, [transactions]);
 
@@ -2576,9 +2592,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
-                <p className="text-xs text-slate-400 mt-1">Cada compra é identificada pela última parcela N/N; as parcelas anteriores são reconstruídas usando o mesmo valor.</p>
+                <p className="text-xs text-slate-400 mt-1">Cada compra é agrupada a partir das parcelas identificadas nos lançamentos do cartão. Cada parcela aparece uma única vez.</p>
               </div>
-              <span className="text-[10px] font-bold text-slate-500">Reconstrução baseada exclusivamente nas últimas parcelas</span>
+              <span className="text-[10px] font-bold text-slate-500">Agrupamento de parcelas reais, sem duplicidades</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[980px] text-left border-collapse">
@@ -2604,7 +2620,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                       <tr key={purchase.key} className="hover:bg-slate-50/70">
                         <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
-                          <p className="text-[10px] text-slate-400">Identificada pela última parcela</p>
+                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas encontradas</p>
                         </td>
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs text-slate-600 whitespace-nowrap">{purchase.purchaseDate ? dateLabel(purchase.purchaseDate) : '—'}</td>
@@ -2620,7 +2636,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              Os valores e a descrição vêm exclusivamente dos lançamentos identificados como última parcela N/N. Os meses anteriores são estimativas de visualização, não novos lançamentos financeiros.
+              A tabela reúne as parcelas efetivamente encontradas nos lançamentos dos cartões. Uma mesma parcela é contada uma única vez; meses sem lançamento identificado ficam vazios. Esta visualização não cria nem altera lançamentos financeiros.
             </p>
           </Card>
         </div>

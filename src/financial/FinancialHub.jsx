@@ -2576,20 +2576,18 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               <span className="text-[10px] font-bold text-slate-500">Término calculado pela numeração informada pela Pluggy</span>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1120px] text-left border-collapse">
+              <table className="w-full min-w-[980px] text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400">
-                    <th className="py-3 pr-4">Compra / cartão</th>
-                    <th className="py-3 px-3">Valor da parcela</th>
-                    <th className="py-3 px-3">Parcelamento</th>
-                    <th className="py-3 px-3">Compra em</th>
-                    <th className="py-3 px-3">Última parcela</th>
+                    <th className="py-3 pr-4 sticky left-0 bg-white">Descrição da compra</th>
+                    <th className="py-3 px-3 whitespace-nowrap">Quantidade de parcelas</th>
+                    <th className="py-3 px-3 whitespace-nowrap">Data da compra</th>
                     {installmentMonths.map(month => (
                       <th key={month} className="py-3 px-3 text-right whitespace-nowrap">{new Date(Number(month.slice(0,4)), Number(month.slice(5,7))-1, 1).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</th>
                     ))}
                   </tr>
                   <tr className="bg-slate-50 border-b border-slate-200">
-                    <th colSpan={5} className="py-2 px-3 text-[10px] font-black uppercase text-slate-500">Total identificado por mês</th>
+                    <th colSpan={3} className="py-2 px-3 text-[10px] font-black uppercase text-slate-500">Total de parcelas por mês</th>
                     {installmentMonths.map(month => (
                       <th key={month} className="py-2 px-3 text-right text-[10px] font-black text-slate-700 whitespace-nowrap">{formatBRL(installmentMonthlyTotals[month] || 0)}</th>
                     ))}
@@ -2598,24 +2596,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 <tbody className="divide-y divide-slate-100">
                   {installmentPurchases.map(purchase => {
                     const card = cards.find(item => item.id === purchase.cardId);
-                    const observedValues = purchase.installments.map(item => Math.abs(Number(item.amountCents || 0)));
-                    const installmentValue = observedValues.length
-                      ? Math.round(observedValues.reduce((sum, value) => sum + value, 0) / observedValues.length)
-                      : 0;
-                    const installmentLabel = purchase.highestInstallment
-                      ? `${purchase.highestInstallment}/${purchase.totalInstallments} identificadas`
-                      : `0/${purchase.totalInstallments} identificadas`;
                     return (
                       <tr key={purchase.key} className="hover:bg-slate-50/70">
-                        <td className="py-3 pr-4 min-w-[190px]">
+                        <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
                           <p className="text-[10px] text-slate-400">{getCardDisplayName(card, 'Cartão não identificado')}</p>
-                          {purchase.totalAmountCents != null && <p className="text-[10px] text-slate-400">Compra: {formatBRL(purchase.totalAmountCents)}</p>}
                         </td>
-                        <td className="py-3 px-3 text-sm font-black text-slate-700 whitespace-nowrap">{formatBRL(installmentValue)}</td>
-                        <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{installmentLabel}</td>
+                        <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs text-slate-600 whitespace-nowrap">{purchase.purchaseDate ? dateLabel(purchase.purchaseDate) : '—'}</td>
-                        <td className="py-3 px-3 text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.endMonth ? new Date(Number(purchase.endMonth.slice(0,4)), Number(purchase.endMonth.slice(5,7))-1, 1).toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' }) : 'Não informado'}</td>
                         {installmentMonths.map(month => (
                           <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.monthly[month] ? formatBRL(purchase.monthly[month]) : '—'}</td>
                         ))}
@@ -2623,7 +2611,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     );
                   })}
                   {!installmentPurchases.length && (
-                    <tr><td colSpan={5 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
+                    <tr><td colSpan={3 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
                   )}
                 </tbody>
               </table>

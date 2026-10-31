@@ -466,7 +466,16 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const purchaseDate = tx.creditCardPurchaseDate
           || (tx.date && installmentNumber > 0 ? addMonthsToIsoDate(tx.date, -(installmentNumber - 1)) : '');
         const description = String(tx.description || tx.merchant || 'Compra parcelada').trim();
-        const merchantKey = normalizeText(tx.merchant || description);
+        // A Pluggy pode repetir o identificador da parcela na descrição
+        // (ex.: "LOJA PARC 02/10"). Removemos esse sufixo para que todas as
+        // parcelas da mesma compra usem a mesma chave de agrupamento.
+        const cleanInstallmentLabel = value => normalizeText(String(value || ''))
+          .replace(/\\b(parcela|parcelado|parc)\\s*\\d+\\s*(?:\\/|de)\\s*\\d+\\b/g, '')
+          .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, '')
+          .replace(/\\b(parcela|parc)\\s*\\d+\\b/g, '')
+          .replace(/\\s+/g, ' ')
+          .trim();
+        const merchantKey = cleanInstallmentLabel(tx.merchant || description);
         const totalAmount = tx.creditCardTotalAmountCents == null ? '' : Number(tx.creditCardTotalAmountCents);
         const key = [tx.cardId, purchaseDate, merchantKey, totalInstallments, totalAmount].join('|');
         if (!groups.has(key)) {

@@ -2592,9 +2592,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
-                <p className="text-xs text-slate-400 mt-1">Cada compra é identificada pela última parcela N/N; as parcelas anteriores são reconstruídas usando o mesmo valor.</p>
+                <p className="text-xs text-slate-400 mt-1">Cada compra é agrupada a partir das parcelas identificadas nos lançamentos do cartão. Cada parcela aparece uma única vez.</p>
               </div>
-              <span className="text-[10px] font-bold text-slate-500">Reconstrução baseada exclusivamente nas últimas parcelas</span>
+              <span className="text-[10px] font-bold text-slate-500">Agrupamento de parcelas reais, sem duplicidades</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[980px] text-left border-collapse">
@@ -2620,7 +2620,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                       <tr key={purchase.key} className="hover:bg-slate-50/70">
                         <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
-                          <p className="text-[10px] text-slate-400">Identificada pela última parcela</p>
+                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas encontradas</p>
                         </td>
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs text-slate-600 whitespace-nowrap">{purchase.purchaseDate ? dateLabel(purchase.purchaseDate) : '—'}</td>
@@ -2636,7 +2636,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              Os valores e a descrição vêm exclusivamente dos lançamentos identificados como última parcela N/N. Os meses anteriores são estimativas de visualização, não novos lançamentos financeiros.
+              A tabela reúne as parcelas efetivamente encontradas nos lançamentos dos cartões. Uma mesma parcela é contada uma única vez; meses sem lançamento identificado ficam vazios. Esta visualização não cria nem altera lançamentos financeiros.
             </p>
           </Card>
         </div>

@@ -460,20 +460,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         bill?.referenceMonth,
         tx.date,
       ];
-      const value = candidates.find(item => /^\\d{4}-\\d{2}/.test(String(item || '')));
+      const value = candidates.find(item => /^\d{4}-\d{2}/.test(String(item || '')));
       return value ? String(value).slice(0, 7) : '';
     };
     const shiftMonth = (value, offset) => {
-      if (!/^\\d{4}-\\d{2}$/.test(String(value || ''))) return '';
+      if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return '';
       const [year, month] = value.split('-').map(Number);
       const date = new Date(year, month - 1 + offset, 1);
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     };
     const cleanInstallmentLabel = value => normalizeText(String(value || ''))
-      .replace(/\\b(parcela|parcelado|parc)\\s*\\d+\\s*(?:\\/|de)\\s*\\d+\\b/g, '')
-      .replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/g, '')
-      .replace(/\\b(parcela|parc)\\s*\\d+\\b/g, '')
-      .replace(/\\s+/g, ' ')
+      .replace(/\b(parcela|parcelado|parc)\s*\d+\s*(?:\/|de)\s*\d+\b/g, '')
+      .replace(/\s+\d+\s*\/\s*\d+\s*$/g, '')
+      .replace(/\b(parcela|parc)\s*\d+\b/g, '')
+      .replace(/\s+/g, ' ')
       .trim();
 
     transactions
@@ -494,8 +494,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const purchaseDate = tx.creditCardPurchaseDate || '';
         const descriptionRaw = String(tx.description || tx.merchant || 'Compra parcelada').trim();
         const description = descriptionRaw
-          .replace(/\\s+(?:parcela|parc)\\s*\\d+\\s*(?:\\/|de)\\s*\\d+\\s*$/i, '')
-          .replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/i, '')
+          .replace(/\s+(?:parcela|parc)\s*\d+\s*(?:\/|de)\s*\d+\s*$/i, '')
+          .replace(/\s+\d+\s*\/\s*\d+\s*$/i, '')
           .trim() || 'Compra parcelada';
         const merchantKey = cleanInstallmentLabel(descriptionRaw);
         // A data da compra é preferida; sem ela, usa o mês inicial inferido

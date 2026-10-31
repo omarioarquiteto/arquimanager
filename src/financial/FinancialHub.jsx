@@ -462,7 +462,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       )
       .forEach(tx => {
         const totalInstallments = Number(tx.creditCardTotalInstallments || 0);
-        const purchaseDate = tx.creditCardPurchaseDate || tx.date || '';
+        const installmentNumber = Number(tx.creditCardInstallmentNumber || 0);
+        const purchaseDate = tx.creditCardPurchaseDate
+          || (tx.date && installmentNumber > 0 ? addMonthsToIsoDate(tx.date, -(installmentNumber - 1)) : '');
         const description = String(tx.description || tx.merchant || 'Compra parcelada').trim();
         const merchantKey = normalizeText(tx.merchant || description);
         const totalAmount = tx.creditCardTotalAmountCents == null ? '' : Number(tx.creditCardTotalAmountCents);
@@ -521,7 +523,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const date = new Date(year, month - 1 + index, 1);
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     });
-  }, [transactions.length]);
+  }, []);
 
   const installmentMonthlyTotals = useMemo(() => installmentMonths.reduce((totals, month) => {
     totals[month] = installmentPurchases.reduce((sum, purchase) => sum + Number(purchase.monthly[month] || 0), 0);

@@ -522,11 +522,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
   const installmentMonths = useMemo(() => {
     const [year, month] = todayLocal().slice(0, 7).split('-').map(Number);
-    return Array.from({ length: 12 }, (_, index) => {
+    const visibleMonths = Array.from({ length: 12 }, (_, index) => {
       const date = new Date(year, month - 1 + index, 1);
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     });
-  }, []);
+    const reconstructedMonths = installmentPurchases.flatMap(purchase => Object.keys(purchase.monthly || {}));
+    return [...new Set([...reconstructedMonths, ...visibleMonths])].sort();
+  }, [installmentPurchases]);
 
   const installmentMonthlyTotals = useMemo(() => installmentMonths.reduce((totals, month) => {
     totals[month] = installmentPurchases.reduce((sum, purchase) => sum + Number(purchase.monthly[month] || 0), 0);
@@ -2597,9 +2599,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {installmentPurchases.map(purchase => {
-                    const card = cards.find(item => item.id === purchase.cardId);
-                    return (
+                  {installmentPurchases.map(purchase => (
+
                       <tr key={purchase.key} className="hover:bg-slate-50/70">
                         <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
@@ -2611,8 +2612,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                           <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.monthly[month] ? formatBRL(purchase.monthly[month]) : '—'}</td>
                         ))}
                       </tr>
-                    );
-                  })}
+                  ))}
                   {!installmentPurchases.length && (
                     <tr><td colSpan={3 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
                   )}

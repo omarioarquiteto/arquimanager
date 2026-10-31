@@ -454,20 +454,20 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const installmentPurchases = useMemo(() => {
     const purchases = new Map();
     const shiftMonth = (value, offset) => {
-      if (!/^\\d{4}-\\d{2}$/.test(String(value || ''))) return '';
+      if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return '';
       const [year, month] = String(value).split('-').map(Number);
       const date = new Date(year, month - 1 + offset, 1);
       return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0');
     };
     const normalizeDescription = value => normalizeText(String(value || ''))
-      .replace(/\\s+(?:(?:parcela|parc)\\s*)?\\d+\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i, '')
-      .replace(/\\s+/g, ' ')
+      .replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
+      .replace(/\s+/g, ' ')
       .trim();
 
     transactions.forEach(tx => {
       if (!isCreditCardTransaction(tx) || tx.status === 'CANCELLED') return;
       const rawDescription = String(tx.description || tx.merchant || '').trim();
-      const descriptionMatch = rawDescription.match(/(?:\\s+|\\b)(?:(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*(\\d+)\\s*$/i);
+      const descriptionMatch = rawDescription.match(/(?:\s+|\b)(?:(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
       const installmentNumber = Number(tx.creditCardInstallmentNumber || descriptionMatch?.[1] || 0);
       const totalInstallments = Number(tx.creditCardTotalInstallments || descriptionMatch?.[2] || 0);
       if (!Number.isInteger(installmentNumber) || !Number.isInteger(totalInstallments)
@@ -477,12 +477,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const amountCents = Math.abs(Number(tx.amountCents || 0));
       const cardId = String(tx.cardId || tx.accountId || '');
       const transactionDate = String(tx.date || '').slice(0, 10);
-      if (!description || !amountCents || !cardId || !/^\\d{4}-\\d{2}-\\d{2}$/.test(transactionDate)) return;
+      if (!description || !amountCents || !cardId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) return;
 
       const inferredPurchaseDate = shiftMonth(transactionDate.slice(0, 7), -(installmentNumber - 1));
       const purchaseDate = String(tx.creditCardPurchaseDate || (inferredPurchaseDate ? inferredPurchaseDate + transactionDate.slice(7, 10) : '')).slice(0, 10);
       const cycleMonth = String(tx.creditCardBillForecastDate || tx.creditCardBillPostDate || transactionDate).slice(0, 7);
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(purchaseDate) || !/^\\d{4}-\\d{2}$/.test(cycleMonth)) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate) || !/^\d{4}-\d{2}$/.test(cycleMonth)) return;
 
       // Cartão + descrição + data da compra + plano + valor separam compras distintas.
       const key = [
@@ -497,7 +497,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         purchases.set(key, {
           key,
           cardId,
-          description: String(rawDescription.replace(/\\s+(?:(?:parcela|parc)\\s*)?\\d+\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i, '').trim() || description),
+          description: String(rawDescription.replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '').trim() || description),
           totalInstallments,
           purchaseDate,
           monthly: {},

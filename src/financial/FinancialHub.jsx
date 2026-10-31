@@ -500,7 +500,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const merchantKey = cleanInstallmentLabel(descriptionRaw);
         // A data da compra é preferida; sem ela, usa o mês inicial inferido
         // pela posição da parcela e pelo ciclo da fatura.
-        const purchaseAnchor = purchaseDate || inferredFirstMonth;
+        const purchaseAnchor = inferredFirstMonth;
         const key = [tx.cardId, purchaseAnchor, merchantKey, totalInstallments].join('|');
         if (!groups.has(key)) {
           groups.set(key, {
@@ -515,6 +515,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           });
         }
         const group = groups.get(key);
+        if (!group.purchaseDate && purchaseDate) group.purchaseDate = purchaseDate;
         group.installments.push({
           ...tx,
           _installmentNumber: installmentNumber,

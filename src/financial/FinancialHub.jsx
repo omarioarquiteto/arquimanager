@@ -448,10 +448,34 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }, [transactions, queryText]);
 
-  // Compras parceladas importadas pela Pluggy: a tela apenas organiza os lançamentos
-  // efetivamente retornados pelo provedor; não cria parcelas nem grava previsões.
+  // Compras parceladas: reconstrução somente para visualização.
+  // O ID da primeira parcela (ou da última, quando a primeira não veio)
+  // identifica a referência do grupo, mas nunca é usado isoladamente para agrupar.
   const installmentPurchases = useMemo(() => {
     const groups = new Map();
+    const monthFromTransaction = (tx) => {
+      const bill = bills.find(item => item.id === tx.billId);
+      const candidates = [
+        tx.creditCardBillForecastDate,
+        bill?.referenceMonth,
+        tx.date,
+      ];
+      const value = candidates.find(item => /^\\d{4}-\\d{2}/.test(String(item || '')));
+      return value ? String(value).slice(0, 7) : '';
+    };
+    const shiftMonth = (value, offset) => {
+      if (!/^\\d{4}-\\d{2}$/.test(String(value || ''))) return '';
+      const [year, month] = value.split('-').map(Number);
+      const date = new Date(year, month - 1 + offset, 1);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    };
+    const cleanInstallmentLabel = value => normalizeText(String(value || ''))
+      .replace(/\\b(parcela|parcelado|parc)\\s*\\d+\\s*(?:\\/|de)\\s*\\d+\\b/g, '')
+      .replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/g, '')
+      .replace(/\\b(parcela|parc)\\s*\\d+\\b/g, '')
+      .replace(/\\s+/g, ' ')
+      .trim();
+
     transactions
       .filter(tx =>
         tx.provider === 'PLUGGY'
@@ -459,25 +483,25 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         && String(tx.creditCardPaymentType || '').toUpperCase() === 'INSTALLMENT'
         && Number(tx.creditCardTotalInstallments || 0) > 1
         && tx.cardId
+        && Number(tx.creditCardInstallmentNumber || 0) >= 1
       )
       .forEach(tx => {
-        const totalInstallments = Number(tx.creditCardTotalInstallments || 0);
-        const installmentNumber = Number(tx.creditCardInstallmentNumber || 0);
-        const purchaseDate = tx.creditCardPurchaseDate
-          || (tx.date && installmentNumber > 0 ? addMonthsToIsoDate(tx.date, -(installmentNumber - 1)) : '');
-        const description = String(tx.description || tx.merchant || 'Compra parcelada').trim();
-        // A Pluggy pode repetir o identificador da parcela na descrição
-        // (ex.: "LOJA PARC 02/10"). Removemos esse sufixo para que todas as
-        // parcelas da mesma compra usem a mesma chave de agrupamento.
-        const cleanInstallmentLabel = value => normalizeText(String(value || ''))
-          .replace(/\b(parcela|parcelado|parc)\s*\d+\s*(?:\/|de)\s*\d+\b/g, '')
-          .replace(/\b\d+\s*\/\s*\d+\b/g, '')
-          .replace(/\b(parcela|parc)\s*\d+\b/g, '')
-          .replace(/\s+/g, ' ')
-          .trim();
-        const merchantKey = cleanInstallmentLabel(tx.merchant || description);
-        const totalAmount = tx.creditCardTotalAmountCents == null ? '' : Number(tx.creditCardTotalAmountCents);
-        const key = [tx.cardId, purchaseDate, merchantKey, totalInstallments, totalAmount].join('|');
+        const totalInstallments = Number(tx.creditCardTotalInstallments);
+        const installmentNumber = Number(tx.creditCardInstallmentNumber);
+        const cycleMonth = monthFromTransaction(tx);
+        if (!cycleMonth) return;
+        const inferredFirstMonth = shiftMonth(cycleMonth, -(installmentNumber - 1));
+        const purchaseDate = tx.creditCardPurchaseDate || '';
+        const descriptionRaw = String(tx.description || tx.merchant || 'Compra parcelada').trim();
+        const description = descriptionRaw
+          .replace(/\\s+(?:parcela|parc)\\s*\\d+\\s*(?:\\/|de)\\s*\\d+\\s*$/i, '')
+          .replace(/\\s+\\d+\\s*\\/\\s*\\d+\\s*$/i, '')
+          .trim() || 'Compra parcelada';
+        const merchantKey = cleanInstallmentLabel(descriptionRaw);
+        // A data da compra é preferida; sem ela, usa o mês inicial inferido
+        // pela posição da parcela e pelo ciclo da fatura.
+        const purchaseAnchor = purchaseDate || inferredFirstMonth;
+        const key = [tx.cardId, purchaseAnchor, merchantKey, totalInstallments].join('|');
         if (!groups.has(key)) {
           groups.set(key, {
             key,
@@ -485,40 +509,77 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             description,
             merchant: tx.merchant || description,
             purchaseDate,
+            inferredFirstMonth,
             totalInstallments,
-            totalAmountCents: totalAmount === '' ? null : totalAmount,
             installments: [],
           });
         }
-        groups.get(key).installments.push(tx);
+        const group = groups.get(key);
+        group.installments.push({
+          ...tx,
+          _installmentNumber: installmentNumber,
+          _cycleMonth: cycleMonth,
+          _providerTransactionId: tx.providerTransactionId || tx.id || '',
+        });
+        if (!group.purchaseDate && inferredFirstMonth < group.inferredFirstMonth) {
+          group.inferredFirstMonth = inferredFirstMonth;
+        }
       });
 
     return Array.from(groups.values()).map(purchase => {
-      const monthly = {};
-      let highestInstallment = 0;
-      let latestMonth = '';
+      const byNumber = new Map();
       purchase.installments.forEach(tx => {
-        const number = Number(tx.creditCardInstallmentNumber || 0);
-        highestInstallment = Math.max(highestInstallment, number);
-        const bill = bills.find(item => item.id === tx.billId);
-        const month = /^\d{4}-\d{2}$/.test(String(tx.creditCardBillForecastDate || ''))
-          ? String(tx.creditCardBillForecastDate)
-          : (bill?.referenceMonth || String(tx.date || '').slice(0, 7));
-        if (!/^\d{4}-\d{2}$/.test(month)) return;
-        monthly[month] = (monthly[month] || 0) + Math.abs(Number(tx.amountCents || 0));
-        if (month > latestMonth) latestMonth = month;
+        const current = byNumber.get(tx._installmentNumber);
+        if (!current || Math.abs(Number(tx.amountCents || 0)) > Math.abs(Number(current.amountCents || 0))) {
+          byNumber.set(tx._installmentNumber, tx);
+        }
       });
-      const remainingInstallments = Math.max(0, purchase.totalInstallments - highestInstallment);
-      let endMonth = latestMonth;
-      if (latestMonth && remainingInstallments) {
-        const [year, month] = latestMonth.split('-').map(Number);
-        const end = new Date(year, month - 1 + remainingInstallments, 1);
-        endMonth = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}`;
+
+      const firstInstallment = byNumber.get(1) || null;
+      const lastInstallment = byNumber.get(purchase.totalInstallments) || null;
+      // Regra solicitada: a primeira parcela é a fonte do valor; se ela não
+      // existir, usa a última parcela e reconstrói retroativamente.
+      const referenceInstallment = firstInstallment || lastInstallment
+        || [...byNumber.values()].sort((a, b) => a._installmentNumber - b._installmentNumber)[0]
+        || null;
+      const referenceAmountCents = referenceInstallment
+        ? Math.abs(Number(referenceInstallment.amountCents || 0))
+        : 0;
+      const firstCycleMonth = firstInstallment?._cycleMonth
+        || (lastInstallment
+          ? shiftMonth(lastInstallment._cycleMonth, -(purchase.totalInstallments - 1))
+          : purchase.inferredFirstMonth);
+      const monthly = {};
+      if (firstCycleMonth && referenceAmountCents > 0) {
+        for (let number = 1; number <= purchase.totalInstallments; number += 1) {
+          const month = shiftMonth(firstCycleMonth, number - 1);
+          if (month) monthly[month] = referenceAmountCents;
+        }
       }
+
+      const observedInstallmentNumbers = [...byNumber.keys()].sort((a, b) => a - b);
+      const highestInstallment = observedInstallmentNumbers.length
+        ? Math.max(...observedInstallmentNumbers)
+        : 0;
+      const endMonth = firstCycleMonth
+        ? shiftMonth(firstCycleMonth, purchase.totalInstallments - 1)
+        : '';
+      const referenceTransactionId = (
+        firstInstallment?._providerTransactionId
+        || lastInstallment?._providerTransactionId
+        || referenceInstallment?._providerTransactionId
+        || ''
+      );
+
       return {
         ...purchase,
+        key: referenceTransactionId ? `${purchase.key}|${referenceTransactionId}` : purchase.key,
+        referenceTransactionId,
+        referenceInstallmentNumber: firstInstallment ? 1 : (lastInstallment ? purchase.totalInstallments : referenceInstallment?._installmentNumber || null),
+        referenceAmountCents,
         monthly,
-        observedInstallments: purchase.installments.length,
+        observedInstallments: observedInstallmentNumbers.length,
+        reconstructedInstallments: Math.max(0, purchase.totalInstallments - observedInstallmentNumbers.length),
         highestInstallment,
         endMonth,
       };

@@ -470,10 +470,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         // (ex.: "LOJA PARC 02/10"). Removemos esse sufixo para que todas as
         // parcelas da mesma compra usem a mesma chave de agrupamento.
         const cleanInstallmentLabel = value => normalizeText(String(value || ''))
-          .replace(/\\b(parcela|parcelado|parc)\\s*\\d+\\s*(?:\\/|de)\\s*\\d+\\b/g, '')
-          .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b/g, '')
-          .replace(/\\b(parcela|parc)\\s*\\d+\\b/g, '')
-          .replace(/\\s+/g, ' ')
+          .replace(/\b(parcela|parcelado|parc)\s*\d+\s*(?:\/|de)\s*\d+\b/g, '')
+          .replace(/\b\d+\s*\/\s*\d+\b/g, '')
+          .replace(/\b(parcela|parc)\s*\d+\b/g, '')
+          .replace(/\s+/g, ' ')
           .trim();
         const merchantKey = cleanInstallmentLabel(tx.merchant || description);
         const totalAmount = tx.creditCardTotalAmountCents == null ? '' : Number(tx.creditCardTotalAmountCents);

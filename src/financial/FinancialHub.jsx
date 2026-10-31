@@ -448,6 +448,88 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }, [transactions, queryText]);
 
+  // Compras parceladas importadas pela Pluggy: a tela apenas organiza os lançamentos
+  // efetivamente retornados pelo provedor; não cria parcelas nem grava previsões.
+  const installmentPurchases = useMemo(() => {
+    const groups = new Map();
+    transactions
+      .filter(tx =>
+        tx.provider === 'PLUGGY'
+        && tx.accountType === 'CREDIT_CARD'
+        && String(tx.creditCardPaymentType || '').toUpperCase() === 'INSTALLMENT'
+        && Number(tx.creditCardTotalInstallments || 0) > 1
+        && tx.cardId
+      )
+      .forEach(tx => {
+        const totalInstallments = Number(tx.creditCardTotalInstallments || 0);
+        const installmentNumber = Number(tx.creditCardInstallmentNumber || 0);
+        const purchaseDate = tx.creditCardPurchaseDate
+          || (tx.date && installmentNumber > 0 ? addMonthsToIsoDate(tx.date, -(installmentNumber - 1)) : '');
+        const description = String(tx.description || tx.merchant || 'Compra parcelada').trim();
+        const merchantKey = normalizeText(tx.merchant || description);
+        const totalAmount = tx.creditCardTotalAmountCents == null ? '' : Number(tx.creditCardTotalAmountCents);
+        const key = [tx.cardId, purchaseDate, merchantKey, totalInstallments, totalAmount].join('|');
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            cardId: tx.cardId,
+            description,
+            merchant: tx.merchant || description,
+            purchaseDate,
+            totalInstallments,
+            totalAmountCents: totalAmount === '' ? null : totalAmount,
+            installments: [],
+          });
+        }
+        groups.get(key).installments.push(tx);
+      });
+
+    return Array.from(groups.values()).map(purchase => {
+      const monthly = {};
+      let highestInstallment = 0;
+      let latestMonth = '';
+      purchase.installments.forEach(tx => {
+        const number = Number(tx.creditCardInstallmentNumber || 0);
+        highestInstallment = Math.max(highestInstallment, number);
+        const bill = bills.find(item => item.id === tx.billId);
+        const month = /^\d{4}-\d{2}$/.test(String(tx.creditCardBillForecastDate || ''))
+          ? String(tx.creditCardBillForecastDate)
+          : (bill?.referenceMonth || String(tx.date || '').slice(0, 7));
+        if (!/^\d{4}-\d{2}$/.test(month)) return;
+        monthly[month] = (monthly[month] || 0) + Math.abs(Number(tx.amountCents || 0));
+        if (month > latestMonth) latestMonth = month;
+      });
+      const remainingInstallments = Math.max(0, purchase.totalInstallments - highestInstallment);
+      let endMonth = latestMonth;
+      if (latestMonth && remainingInstallments) {
+        const [year, month] = latestMonth.split('-').map(Number);
+        const end = new Date(year, month - 1 + remainingInstallments, 1);
+        endMonth = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}`;
+      }
+      return {
+        ...purchase,
+        monthly,
+        observedInstallments: purchase.installments.length,
+        highestInstallment,
+        endMonth,
+      };
+    }).sort((a, b) => String(a.endMonth || '').localeCompare(String(b.endMonth || ''))
+      || String(a.description).localeCompare(String(b.description), 'pt-BR'));
+  }, [transactions, bills]);
+
+  const installmentMonths = useMemo(() => {
+    const [year, month] = todayLocal().slice(0, 7).split('-').map(Number);
+    return Array.from({ length: 12 }, (_, index) => {
+      const date = new Date(year, month - 1 + index, 1);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    });
+  }, []);
+
+  const installmentMonthlyTotals = useMemo(() => installmentMonths.reduce((totals, month) => {
+    totals[month] = installmentPurchases.reduce((sum, purchase) => sum + Number(purchase.monthly[month] || 0), 0);
+    return totals;
+  }, {}), [installmentMonths, installmentPurchases]);
+
   const days = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);
     const first = new Date(year, month - 1, 1);
@@ -2054,6 +2136,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           ['attention', `Atenção ${attentionCount ? `(${attentionCount})` : ''}`],
           ['planning', 'A pagar / A receber'],
           ['transfers', 'Transferências'],
+          ['installments', 'Compras parceladas'],
           ['accounts', 'Contas e cartões'],
         ].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wide border transition-colors ${tab === id ? 'bg-[#1e5aa0] text-white border-[#1e5aa0]' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}>
@@ -2474,6 +2557,82 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             {!transfers.length && <EmptyState text="Nenhuma transferência registrada."/>}
           </div>
         </Card>
+      )}
+
+      {tab === 'installments' && (
+        <div className="space-y-5 flex-1 overflow-auto pb-4">
+          <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+            <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
+            <Metric label="Parcelas identificadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
+            <Metric label="Compromissos nos próximos 12 meses" value={formatBRL(Object.values(installmentMonthlyTotals).reduce((sum, value) => sum + value, 0))} icon={<CalendarDays size={18}/>} tone="amber"/>
+          </div>
+
+          <Card className="p-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+              <div>
+                <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
+                <p className="text-xs text-slate-400 mt-1">Dados importados da Pluggy. Os valores mensais exibem somente parcelas efetivamente retornadas pela instituição.</p>
+              </div>
+              <span className="text-[10px] font-bold text-slate-500">Término calculado pela numeração informada pela Pluggy</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1120px] text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400">
+                    <th className="py-3 pr-4">Compra / cartão</th>
+                    <th className="py-3 px-3">Valor da parcela</th>
+                    <th className="py-3 px-3">Parcelamento</th>
+                    <th className="py-3 px-3">Compra em</th>
+                    <th className="py-3 px-3">Última parcela</th>
+                    {installmentMonths.map(month => (
+                      <th key={month} className="py-3 px-3 text-right whitespace-nowrap">{new Date(Number(month.slice(0,4)), Number(month.slice(5,7))-1, 1).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</th>
+                    ))}
+                  </tr>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th colSpan={5} className="py-2 px-3 text-[10px] font-black uppercase text-slate-500">Total identificado por mês</th>
+                    {installmentMonths.map(month => (
+                      <th key={month} className="py-2 px-3 text-right text-[10px] font-black text-slate-700 whitespace-nowrap">{formatBRL(installmentMonthlyTotals[month] || 0)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {installmentPurchases.map(purchase => {
+                    const card = cards.find(item => item.id === purchase.cardId);
+                    const observedValues = purchase.installments.map(item => Math.abs(Number(item.amountCents || 0)));
+                    const installmentValue = observedValues.length
+                      ? Math.round(observedValues.reduce((sum, value) => sum + value, 0) / observedValues.length)
+                      : 0;
+                    const installmentLabel = purchase.highestInstallment
+                      ? `${purchase.highestInstallment}/${purchase.totalInstallments} identificadas`
+                      : `0/${purchase.totalInstallments} identificadas`;
+                    return (
+                      <tr key={purchase.key} className="hover:bg-slate-50/70">
+                        <td className="py-3 pr-4 min-w-[190px]">
+                          <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
+                          <p className="text-[10px] text-slate-400">{getCardDisplayName(card, 'Cartão não identificado')}</p>
+                          {purchase.totalAmountCents != null && <p className="text-[10px] text-slate-400">Compra: {formatBRL(purchase.totalAmountCents)}</p>}
+                        </td>
+                        <td className="py-3 px-3 text-sm font-black text-slate-700 whitespace-nowrap">{formatBRL(installmentValue)}</td>
+                        <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{installmentLabel}</td>
+                        <td className="py-3 px-3 text-xs text-slate-600 whitespace-nowrap">{purchase.purchaseDate ? dateLabel(purchase.purchaseDate) : '—'}</td>
+                        <td className="py-3 px-3 text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.endMonth ? new Date(Number(purchase.endMonth.slice(0,4)), Number(purchase.endMonth.slice(5,7))-1, 1).toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' }) : 'Não informado'}</td>
+                        {installmentMonths.map(month => (
+                          <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.monthly[month] ? formatBRL(purchase.monthly[month]) : '—'}</td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                  {!installmentPurchases.length && (
+                    <tr><td colSpan={5 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
+              Importante: a Pluggy pode retornar somente parte das parcelas futuras. A tabela não inventa lançamentos nem altera faturas, pagamentos ou conciliações; células vazias significam que não há parcela daquele mês entre os dados recebidos.
+            </p>
+          </Card>
+        </div>
       )}
 
       {tab === 'accounts' && (

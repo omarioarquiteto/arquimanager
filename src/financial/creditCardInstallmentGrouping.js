@@ -170,7 +170,7 @@ const getInstallmentRecord = transaction => {
 };
 
 const groupBaseKey = record => record.purchaseId
-  ? [record.cardId, record.purchaseId].join('|')
+  ? record.purchaseId
   : [
     record.cardId,
     record.descriptionKey,

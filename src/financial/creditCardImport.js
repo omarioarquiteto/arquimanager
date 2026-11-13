@@ -10,7 +10,7 @@ export const getInstallmentDetails = (transaction = {}) => {
   const description = String(
     transaction.description || transaction.descriptionRaw || transaction.merchant || ''
   ).trim();
-  const descriptionMatch = description.match(/(?:\\b(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*(\\d+)\\s*$/i);
+  const descriptionMatch = description.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
   const installmentNumber = Number(
     metadata.installmentNumber ?? transaction.creditCardInstallmentNumber ?? descriptionMatch?.[1] ?? 0
   );

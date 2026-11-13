@@ -57,7 +57,7 @@ const getInstallmentRecord = transaction => {
   const descriptionWithoutSuffix = stripInstallmentSuffix(descriptionRaw);
   const description = descriptionWithoutSuffix || String(transaction.merchant || descriptionRaw).trim();
   const descriptionKey = normalizeText(description);
-  const descriptionMatch = descriptionRaw.match(/(?:\\b(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*(\\d+)\\s*$/i);
+  const descriptionMatch = descriptionRaw.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
   const metadataInstallmentNumber = Number(
     transaction.creditCardInstallmentNumber ?? metadata.installmentNumber ?? 0
   );

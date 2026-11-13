@@ -45,3 +45,12 @@ test('rejeita metadados incompletos ou inválidos', () => {
   assert.equal(isInstallmentCreditTransaction({ creditCardMetadata: { installmentNumber: 9, totalInstallments: 8 } }), false);
   assert.equal(isInstallmentCreditTransaction({ creditCardMetadata: { installmentNumber: 2, totalInstallments: 0 } }), false);
 });
+test('reconhece variações acentuadas de compra à vista', () => {
+  assert.equal(isInstallmentCreditTransaction({
+    creditCardMetadata: {
+      paymentType: 'À vista',
+      installmentNumber: 1,
+      totalInstallments: 10,
+    },
+  }), false);
+});

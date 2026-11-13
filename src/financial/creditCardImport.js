@@ -7,11 +7,15 @@ const normalizePaymentType = value => String(value || '')
 
 export const getInstallmentDetails = (transaction = {}) => {
   const metadata = transaction.creditCardMetadata || {};
+  const description = String(
+    transaction.description || transaction.descriptionRaw || transaction.merchant || ''
+  ).trim();
+  const descriptionMatch = description.match(/(?:\\b(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*(\\d+)\\s*$/i);
   const installmentNumber = Number(
-    metadata.installmentNumber ?? transaction.creditCardInstallmentNumber ?? 0
+    metadata.installmentNumber ?? transaction.creditCardInstallmentNumber ?? descriptionMatch?.[1] ?? 0
   );
   const totalInstallments = Number(
-    metadata.totalInstallments ?? transaction.creditCardTotalInstallments ?? 0
+    metadata.totalInstallments ?? transaction.creditCardTotalInstallments ?? descriptionMatch?.[2] ?? 0
   );
   const paymentType = normalizePaymentType(metadata.paymentType || transaction.creditCardPaymentType);
 

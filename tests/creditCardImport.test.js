@@ -70,3 +70,20 @@ test('metadado explícito à vista prevalece sobre texto com aparência de parce
     description: 'COMPRA 1/10',
   }), false);
 });
+
+test('rejeita uma sequência numérica longa que não pode ser um plano de cartão válido', () => {
+  assert.equal(isInstallmentCreditTransaction({
+    description: 'MODELO 14/128',
+  }), false);
+});
+
+test('usa a descrição como fallback quando a instituição envia contadores zerados', () => {
+  assert.deepEqual(getInstallmentDetails({
+    creditCardMetadata: { installmentNumber: 0, totalInstallments: 0 },
+    description: 'COMPRA 2/8',
+  }), {
+    installmentNumber: 2,
+    totalInstallments: 8,
+    paymentType: '',
+  });
+});

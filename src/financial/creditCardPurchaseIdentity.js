@@ -41,7 +41,9 @@ const purchaseDateAnchor = value => {
     const parsed = Date.parse(raw);
     return Number.isNaN(parsed) ? `instant:${raw}` : `instant:${new Date(parsed).toISOString()}`;
   }
-  return `date:${match[1]}`;
+  // Sem horário, usa o mês da compra; a data de lançamento das parcelas
+  // pode mudar de dia entre faturas, mas continua apontando ao mês da compra.
+  return `month:${match[1].slice(0, 7)}`;
 };
 
 export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}) => {
@@ -50,12 +52,27 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   const totalInstallments = Number(
     transaction.creditCardTotalInstallments ?? metadata.totalInstallments ?? 0
   );
-  const purchaseDate = purchaseDateAnchor(
+  let purchaseDate = purchaseDateAnchor(
     transaction.creditCardPurchaseDateTime
     || transaction.creditCardPurchaseDate
     || metadata.purchaseDate
     || transaction.purchaseDate
   );
+  const descriptionForInstallment = String(
+    transaction.description || transaction.descriptionRaw || ''
+  );
+  const descriptionInstallment = descriptionForInstallment.match(/(?:\\b(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i);
+  const installmentNumber = Number(
+    transaction.creditCardInstallmentNumber ?? metadata.installmentNumber ?? descriptionInstallment?.[1] ?? 0
+  );
+  if (!purchaseDate && installmentNumber > 0) {
+    const transactionDate = String(transaction.date || '').slice(0, 10);
+    const dateMatch = transactionDate.match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);
+    if (dateMatch) {
+      const monthDate = new Date(Number(dateMatch[1]), Number(dateMatch[2]) - 1 - (installmentNumber - 1), 1);
+      purchaseDate = `month:${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+    }
+  }
   if (!resolvedCardId || !purchaseDate || !Number.isInteger(totalInstallments) || totalInstallments < 2) {
     return '';
   }
@@ -75,7 +92,7 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   const description = String(
     transaction.description || transaction.merchant?.name || transaction.merchant || transaction.descriptionRaw || ''
   );
-  const merchantKey = purchaseDate.startsWith('date:')
+  const merchantKey = purchaseDate.startsWith('month:')
     ? (merchantCnpj
       ? `cnpj:${merchantCnpj}`
       : `merchant:${normalizeMerchantIdentity(description)}`)
@@ -97,7 +114,7 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
     purchaseDate,
     merchantKey,
     totalInstallments,
-    purchaseDate.startsWith('date:') ? amountCents : '',
+    purchaseDate.startsWith('month:') ? amountCents : '',
     String(transaction.type || 'EXPENSE').toUpperCase(),
   ].join('|');
 

@@ -54,3 +54,19 @@ test('reconhece variações acentuadas de compra à vista', () => {
     },
   }), false);
 });
+test('identifica parcelamento quando a instituição só informa n/n na descrição', () => {
+  assert.deepEqual(getInstallmentDetails({
+    description: 'COMPRA NA LOJA DO FULANO 3/10',
+  }), {
+    installmentNumber: 3,
+    totalInstallments: 10,
+    paymentType: '',
+  });
+});
+
+test('metadado explícito à vista prevalece sobre texto com aparência de parcela', () => {
+  assert.equal(isInstallmentCreditTransaction({
+    creditCardMetadata: { paymentType: 'SINGLE' },
+    description: 'COMPRA 1/10',
+  }), false);
+});

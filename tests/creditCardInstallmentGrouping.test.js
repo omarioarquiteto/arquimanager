@@ -255,3 +255,16 @@ test('uma compra aparece uma única vez mesmo se o provedor variar o total de pa
   assert.equal(purchases[0].totalInstallments, 3);
   assert.equal(purchases[0].observedInstallments, 2);
 });
+
+test('a tabela nunca repete o mesmo código interno em mais de um cartão', () => {
+  const purchases = buildInstallmentPurchases([
+    tx(1, '2026-11-08', { creditCardPurchaseId: 'CMP-codigo-unico' }),
+    tx(2, '2026-12-08', {
+      cardId: 'outro-cartao',
+      creditCardPurchaseId: 'CMP-codigo-unico',
+    }),
+  ]);
+
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].purchaseId, 'CMP-codigo-unico');
+});

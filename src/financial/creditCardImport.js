@@ -1,7 +1,7 @@
 const normalizePaymentType = value => String(value || '')
   .trim()
   .toUpperCase()
-  .replace(/[\\s-]+/g, '_');
+  .replace(/[\s-]+/g, '_');
 
 export const getInstallmentDetails = (transaction = {}) => {
   const metadata = transaction.creditCardMetadata || {};

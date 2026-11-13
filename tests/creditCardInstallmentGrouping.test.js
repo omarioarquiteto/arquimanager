@@ -95,3 +95,28 @@ test('usa o total informado pelo provedor quando disponível', () => {
   assert.equal(purchases[0].purchaseTotalCents, 125000);
   assert.equal(purchases[0].purchaseTotalEstimated, false);
 });
+
+test('agrupa pela descrição n/n quando a Pluggy não preenche os campos numéricos', () => {
+  const purchases = buildInstallmentPurchases([
+    {
+      cardId: 'mercado-pago-card',
+      accountType: 'CREDIT_CARD',
+      type: 'EXPENSE',
+      description: 'MERCADOPAGO*LOJA 1/5',
+      amountCents: 9900,
+      date: '2026-04-12',
+    },
+    {
+      cardId: 'mercado-pago-card',
+      accountType: 'CREDIT_CARD',
+      type: 'EXPENSE',
+      description: 'MERCADOPAGO*LOJA 2/5',
+      amountCents: 9900,
+      date: '2026-05-12',
+    },
+  ]);
+
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].totalInstallments, 5);
+  assert.equal(purchases[0].observedInstallments, 2);
+});

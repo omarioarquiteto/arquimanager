@@ -237,3 +237,21 @@ test('gera um código igual para descrições abreviadas mesmo em registros anti
 
   assert.equal(abbreviatedCode, repeatedCode);
 });
+
+test('uma compra aparece uma única vez mesmo se o provedor variar o total de parcelas', () => {
+  const purchases = buildInstallmentPurchases([
+    tx(1, '2026-11-08', {
+      creditCardPurchaseId: 'CMP-compra-unica',
+      creditCardTotalInstallments: 2,
+    }),
+    tx(2, '2026-12-08', {
+      creditCardPurchaseId: 'CMP-compra-unica',
+      creditCardTotalInstallments: 3,
+    }),
+  ]);
+
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].purchaseId, 'CMP-compra-unica');
+  assert.equal(purchases[0].totalInstallments, 3);
+  assert.equal(purchases[0].observedInstallments, 2);
+});

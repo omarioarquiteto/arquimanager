@@ -104,7 +104,14 @@ const hasEffectiveBillTotal = (bill = {}) => hasOfficialBillTotal(bill);
 
 // O total da fatura permanece sempre o valor oficial recebido da instituição.
 // Compras parceladas são uma visão separada e nunca substituem esse total.
-const getBillTotalCents = (bill = {}) => Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
+const getBillTotalCents = (bill = {}) => {
+  if (bill.officialTotalCents != null) return Number(bill.officialTotalCents || 0);
+  if (Number(bill.totalCents || 0) > 0) return Number(bill.totalCents || 0);
+  const providerTotal = bill.providerRawData?.totalAmount;
+  return providerTotal == null || providerTotal === ''
+    ? Number(bill.totalCents || 0)
+    : Math.abs(toCents(providerTotal));
+};
 
 
 const billStatusFromValues = ({ totalCents = 0, paidCents = 0, dueDate = '', provisional = false }) => {
@@ -440,6 +447,18 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     totals[month] = installmentPurchases.reduce((sum, purchase) => sum + Number(purchase.monthly[month] || 0), 0);
     return totals;
   }, {}), [installmentMonths, installmentPurchases]);
+
+  const installmentUpcomingTotal = useMemo(() => {
+    const currentMonth = todayLocal().slice(0, 7);
+    const [year, month] = currentMonth.split('-').map(Number);
+    const horizon = new Date(year, month - 1 + 12, 1);
+    const horizonMonth = `${horizon.getFullYear()}-${String(horizon.getMonth() + 1).padStart(2, '0')}`;
+    return installmentMonths.reduce((sum, key) => (
+      key >= currentMonth && key < horizonMonth
+        ? sum + Number(installmentMonthlyTotals[key] || 0)
+        : sum
+    ), 0);
+  }, [installmentMonths, installmentMonthlyTotals]);
 
   const days = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);
@@ -2415,7 +2434,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
             <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
             <Metric label="Parcelas identificadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
-            <Metric label="Compromissos nos próximos 12 meses" value={formatBRL(Object.values(installmentMonthlyTotals).reduce((sum, value) => sum + value, 0))} icon={<CalendarDays size={18}/>} tone="amber"/>
+            <Metric label="Compromissos nos próximos 12 meses" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
           </div>
 
           <Card className="p-5">
@@ -2651,7 +2670,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         ? 'paga'
                         : b.status === 'OVERDUE'
                           ? 'vencida'
-                          : !totalAvailable
+                          : b.status === 'PARTIALLY_PAID'
+                            ? 'parcialmente paga'
+                            : !totalAvailable
                             ? 'total oficial indisponível'
                             : 'em aberto';
                     const statusClass = paid
@@ -2663,7 +2684,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                           : 'bg-blue-100 text-blue-700';
                     return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
                       <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{getCardDisplayName(card, 'Cartão não identificado')} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · total oficial importado pela Pluggy</p></div>
-                      <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{b.paidWithAdvance ? 'Paga com adiantamento' : paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
+                      <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{b.paidWithAdvance ? 'Paga com adiantamento' : paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : b.status === 'PARTIALLY_PAID' ? 'Parcialmente paga · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                     </button>;
                   })}
                 </section>

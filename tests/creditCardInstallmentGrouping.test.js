@@ -120,3 +120,25 @@ test('agrupa pela descrição n/n quando a Pluggy não preenche os campos numér
   assert.equal(purchases[0].totalInstallments, 5);
   assert.equal(purchases[0].observedInstallments, 2);
 });
+
+test('une a mesma compra quando a descrição vem abreviada ou com o nome repetido', () => {
+  const purchases = buildInstallmentPurchases([
+    tx(1, '2026-11-08', {
+      id: 'mercado-pago-abbreviated',
+      description: 'MERCADOLIVRE*MERC 1 de 2',
+      amountCents: 4250,
+      creditCardTotalInstallments: 2,
+    }),
+    tx(1, '2026-11-08', {
+      id: 'mercado-pago-full',
+      description: 'MERCADOLIVRE*MERCADOLIVRE 1 de 2',
+      amountCents: 4250,
+      creditCardTotalInstallments: 2,
+    }),
+  ]);
+
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].observedInstallments, 1);
+  assert.equal(purchases[0].purchaseTotalCents, 8500);
+  assert.equal(purchases[0].description, 'MERCADOLIVRE*MERCADOLIVRE');
+});

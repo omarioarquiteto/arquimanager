@@ -87,3 +87,9 @@ test('usa a descrição como fallback quando a instituição envia contadores ze
     paymentType: '',
   });
 });
+
+test('aceita planos longos quando a quantidade foi informada explicitamente pelo provedor', () => {
+  assert.equal(isInstallmentCreditTransaction({
+    creditCardMetadata: { paymentType: 'INSTALLMENT', installmentNumber: 1, totalInstallments: 60 },
+  }), true);
+});

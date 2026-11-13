@@ -13,6 +13,7 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
+import { buildInstallmentPurchases } from './creditCardInstallmentGrouping.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -327,96 +328,10 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   // A visão de cartões considera somente compras parceladas importadas.
   // As parcelas futuras são projetadas apenas nesta tabela; nenhum lançamento
   // financeiro nem fatura é criado por essa projeção.
-  const installmentPurchases = useMemo(() => {
-    const purchases = new Map();
-    const shiftMonth = (value, offset) => {
-      if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return '';
-      const [year, month] = String(value).split('-').map(Number);
-      const date = new Date(year, month - 1 + offset, 1);
-      return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0');
-    };
-    const normalizeDescription = value => normalizeText(String(value || ''))
-      .replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    transactions.forEach(tx => {
-      if (!isCreditCardTransaction(tx) || tx.status === 'CANCELLED') return;
-      const rawDescription = String(tx.description || tx.merchant || '').trim();
-      const descriptionMatch = rawDescription.match(/(?:\s+|\b)(?:(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
-      const installmentNumber = Number(tx.creditCardInstallmentNumber || descriptionMatch?.[1] || 0);
-      const totalInstallments = Number(tx.creditCardTotalInstallments || descriptionMatch?.[2] || 0);
-      if (!Number.isInteger(installmentNumber) || !Number.isInteger(totalInstallments)
-        || totalInstallments < 2 || installmentNumber < 1 || installmentNumber > totalInstallments) return;
-
-      const description = normalizeDescription(rawDescription) || String(tx.merchant || rawDescription);
-      const amountCents = Math.abs(Number(tx.amountCents || 0));
-      const cardId = String(tx.cardId || tx.accountId || '');
-      const transactionDate = String(tx.date || '').slice(0, 10);
-      if (!description || !amountCents || !cardId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) return;
-
-      const inferredPurchaseDate = shiftMonth(transactionDate.slice(0, 7), -(installmentNumber - 1));
-      const purchaseDate = String(tx.creditCardPurchaseDate || (inferredPurchaseDate ? inferredPurchaseDate + transactionDate.slice(7, 10) : '')).slice(0, 10);
-      const cycleMonth = String(tx.creditCardBillForecastDate || tx.creditCardBillPostDate || transactionDate).slice(0, 7);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate) || !/^\d{4}-\d{2}$/.test(cycleMonth)) return;
-
-      const providerPurchaseTotalCents = Math.abs(Number(tx.creditCardTotalAmountCents || 0));
-      const purchaseTotalCents = providerPurchaseTotalCents || amountCents * totalInstallments;
-      const purchaseTotalEstimated = !providerPurchaseTotalCents;
-
-      // Cartão, descrição, data, quantidade de parcelas e total separam compras.
-      const key = [
-        cardId,
-        normalizeText(description),
-        purchaseDate,
-        totalInstallments,
-        purchaseTotalCents,
-        String(tx.type || 'EXPENSE').toUpperCase(),
-      ].join('|');
-      if (!purchases.has(key)) {
-        purchases.set(key, {
-          key,
-          cardId,
-          description: String(rawDescription.replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '').trim() || description),
-          totalInstallments,
-          purchaseDate,
-          purchaseTotalCents,
-          purchaseTotalEstimated,
-          monthly: {},
-          installmentSlots: new Map(),
-          observedInstallments: 0,
-          endMonth: '',
-        });
-      }
-
-      const purchase = purchases.get(key);
-      const slotKey = String(installmentNumber);
-      const previous = purchase.installmentSlots.get(slotKey);
-      const candidate = {
-        installmentNumber,
-        amountCents,
-        cycleMonth,
-        transactionId: String(tx.id || tx.providerTransactionId || ''),
-      };
-      if (!previous || candidate.cycleMonth > previous.cycleMonth) {
-        purchase.installmentSlots.set(slotKey, candidate);
-      }
-    });
-
-    return Array.from(purchases.values()).map(purchase => {
-      purchase.installmentSlots.forEach(slot => {
-        purchase.monthly[slot.cycleMonth] = Number(purchase.monthly[slot.cycleMonth] || 0) + slot.amountCents;
-        purchase.observedInstallments += 1;
-        if (slot.cycleMonth > purchase.endMonth) purchase.endMonth = slot.cycleMonth;
-      });
-
-      // Meses sem parcela real importada permanecem vazios. O sistema não
-      // cria previsões de parcelas futuras nem altera os valores das faturas.
-      delete purchase.installmentSlots;
-      return purchase;
-    }).sort((a, b) => String(a.purchaseDate).localeCompare(String(b.purchaseDate))
-      || String(a.description).localeCompare(String(b.description), 'pt-BR'));
-  }, [transactions]);
+  const installmentPurchases = useMemo(
+    () => buildInstallmentPurchases(transactions),
+    [transactions]
+  );
 
   const installmentMonths = useMemo(() => {
     const [year, month] = todayLocal().slice(0, 7).split('-').map(Number);

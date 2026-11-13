@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFirestore, collection, doc, query, where, onSnapshot, getDocs, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
-  arrayUnion, arrayRemove, deleteField, serverTimestamp, increment, writeBatch
+  deleteField, serverTimestamp, increment, writeBatch
 } from 'firebase/firestore';
 import {
   ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, CalendarDays, Check, ChevronLeft,
@@ -13,7 +13,6 @@ import {
   parseCsvAmount, toCents, transactionKey, todayLocal
 } from './financialEngine.js';
 import PluggyConnectionsV2 from './PluggyConnectionsV2.jsx';
-import { getBillTransactions } from './billTransactionMatching.js';
 
 const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
@@ -34,14 +33,6 @@ const dateLabel = (s) => {
 const getCardDisplayName = (card, fallback = 'Cartão') =>
   card?.displayName || card?.name || fallback;
 
-const stableHash = (value = '') => {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-};
 
 const syncDateOnly = (value) => {
   if (!value) return '';
@@ -109,44 +100,12 @@ const hasOfficialBillTotal = (bill = {}) => Boolean(
   || (isOfficialBill(bill) && bill.provisional === false && Number(bill.totalCents || 0) > 0)
 );
 
-// Keep the provider's original total for comparison/audit, but use the
-// transaction sum after a successful manual reconciliation or advance payment.
-const hasAppliedReconciledBillTotal = (bill = {}) => (
-  bill.reconciledTotalCents != null
-  && (bill.reconciliationStatus === 'MATCHED_MANUAL' || bill.paidWithAdvance === true)
-);
+const hasEffectiveBillTotal = (bill = {}) => hasOfficialBillTotal(bill);
 
-const hasEffectiveBillTotal = (bill = {}) => (
-  hasOfficialBillTotal(bill) || hasAppliedReconciledBillTotal(bill)
-);
+// O total da fatura permanece sempre o valor oficial recebido da instituição.
+// Compras parceladas são uma visão separada e nunca substituem esse total.
+const getBillTotalCents = (bill = {}) => Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
 
-const getBillTotalCents = (bill = {}) => (
-  hasAppliedReconciledBillTotal(bill)
-    ? Number(bill.reconciledTotalCents || 0)
-    : Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
-);
-
-const getCheckedInvoiceTransactionIds = (bill = {}) => new Set(
-  (Array.isArray(bill.reconciliationCheckedTransactionIds) ? bill.reconciliationCheckedTransactionIds : [])
-    .map(id => String(id))
-);
-
-const getCheckedInvoiceTransactionCount = (bill = {}, transactions = []) => {
-  const checkedIds = getCheckedInvoiceTransactionIds(bill);
-  return transactions.filter(tx => checkedIds.has(String(tx.id))).length;
-};
-
-const getBillTransactionsTotalCents = (transactions = []) => transactions.reduce((sum, tx) => {
-  const amount = Math.abs(Number(tx.amountCents || 0));
-  return sum + (String(tx.type || '').toUpperCase() === 'INCOME' ? -amount : amount);
-}, 0);
-
-const getBillTransactionsSignature = (transactions = []) => stableHash(
-  transactions
-    .map(tx => [tx.id || '', tx.date || '', tx.type || '', Number(tx.amountCents || 0)].join(':'))
-    .sort()
-    .join('|')
-);
 
 const billStatusFromValues = ({ totalCents = 0, paidCents = 0, dueDate = '', provisional = false }) => {
   const total = Number(totalCents || 0);
@@ -254,7 +213,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [renamingCardId, setRenamingCardId] = useState('');
   const [cardNameDraft, setCardNameDraft] = useState('');
   const [cardRenameBusy, setCardRenameBusy] = useState(false);
-  const [invoiceCheckSavingIds, setInvoiceCheckSavingIds] = useState(() => new Set());
   const [invoiceAdvanceBusy, setInvoiceAdvanceBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [bulkQuery, setBulkQuery] = useState('');
@@ -301,95 +259,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   }, [companyId]);
 
-  const invoiceReconciliationRows = useMemo(() => {
-    if (pluggySyncing) return [];
-    return bills
-    .filter(isOfficialBill)
-    .map(bill => {
-      const card = cards.find(item => item.id === bill.cardId) || {};
-      const billTransactions = getBillTransactions(bill, card, transactions, bills);
-      const totalAvailable = hasOfficialBillTotal(bill);
-      const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-      const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
-      const transactionsSignature = getBillTransactionsSignature(billTransactions);
-      const checkedTransactionIds = Array.from(getCheckedInvoiceTransactionIds(bill)).sort();
-      const checkedTransactionCount = getCheckedInvoiceTransactionCount(bill, billTransactions);
-      const allTransactionsChecked = (
-        billTransactions.length > 0
-        && checkedTransactionCount === billTransactions.length
-      );
-      return {
-        bill,
-        totalAvailable,
-        officialTotalCents,
-        transactionsTotalCents,
-        transactionsSignature,
-        transactionCount: billTransactions.length,
-        checkedTransactionIds,
-        checkedTransactionCount,
-        status: allTransactionsChecked ? 'MATCHED_MANUAL' : 'NEEDS_REVIEW',
-      };
-    })
-    .sort((a, b) => String(a.bill.id).localeCompare(String(b.bill.id)));
-  }, [bills, cards, transactions, pluggySyncing]);
-
-  const invoiceReconciliationSignature = useMemo(() => JSON.stringify(
-    invoiceReconciliationRows.map(row => [
-      row.bill.id,
-      row.totalAvailable,
-      row.officialTotalCents,
-      row.transactionsTotalCents,
-      row.transactionsSignature,
-      row.transactionCount,
-      row.checkedTransactionIds,
-      row.checkedTransactionCount,
-      row.status,
-    ])
-  ), [invoiceReconciliationRows]);
-
-  useEffect(() => {
-    if (!companyId || pluggySyncing || !invoiceReconciliationRows.length) return undefined;
-    let cancelled = false;
-
-    const persistInvoiceStatuses = async () => {
-      try {
-        const pending = invoiceReconciliationRows.filter(row => {
-          const bill = row.bill;
-          const officialTotalSnapshotMatches = row.totalAvailable
-            ? Number(bill.reconciledAgainstOfficialTotalCents) === row.officialTotalCents
-            : bill.reconciledAgainstOfficialTotalCents == null;
-          return (
-            bill.reconciliationStatus !== row.status
-            || !officialTotalSnapshotMatches
-            || Number(bill.reconciledAgainstTransactionsTotalCents) !== row.transactionsTotalCents
-            || String(bill.reconciledTransactionsSignature || '') !== row.transactionsSignature
-            || Number(bill.reconciledTransactionCount || 0) !== row.transactionCount
-          );
-        });
-        for (let start = 0; start < pending.length; start += 400) {
-          if (cancelled) return;
-          const batch = writeBatch(db);
-          pending.slice(start, start + 400).forEach(row => {
-            batch.update(docPath(db, 'financial_bills', row.bill.id), {
-              reconciliationStatus: row.status,
-              reconciledAgainstOfficialTotalCents: row.totalAvailable ? row.officialTotalCents : null,
-              reconciledAgainstTransactionsTotalCents: row.transactionsTotalCents,
-              reconciledTransactionsSignature: row.transactionsSignature,
-              reconciledTransactionCount: row.transactionCount,
-              reconciliationCheckedAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          });
-          await batch.commit();
-        }
-      } catch (error) {
-        console.error('Falha ao atualizar o status de conciliação das faturas', error);
-      }
-    };
-
-    persistInvoiceStatuses();
-    return () => { cancelled = true; };
-  }, [companyId, pluggySyncing, invoiceReconciliationSignature, db]);
 
   const monthTransactions = useMemo(
     () => transactions.filter(t => monthKey(t.date || t.actualDate || t.expectedDate) === selectedMonth),
@@ -444,30 +313,30 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const filteredTransactions = useMemo(() => {
     const q = normalizeText(queryText);
     return [...transactions]
-      .filter(t => !q || normalizeText(`${t.description || ''} ${t.merchant || ''}`).includes(q))
+      .filter(t => !isCreditCardTransaction(t) && (!q || normalizeText(`${t.description || ''} ${t.merchant || ''}`).includes(q)))
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }, [transactions, queryText]);
 
-  // Agrupa todas as parcelas reais de compras de cartão em uma única compra.
-  // Cada parcela ocupa apenas uma posição (número da parcela) dentro da compra.
-  // Não cria lançamentos financeiros nem inventa parcelas ausentes.
+  // A visão de cartões considera somente compras parceladas importadas.
+  // As parcelas futuras são projetadas apenas nesta tabela; nenhum lançamento
+  // financeiro nem fatura é criado por essa projeção.
   const installmentPurchases = useMemo(() => {
     const purchases = new Map();
     const shiftMonth = (value, offset) => {
-      if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return '';
+      if (!/^\\d{4}-\\d{2}$/.test(String(value || ''))) return '';
       const [year, month] = String(value).split('-').map(Number);
       const date = new Date(year, month - 1 + offset, 1);
       return String(date.getFullYear()) + '-' + String(date.getMonth() + 1).padStart(2, '0');
     };
     const normalizeDescription = value => normalizeText(String(value || ''))
-      .replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
-      .replace(/\s+/g, ' ')
+      .replace(/\\s+(?:(?:parcela|parc)\\s*)?\\d+\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i, '')
+      .replace(/\\s+/g, ' ')
       .trim();
 
     transactions.forEach(tx => {
       if (!isCreditCardTransaction(tx) || tx.status === 'CANCELLED') return;
       const rawDescription = String(tx.description || tx.merchant || '').trim();
-      const descriptionMatch = rawDescription.match(/(?:\s+|\b)(?:(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
+      const descriptionMatch = rawDescription.match(/(?:\\s+|\\b)(?:(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*(\\d+)\\s*$/i);
       const installmentNumber = Number(tx.creditCardInstallmentNumber || descriptionMatch?.[1] || 0);
       const totalInstallments = Number(tx.creditCardTotalInstallments || descriptionMatch?.[2] || 0);
       if (!Number.isInteger(installmentNumber) || !Number.isInteger(totalInstallments)
@@ -477,40 +346,44 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       const amountCents = Math.abs(Number(tx.amountCents || 0));
       const cardId = String(tx.cardId || tx.accountId || '');
       const transactionDate = String(tx.date || '').slice(0, 10);
-      if (!description || !amountCents || !cardId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)) return;
+      if (!description || !amountCents || !cardId || !/^\\d{4}-\\d{2}-\\d{2}$/.test(transactionDate)) return;
 
       const inferredPurchaseDate = shiftMonth(transactionDate.slice(0, 7), -(installmentNumber - 1));
       const purchaseDate = String(tx.creditCardPurchaseDate || (inferredPurchaseDate ? inferredPurchaseDate + transactionDate.slice(7, 10) : '')).slice(0, 10);
       const cycleMonth = String(tx.creditCardBillForecastDate || tx.creditCardBillPostDate || transactionDate).slice(0, 7);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate) || !/^\d{4}-\d{2}$/.test(cycleMonth)) return;
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(purchaseDate) || !/^\\d{4}-\\d{2}$/.test(cycleMonth)) return;
 
-      // Cartão + descrição + data da compra + plano + valor separam compras distintas.
+      const providerPurchaseTotalCents = Math.abs(Number(tx.creditCardTotalAmountCents || 0));
+      const purchaseTotalCents = providerPurchaseTotalCents || amountCents * totalInstallments;
+      const purchaseTotalEstimated = !providerPurchaseTotalCents;
+
+      // Cartão, descrição, data, quantidade de parcelas e total separam compras.
       const key = [
         cardId,
         normalizeText(description),
         purchaseDate,
         totalInstallments,
-        amountCents,
+        purchaseTotalCents,
         String(tx.type || 'EXPENSE').toUpperCase(),
       ].join('|');
       if (!purchases.has(key)) {
         purchases.set(key, {
           key,
           cardId,
-          description: String(rawDescription.replace(/\s+(?:(?:parcela|parc)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '').trim() || description),
+          description: String(rawDescription.replace(/\\s+(?:(?:parcela|parc)\\s*)?\\d+\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i, '').trim() || description),
           totalInstallments,
           purchaseDate,
+          purchaseTotalCents,
+          purchaseTotalEstimated,
           monthly: {},
+          projectedMonths: [],
           installmentSlots: new Map(),
           observedInstallments: 0,
           endMonth: '',
-          referenceAmountCents: amountCents,
         });
       }
 
       const purchase = purchases.get(key);
-      // Se a Pluggy repetir o mesmo lançamento, a parcela só conta uma vez.
-      // Em caso de duplicata, mantém o registro com data/ciclo mais específico.
       const slotKey = String(installmentNumber);
       const previous = purchase.installmentSlots.get(slotKey);
       const candidate = {
@@ -519,17 +392,34 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         cycleMonth,
         transactionId: String(tx.id || tx.providerTransactionId || ''),
       };
-      if (!previous || (!previous.cycleMonth && candidate.cycleMonth)) {
+      if (!previous || candidate.cycleMonth > previous.cycleMonth) {
         purchase.installmentSlots.set(slotKey, candidate);
       }
     });
 
     return Array.from(purchases.values()).map(purchase => {
+      let latestObservedSlot = null;
       purchase.installmentSlots.forEach(slot => {
         purchase.monthly[slot.cycleMonth] = Number(purchase.monthly[slot.cycleMonth] || 0) + slot.amountCents;
         purchase.observedInstallments += 1;
         if (slot.cycleMonth > purchase.endMonth) purchase.endMonth = slot.cycleMonth;
+        if (!latestObservedSlot || slot.installmentNumber > latestObservedSlot.installmentNumber) {
+          latestObservedSlot = slot;
+        }
       });
+
+      // Exibe as parcelas que ainda faltam após a última parcela efetivamente
+      // importada, sem gravá-las como transações ou alterar valores de faturas.
+      if (latestObservedSlot) {
+        for (let number = latestObservedSlot.installmentNumber + 1; number <= purchase.totalInstallments; number += 1) {
+          const month = shiftMonth(latestObservedSlot.cycleMonth, number - latestObservedSlot.installmentNumber);
+          if (!month || purchase.monthly[month] != null) continue;
+          purchase.monthly[month] = latestObservedSlot.amountCents;
+          purchase.projectedMonths.push(month);
+          if (month > purchase.endMonth) purchase.endMonth = month;
+        }
+      }
+
       delete purchase.installmentSlots;
       return purchase;
     }).sort((a, b) => String(a.purchaseDate).localeCompare(String(b.purchaseDate))
@@ -1120,85 +1010,24 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
   };
 
-  const toggleInvoiceTransactionCheck = async (bill, transaction, checked) => {
-    if (!bill?.id || !transaction?.id) return;
-
-    const card = cards.find(item => item.id === bill.cardId) || {};
-    const billTransactions = getBillTransactions(bill, card, transactions, bills);
-    const nextCheckedIds = getCheckedInvoiceTransactionIds(bill);
-    if (checked) nextCheckedIds.add(String(transaction.id));
-    else nextCheckedIds.delete(String(transaction.id));
-
-    const allTransactionsChecked = (
-      billTransactions.length > 0
-      && billTransactions.every(item => nextCheckedIds.has(String(item.id)))
-    );
-    const transactionsTotalCents = getBillTransactionsTotalCents(billTransactions);
-    const transactionsSignature = getBillTransactionsSignature(billTransactions);
-    const changes = {
-      reconciliationCheckedTransactionIds: checked
-        ? arrayUnion(transaction.id)
-        : arrayRemove(transaction.id),
-      reconciliationStatus: allTransactionsChecked ? 'MATCHED_MANUAL' : 'NEEDS_REVIEW',
-      updatedAt: serverTimestamp(),
-    };
-
-    if (allTransactionsChecked) {
-      changes.reconciledTotalCents = transactionsTotalCents;
-      changes.reconciledTotalSource = bill.paidWithAdvance ? 'ADVANCE_PAYMENT' : 'TRANSACTION_SUM';
-      changes.reconciledTotalAppliedAt = serverTimestamp();
-      changes.reconciledAgainstOfficialTotalCents = hasOfficialBillTotal(bill)
-        ? Number(bill.officialTotalCents ?? bill.totalCents ?? 0)
-        : null;
-      changes.reconciledAgainstTransactionsTotalCents = transactionsTotalCents;
-      changes.reconciledTransactionsSignature = transactionsSignature;
-      changes.reconciledTransactionCount = billTransactions.length;
-      if (bill.paidWithAdvance) {
-        changes.paidCents = transactionsTotalCents;
-        changes.status = 'PAID';
-      }
-    } else if (!bill.paidWithAdvance) {
-      // If a reconciled item is unchecked, remove the override so the bill
-      // falls back to the original Pluggy total until it is reconciled again.
-      changes.reconciledTotalCents = deleteField();
-      changes.reconciledTotalSource = deleteField();
-      changes.reconciledTotalAppliedAt = deleteField();
-    }
-
-    setInvoiceCheckSavingIds(previous => new Set(previous).add(transaction.id));
-    try {
-      await updateDoc(docPath(db, 'financial_bills', bill.id), changes);
-    } catch (error) {
-      console.error('Falha ao salvar conferência do lançamento da fatura', error);
-      setNotice(error.message || 'Não foi possível salvar a conferência deste lançamento.');
-    } finally {
-      setInvoiceCheckSavingIds(previous => {
-        const next = new Set(previous);
-        next.delete(transaction.id);
-        return next;
-      });
-    }
-  };
 
   const markBillPaidWithAdvance = async (bill) => {
     if (!bill?.id || bill.paidWithAdvance || invoiceAdvanceBusy) return;
-    const card = cards.find(item => item.id === bill.cardId) || {};
-    const billTransactions = getBillTransactions(bill, card, transactions, bills);
-    if (!billTransactions.length) {
-      setNotice('Não é possível marcar esta fatura como paga com adiantamento: ainda não há lançamentos importados vinculados a ela.');
+    const totalCents = getBillTotalCents(bill);
+    if (!hasOfficialBillTotal(bill) || totalCents <= 0) {
+      setNotice('Não é possível marcar esta fatura como paga com adiantamento: o total oficial ainda não foi importado pela Pluggy.');
       return;
     }
 
-    const totalCents = getBillTransactionsTotalCents(billTransactions);
     const confirmed = window.confirm(
-      `Marcar esta fatura como paga com adiantamento? O total e o valor pago passarão a ser ${formatBRL(totalCents)}, calculado pela soma dos lançamentos vinculados neste momento. O total original da Pluggy será preservado para consulta.`
+      `Marcar esta fatura como paga com adiantamento? O total e o valor pago serão definidos pelo total oficial da Pluggy: ${formatBRL(totalCents)}. O valor original da fatura será preservado.`
     );
     if (!confirmed) return;
 
     const previousState = {
       paidCents: Number(bill.paidCents || 0),
       status: bill.status || billStatusFromValues({
-        totalCents: getBillTotalCents(bill),
+        totalCents,
         paidCents: Number(bill.paidCents || 0),
         dueDate: bill.officialDueDate || bill.dueDate,
         provisional: false,
@@ -1214,17 +1043,17 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         paidWithAdvance: true,
         paidWithAdvanceAt: serverTimestamp(),
         preAdvanceState: previousState,
-        reconciledTotalCents: totalCents,
-        reconciledTotalSource: 'ADVANCE_PAYMENT',
-        reconciledTotalAppliedAt: serverTimestamp(),
+        reconciledTotalCents: deleteField(),
+        reconciledTotalSource: deleteField(),
+        reconciledTotalAppliedAt: deleteField(),
         paidCents: totalCents,
         status: 'PAID',
         updatedAt: serverTimestamp(),
       });
-      setNotice(`Fatura marcada como paga com adiantamento. Total considerado: ${formatBRL(totalCents)}.`);
+      setNotice(`Fatura marcada como paga com adiantamento. Total oficial: ${formatBRL(totalCents)}.`);
     } catch (error) {
       console.error('Falha ao marcar fatura paga com adiantamento', error);
-      setNotice(error.message || 'Não foi possível marcar a fatura como paga com adiantamento.');
+      setNotice(error.message || 'Não foi possível marcar esta fatura como paga com adiantamento.');
     } finally {
       setInvoiceAdvanceBusy(false);
     }
@@ -2592,7 +2421,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
-                <p className="text-xs text-slate-400 mt-1">Cada compra é agrupada a partir das parcelas identificadas nos lançamentos do cartão. Cada parcela aparece uma única vez.</p>
+                <p className="text-xs text-slate-400 mt-1">Somente compras parceladas são detalhadas. O total da fatura continua vindo separadamente da Pluggy.</p>
               </div>
               <span className="text-[10px] font-bold text-slate-500">Agrupamento de parcelas reais, sem duplicidades</span>
             </div>
@@ -2602,7 +2431,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                   <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400">
                     <th className="py-3 pr-4 sticky left-0 bg-white">Descrição da compra</th>
                     <th className="py-3 px-3 whitespace-nowrap">Quantidade de parcelas</th>
-                    <th className="py-3 px-3 whitespace-nowrap">Data da compra</th>
+                    <th className="py-3 px-3 whitespace-nowrap">Valor total da compra</th>
                     {installmentMonths.map(month => (
                       <th key={month} className="py-3 px-3 text-right whitespace-nowrap">{new Date(Number(month.slice(0,4)), Number(month.slice(5,7))-1, 1).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</th>
                     ))}
@@ -2620,12 +2449,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                       <tr key={purchase.key} className="hover:bg-slate-50/70">
                         <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
-                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas encontradas</p>
+                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas importadas</p>
                         </td>
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
-                        <td className="py-3 px-3 text-xs text-slate-600 whitespace-nowrap">{purchase.purchaseDate ? dateLabel(purchase.purchaseDate) : '—'}</td>
+                        <td className="py-3 px-3 text-xs font-black text-slate-800 whitespace-nowrap">{formatBRL(purchase.purchaseTotalCents)}{purchase.purchaseTotalEstimated && <span className="block text-[9px] font-bold text-amber-600">Estimado</span>}</td>
                         {installmentMonths.map(month => (
-                          <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.monthly[month] ? formatBRL(purchase.monthly[month]) : '—'}</td>
+                          <td key={month} className={`py-3 px-3 text-right text-xs font-bold whitespace-nowrap ${purchase.projectedMonths.includes(month) ? 'text-blue-600 bg-blue-50/50' : 'text-slate-700'}`}>{purchase.monthly[month] ? <>{formatBRL(purchase.monthly[month])}{purchase.projectedMonths.includes(month) && <span className="block text-[8px] font-black uppercase text-blue-500">Prevista</span>}</> : '—'}</td>
                         ))}
                       </tr>
                   ))}
@@ -2636,7 +2465,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              A tabela reúne as parcelas efetivamente encontradas nos lançamentos dos cartões. Uma mesma parcela é contada uma única vez; meses sem lançamento identificado ficam vazios. Esta visualização não cria nem altera lançamentos financeiros.
+              A tabela mostra o valor total de cada compra e distribui as parcelas importadas pelos meses correspondentes. As parcelas futuras após a última parcela importada aparecem como previstas e servem apenas para visualização; não alteram faturas nem criam lançamentos financeiros.
             </p>
           </Card>
         </div>
@@ -2798,7 +2627,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
           <Card className="p-5">
             <div className="flex items-center justify-between gap-3 mb-4">
-              <div><h4 className="font-black text-xl text-slate-800">Faturas</h4><p className="text-xs text-slate-400">Totais oficiais e lançamentos importados diretamente da Pluggy.</p></div>
+              <div><h4 className="font-black text-xl text-slate-800">Faturas</h4><p className="text-xs text-slate-400">Somente o total oficial, os pagamentos e o saldo de cada fatura.</p></div>
               <span className="text-[10px] font-black uppercase text-slate-400">{bills.filter(isOfficialBill).length} fatura(s) oficial(is)</span>
             </div>
             <div className="space-y-5">
@@ -2812,29 +2641,27 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     const card = cards.find(c => c.id === b.cardId) || {};
                     const totalAvailable = hasEffectiveBillTotal(b);
                     const officialTotal = getBillTotalCents(b);
-                    const paidCents = Number(b.paidCents || 0);
+                    const paidCents = b.paidWithAdvance ? officialTotal : Number(b.paidCents || 0);
                     const remaining = Math.max(0, officialTotal - paidCents);
                     const paid = b.paidWithAdvance === true || (remaining === 0 && officialTotal > 0);
-                    const billTransactions = getBillTransactions(b, card, transactions, bills);
-                    const checkedTransactionCount = getCheckedInvoiceTransactionCount(b, billTransactions);
-                    const allTransactionsChecked = (
-                      billTransactions.length > 0
-                      && checkedTransactionCount === billTransactions.length
-                    );
                     const statusLabel = b.paidWithAdvance
                       ? 'paga com adiantamento'
-                      : allTransactionsChecked
-                        ? 'conciliada'
-                        : !totalAvailable
-                          ? 'total oficial indisponível'
-                          : 'não conciliada';
-                    const statusClass = b.paidWithAdvance || allTransactionsChecked
+                      : paid
+                        ? 'paga'
+                        : b.status === 'OVERDUE'
+                          ? 'vencida'
+                          : !totalAvailable
+                            ? 'total oficial indisponível'
+                            : 'em aberto';
+                    const statusClass = paid
                       ? 'bg-emerald-100 text-emerald-700'
-                      : !totalAvailable
-                        ? 'bg-amber-100 text-amber-700'
-                        : 'bg-red-100 text-red-700';
+                      : b.status === 'OVERDUE'
+                        ? 'bg-red-100 text-red-700'
+                        : !totalAvailable
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-blue-100 text-blue-700';
                     return <button type="button" key={b.id} onClick={() => setModal({ type: 'billDetails', billId: b.id })} className="w-full text-left flex flex-col md:flex-row md:items-center gap-3 p-3 border border-slate-100 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                      <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{getCardDisplayName(card, 'Cartão não identificado')} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · {billTransactions.length} lançamento(s) Pluggy · {checkedTransactionCount}/{billTransactions.length} conferidos</p></div>
+                      <div className="flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800">{getCardDisplayName(card, 'Cartão não identificado')} · {b.referenceMonth}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span></div><p className="text-[10px] text-slate-400">Fechamento {dateLabel(b.officialClosingDate || b.closingDate)} · Vencimento {dateLabel(b.officialDueDate || b.dueDate)} · total oficial importado pela Pluggy</p></div>
                       <div className="text-right"><p className="font-black text-slate-800">{totalAvailable ? formatBRL(officialTotal) : 'Não informado'}</p><p className={paid ? 'text-[10px] font-black text-emerald-600' : b.status === 'OVERDUE' ? 'text-[10px] font-black text-red-600' : 'text-[10px] font-black text-amber-600'}>{b.paidWithAdvance ? 'Paga com adiantamento' : paid ? 'Paga' : b.status === 'OVERDUE' ? 'Vencida · restante ' + formatBRL(remaining) : 'Aberta · restante ' + formatBRL(remaining)}</p></div>
                     </button>;
                   })}
@@ -2855,12 +2682,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       {modal?.type === 'billDetails' && modal.billId && <BillDetailsModal
         bill={bills.find(item => item.id === modal.billId)}
         card={cards.find(item => item.id === bills.find(bill => bill.id === modal.billId)?.cardId)}
-        bills={bills}
-        transactions={transactions}
-        categories={categories}
-        onEditTransaction={openEditTransaction}
-        onToggleTransactionCheck={toggleInvoiceTransactionCheck}
-        savingTransactionIds={invoiceCheckSavingIds}
         onMarkPaidWithAdvance={markBillPaidWithAdvance}
         onUndoPaidWithAdvance={undoBillPaidWithAdvance}
         invoiceAdvanceBusy={invoiceAdvanceBusy}
@@ -3149,12 +2970,6 @@ function AttentionItem({ item, transaction, categories, projects, clients, bills
 function BillDetailsModal({
   bill,
   card,
-  bills: allBills = [],
-  transactions: allTransactions,
-  categories,
-  onEditTransaction,
-  onToggleTransactionCheck,
-  savingTransactionIds = new Set(),
   onMarkPaidWithAdvance,
   onUndoPaidWithAdvance,
   invoiceAdvanceBusy = false,
@@ -3162,9 +2977,8 @@ function BillDetailsModal({
 }) {
   if (!bill) return <Modal title="Fatura" onClose={onClose}><EmptyState text="Fatura não encontrada."/></Modal>;
 
-  const sortedTransactions = getBillTransactions(bill, card, allTransactions, allBills);
   const total = getBillTotalCents(bill);
-  const paid = Number(bill.paidCents || 0);
+  const paid = bill.paidWithAdvance ? total : Number(bill.paidCents || 0);
   const remaining = Math.max(0, total - paid);
   const status = bill.paidWithAdvance
     ? 'PAID'
@@ -3174,21 +2988,6 @@ function BillDetailsModal({
     : status === 'PAID' ? 'Paga' : status === 'OVERDUE' ? 'Vencida' : status === 'PARTIALLY_PAID' ? 'Parcialmente paga' : 'Em aberto';
   const hasOfficialBill = isOfficialBill(bill);
   const totalAvailable = hasOfficialBillTotal(bill);
-  const officialTotalCents = Number(bill.officialTotalCents ?? bill.totalCents ?? 0);
-  const registeredTotalCents = getBillTransactionsTotalCents(sortedTransactions);
-  const amountsMatch = hasOfficialBill && totalAvailable && officialTotalCents === registeredTotalCents;
-  const checkedTransactionIds = getCheckedInvoiceTransactionIds(bill);
-  const checkedTransactionCount = getCheckedInvoiceTransactionCount(bill, sortedTransactions);
-  const allTransactionsChecked = (
-    sortedTransactions.length > 0
-    && checkedTransactionCount === sortedTransactions.length
-  );
-  const reconciliationStatusLabel = allTransactionsChecked
-    ? 'Conciliada: todos os lançamentos foram conferidos'
-    : `Não conciliada: ${checkedTransactionCount} de ${sortedTransactions.length} lançamentos conferidos`;
-  const reconciliationTone = allTransactionsChecked
-    ? 'bg-emerald-100 text-emerald-700'
-    : 'bg-red-100 text-red-700';
 
   return (
     <Modal title={`Fatura · ${getCardDisplayName(card, 'Cartão')}`} onClose={onClose}>
@@ -3199,7 +2998,6 @@ function BillDetailsModal({
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-lg font-black text-slate-800">{card?.institution || 'Instituição financeira'}</p>
                 {card?.brand && <span className="text-[10px] font-black uppercase text-slate-500">{card.brand}</span>}
-
               </div>
               <p className="text-xs text-slate-500 mt-1">{getCardDisplayName(card, 'Cartão')} · referência {bill.referenceMonth || '—'}</p>
               <p className="text-[10px] text-slate-400 mt-1">Fechamento {dateLabel(bill.officialClosingDate || bill.closingDate)} · vencimento {dateLabel(bill.officialDueDate || bill.dueDate)}</p>
@@ -3209,17 +3007,22 @@ function BillDetailsModal({
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Metric label="Total considerado" value={formatBRL(total)} icon={<WalletCards size={16}/>} tone="slate"/>
+          <Metric label="Total oficial da fatura" value={totalAvailable ? formatBRL(total) : 'Não informado'} icon={<WalletCards size={16}/>} tone="slate"/>
           <Metric label="Pago" value={formatBRL(paid)} icon={<Check size={16}/>} tone="green"/>
           <Metric label="Restante" value={formatBRL(remaining)} icon={<CircleAlert size={16}/>} tone={remaining > 0 ? 'red' : 'green'}/>
           <Metric label="Mínimo" value={bill.minimumPaymentCents == null ? '—' : formatBRL(bill.minimumPaymentCents)} icon={<DollarSign size={16}/>} tone="blue"/>
         </div>
 
+        <div className="p-4 rounded-2xl border border-blue-100 bg-blue-50/60">
+          <h4 className="font-black text-slate-800">Compras do cartão</h4>
+          <p className="text-xs text-slate-600 mt-1">Esta tela mantém apenas o total oficial da fatura e os pagamentos. O detalhamento das compras parceladas fica na aba “Compras parceladas”; compras à vista não são listadas individualmente.</p>
+        </div>
+
         {hasOfficialBill && (
-          <div className="border border-blue-100 bg-blue-50/50 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="border border-blue-100 bg-white rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h4 className="font-black text-slate-800">Pagamento por adiantamento</h4>
-              <p className="text-[10px] text-slate-600 mt-1">Use quando você quitou a fatura antes do fechamento e a Pluggy registrou o crédito em outro ciclo. O total considerado será a soma dos lançamentos vinculados no momento da marcação.</p>
+              <p className="text-[10px] text-slate-600 mt-1">Use quando você quitou a fatura antes do fechamento. O ArquiManager marcará como pago usando o total oficial importado pela Pluggy, sem recalcular a fatura pela soma das compras.</p>
             </div>
             {bill.paidWithAdvance ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -3227,40 +3030,10 @@ function BillDetailsModal({
                 <button type="button" onClick={() => onUndoPaidWithAdvance(bill)} disabled={invoiceAdvanceBusy} className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-black disabled:opacity-50">Desfazer</button>
               </div>
             ) : (
-              <button type="button" onClick={() => onMarkPaidWithAdvance(bill)} disabled={invoiceAdvanceBusy} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50 whitespace-nowrap">
+              <button type="button" onClick={() => onMarkPaidWithAdvance(bill)} disabled={invoiceAdvanceBusy || !totalAvailable} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-50 whitespace-nowrap">
                 {invoiceAdvanceBusy ? 'Salvando...' : 'Fatura paga com adiantamento'}
               </button>
             )}
-          </div>
-        )}
-
-        {hasOfficialBill && (
-          <div className="border border-slate-200 rounded-2xl p-4 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <h4 className="font-black text-slate-800">Conferência da fatura</h4>
-                <p className="text-[10px] text-slate-500 mt-1">Marque cada lançamento depois de conferi-lo na fatura. Quando todos estiverem marcados, o status passará para conciliada. A comparação dos totais permanece informativa; não são criadas previsões ou parcelas.</p>
-              </div>
-              <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-lg ${reconciliationTone}`}>{reconciliationStatusLabel}</span>
-            </div>
-            <div className="grid sm:grid-cols-3 gap-3">
-              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 1 · Total oficial da Pluggy</p>
-                <p className="text-xl font-black text-slate-800 mt-1">{totalAvailable ? formatBRL(officialTotalCents) : 'Não informado'}</p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 2 · Lançamentos encontrados</p>
-                <p className="text-xl font-black text-slate-800 mt-1">{sortedTransactions.length} lançamento(s)</p>
-                <p className="text-[10px] text-slate-500 mt-1">Soma importada: {formatBRL(registeredTotalCents)}</p>
-              </div>
-              <div className={`p-3 rounded-xl border ${amountsMatch ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
-                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Etapa 3 · Comparação</p>
-                <p className={`text-sm font-black mt-2 ${amountsMatch ? 'text-emerald-800' : 'text-red-800'}`}>{!totalAvailable ? 'Total oficial ausente' : amountsMatch ? 'Os totais conferem' : 'Os totais não conferem'}</p>
-                <p className="text-[10px] text-slate-600 mt-1">Diferença: {totalAvailable ? formatBRL(officialTotalCents - registeredTotalCents) : '—'}</p>
-              </div>
-            </div>
-            {!allTransactionsChecked && <p className="text-xs text-red-700">Confira os lançamentos acima e marque cada um. A fatura será marcada como conciliada quando todos estiverem selecionados.</p>}
-            {allTransactionsChecked && !amountsMatch && <p className="text-xs text-amber-700">Todos os lançamentos exibidos foram conferidos. A soma ainda difere do total oficial; revise a comparação antes de encerrar a conferência.</p>}
           </div>
         )}
 
@@ -3268,7 +3041,7 @@ function BillDetailsModal({
           <div className="border border-slate-200 rounded-2xl p-4">
             <div className="flex items-center justify-between mb-3">
               <div><h4 className="font-black text-slate-800">Pagamentos</h4><p className="text-[10px] text-slate-400">Pagamentos informados pela instituição.</p></div>
-              <span className="text-[10px] font-black text-emerald-600">{formatBRL(paid)}</span>
+              <span className="text-[10px] font-black text-emerald-600">{formatBRL(Number(bill.paidCents || 0))}</span>
             </div>
             <div className="space-y-2">
               {bill.payments.map((payment, index) => (
@@ -3288,47 +3061,6 @@ function BillDetailsModal({
             <div className="mt-2 space-y-1">{bill.financeCharges.map((charge, index) => <div key={charge.id || index} className="flex items-center justify-between text-xs text-amber-800"><span>{charge.type || 'Encargo'}</span><strong>{formatBRL(toCents(charge.amount))}</strong></div>)}</div>
           </div>
         )}
-
-        <div className="border border-slate-200 rounded-2xl overflow-hidden">
-          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <div><h4 className="font-black text-slate-800">Lançamentos retornados pela Pluggy</h4><p className="text-[10px] text-slate-400">Somente movimentações da API vinculadas a esta fatura · {sortedTransactions.length} item(ns)</p></div>
-            <span className="text-[10px] text-slate-400">Soma: <strong className="text-slate-700">{formatBRL(registeredTotalCents)}</strong></span>
-          </div>
-          <div className="divide-y divide-slate-100">
-            {sortedTransactions.map(tx => {
-              const category = categories.find(item => item.id === tx.categoryId);
-              const installment = Number(tx.creditCardInstallmentNumber || 0);
-              const installments = Number(tx.creditCardTotalInstallments || 0);
-              return (
-                <div key={tx.id} className="px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
-                  <label className="inline-flex items-center gap-2 shrink-0 cursor-pointer" title="Marcar lançamento como conferido">
-                    <input
-                      type="checkbox"
-                      checked={checkedTransactionIds.has(String(tx.id))}
-                      disabled={savingTransactionIds.has(tx.id)}
-                      onChange={event => onToggleTransactionCheck(bill, tx, event.target.checked)}
-                      aria-label={`Conferido: ${tx.merchant || tx.description || 'lançamento'}`}
-                      className="h-4 w-4 accent-emerald-600 cursor-pointer disabled:opacity-50"
-                    />
-                    <span className="sr-only">Marcar como conferido</span>
-                  </label>
-                  <div className="w-12 shrink-0"><p className="text-[10px] font-black text-slate-500">{dateLabel(tx.date)}</p></div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2"><p className="font-black text-slate-800 truncate">{tx.merchant || tx.description}</p><span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${tx.provider === 'PLUGGY' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{tx.provider === 'PLUGGY' ? 'Pluggy' : 'Registrado'}</span>{installment > 0 && installments > 1 && <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">{installment}/{installments}</span>}</div>
-                    <p className="text-[10px] text-slate-400 truncate">{tx.description}{category ? ` · ${category.nome}` : ' · categoria não definida'}{tx.notes ? ` · ${tx.notes}` : ''}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`font-black text-sm ${tx.type === 'INCOME' ? 'text-emerald-600' : 'text-red-600'}`}>{tx.type === 'INCOME' ? '+' : '-'}{formatBRL(tx.amountCents)}</span>
-                    <button type="button" onClick={() => onEditTransaction(tx)} className="p-2 rounded-lg text-slate-400 hover:text-[#1e5aa0] hover:bg-blue-50" title="Reclassificar lançamento">
-                      <Pencil size={15}/>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {!sortedTransactions.length && <div className="p-8"><EmptyState text="Nenhum lançamento vinculado a esta fatura ainda."/></div>}
-          </div>
-        </div>
 
         <div className="flex justify-end">
           <button onClick={onClose} className="px-5 py-2.5 border rounded-xl text-xs font-bold">Fechar</button>

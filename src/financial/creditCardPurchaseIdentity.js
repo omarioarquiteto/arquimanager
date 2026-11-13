@@ -61,13 +61,13 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   const descriptionForInstallment = String(
     transaction.description || transaction.descriptionRaw || ''
   );
-  const descriptionInstallment = descriptionForInstallment.match(/(?:\\b(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i);
+  const descriptionInstallment = descriptionForInstallment.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*\d+\s*$/i);
   const installmentNumber = Number(
     transaction.creditCardInstallmentNumber ?? metadata.installmentNumber ?? descriptionInstallment?.[1] ?? 0
   );
   if (!purchaseDate && installmentNumber > 0) {
     const transactionDate = String(transaction.date || '').slice(0, 10);
-    const dateMatch = transactionDate.match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);
+    const dateMatch = transactionDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (dateMatch) {
       const monthDate = new Date(Number(dateMatch[1]), Number(dateMatch[2]) - 1 - (installmentNumber - 1), 1);
       purchaseDate = `month:${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;

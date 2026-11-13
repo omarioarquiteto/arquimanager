@@ -19,6 +19,20 @@ const stripInstallmentSuffix = value => String(value || '')
   .replace(/\s+(?:(?:parcela|parc(?:ela)?)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
   .trim();
 
+const normalizeMerchantIdentity = value => {
+  const tokens = normalizeText(stripInstallmentSuffix(value)).split(' ').filter(Boolean);
+  return tokens.reduce((result, token) => {
+    const previous = result[result.length - 1];
+    const repeated = previous === token;
+    const truncatedRepeat = token.length >= 4
+      && previous
+      && previous.length >= token.length + 2
+      && previous.startsWith(token);
+    if (!repeated && !truncatedRepeat) result.push(token);
+    return result;
+  }, []).join(' ');
+};
+
 const purchaseDateAnchor = value => {
   const raw = String(value || '').trim();
   const match = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/);
@@ -64,7 +78,7 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   const merchantKey = purchaseDate.startsWith('date:')
     ? (merchantCnpj
       ? `cnpj:${merchantCnpj}`
-      : `merchant:${normalizeText(stripInstallmentSuffix(description))}`)
+      : `merchant:${normalizeMerchantIdentity(description)}`)
     : 'merchant:timestamp-anchored';
 
   const amountCents = Math.abs(Number(

@@ -16,12 +16,12 @@ const stableHash = value => {
 
 const stripInstallmentSuffix = value => String(value || '')
   .trim()
-  .replace(/\\s+(?:(?:parcela|parc(?:ela)?)\\s*)?\\d+\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i, '')
+  .replace(/\s+(?:(?:parcela|parc(?:ela)?)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
   .trim();
 
 const purchaseDateAnchor = value => {
   const raw = String(value || '').trim();
-  const match = raw.match(/^(\\d{4}-\\d{2}-\\d{2})(?:[T ](\\d{2}:\\d{2}))?/);
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/);
   if (!match) return '';
   if (match[2]) {
     const parsed = Date.parse(raw);
@@ -51,13 +51,13 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
     || metadata.cardNumber
     || transaction.cardNumber
     || ''
-  ).replace(/\\D/g, '');
+  ).replace(/\D/g, '');
   const cardLast4 = cardNumber.length >= 4 ? cardNumber.slice(-4) : '';
   const merchantCnpj = String(
     transaction.creditCardMerchantCnpj
     || transaction.merchant?.cnpj
     || ''
-  ).replace(/\\D/g, '');
+  ).replace(/\D/g, '');
   const description = String(
     transaction.description || transaction.merchant?.name || transaction.merchant || transaction.descriptionRaw || ''
   );

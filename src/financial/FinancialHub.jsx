@@ -383,7 +383,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           purchaseTotalCents,
           purchaseTotalEstimated,
           monthly: {},
-          projectedMonths: [],
           installmentSlots: new Map(),
           observedInstallments: 0,
           endMonth: '',
@@ -405,28 +404,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     });
 
     return Array.from(purchases.values()).map(purchase => {
-      let latestObservedSlot = null;
       purchase.installmentSlots.forEach(slot => {
         purchase.monthly[slot.cycleMonth] = Number(purchase.monthly[slot.cycleMonth] || 0) + slot.amountCents;
         purchase.observedInstallments += 1;
         if (slot.cycleMonth > purchase.endMonth) purchase.endMonth = slot.cycleMonth;
-        if (!latestObservedSlot || slot.installmentNumber > latestObservedSlot.installmentNumber) {
-          latestObservedSlot = slot;
-        }
       });
 
-      // Exibe as parcelas que ainda faltam após a última parcela efetivamente
-      // importada, sem gravá-las como transações ou alterar valores de faturas.
-      if (latestObservedSlot) {
-        for (let number = latestObservedSlot.installmentNumber + 1; number <= purchase.totalInstallments; number += 1) {
-          const month = shiftMonth(latestObservedSlot.cycleMonth, number - latestObservedSlot.installmentNumber);
-          if (!month || purchase.monthly[month] != null) continue;
-          purchase.monthly[month] = latestObservedSlot.amountCents;
-          purchase.projectedMonths.push(month);
-          if (month > purchase.endMonth) purchase.endMonth = month;
-        }
-      }
-
+      // Meses sem parcela real importada permanecem vazios. O sistema não
+      // cria previsões de parcelas futuras nem altera os valores das faturas.
       delete purchase.installmentSlots;
       return purchase;
     }).sort((a, b) => String(a.purchaseDate).localeCompare(String(b.purchaseDate))
@@ -2434,14 +2419,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
             <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
             <Metric label="Parcelas identificadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
-            <Metric label="Compromissos nos próximos 12 meses" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
+            <Metric label="Parcelas importadas próximos 12 meses" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
           </div>
 
           <Card className="p-5">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
-                <p className="text-xs text-slate-400 mt-1">Somente compras parceladas são detalhadas. O total da fatura continua vindo separadamente da Pluggy.</p>
+                <p className="text-xs text-slate-400 mt-1">Somente compras parceladas importadas são detalhadas. O total da fatura continua vindo separadamente da Pluggy.</p>
               </div>
               <span className="text-[10px] font-bold text-slate-500">Agrupamento de parcelas reais, sem duplicidades</span>
             </div>
@@ -2474,7 +2459,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs font-black text-slate-800 whitespace-nowrap">{formatBRL(purchase.purchaseTotalCents)}{purchase.purchaseTotalEstimated && <span className="block text-[9px] font-bold text-amber-600">Estimado</span>}</td>
                         {installmentMonths.map(month => (
-                          <td key={month} className={`py-3 px-3 text-right text-xs font-bold whitespace-nowrap ${purchase.projectedMonths.includes(month) ? 'text-blue-600 bg-blue-50/50' : 'text-slate-700'}`}>{purchase.monthly[month] ? <>{formatBRL(purchase.monthly[month])}{purchase.projectedMonths.includes(month) && <span className="block text-[8px] font-black uppercase text-blue-500">Prevista</span>}</> : '—'}</td>
+                          <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.monthly[month] ? formatBRL(purchase.monthly[month]) : '—'}</td>
                         ))}
                       </tr>
                   ))}
@@ -2485,7 +2470,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              A tabela mostra o valor total de cada compra e distribui as parcelas importadas pelos meses correspondentes. As parcelas futuras após a última parcela importada aparecem como previstas e servem apenas para visualização; não alteram faturas nem criam lançamentos financeiros.
+              A tabela mostra o valor total de cada compra e distribui somente as parcelas efetivamente importadas pelos meses correspondentes. Meses sem lançamento identificado ficam vazios; nenhuma parcela futura é estimada ou criada.
             </p>
           </Card>
         </div>

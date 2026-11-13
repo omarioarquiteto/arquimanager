@@ -207,3 +207,33 @@ test('mantém códigos separados para duas compras do mesmo dia em horários dis
     buildCreditCardPurchaseId({ transaction: second, cardId: second.cardId })
   );
 });
+
+test('gera um código igual para descrições abreviadas mesmo em registros antigos com data sem horário', () => {
+  const common = {
+    cardId: 'mercado-pago-card',
+    accountType: 'CREDIT_CARD',
+    type: 'EXPENSE',
+    amountCents: 4250,
+    creditCardPurchaseDate: '2026-11-08',
+    creditCardTotalInstallments: 2,
+  };
+  const abbreviated = {
+    ...tx(1, '2026-11-08', common),
+    description: 'MERCADOLIVRE*MERC',
+  };
+  const repeated = {
+    ...tx(1, '2026-11-08', common),
+    description: 'MERCADOLIVRE*MERCADOLIVRE',
+  };
+
+  const abbreviatedCode = buildCreditCardPurchaseId({
+    transaction: abbreviated,
+    cardId: abbreviated.cardId,
+  });
+  const repeatedCode = buildCreditCardPurchaseId({
+    transaction: repeated,
+    cardId: repeated.cardId,
+  });
+
+  assert.equal(abbreviatedCode, repeatedCode);
+});

@@ -11,12 +11,18 @@ export const getInstallmentDetails = (transaction = {}) => {
     transaction.description || transaction.descriptionRaw || transaction.merchant || ''
   ).trim();
   const descriptionMatch = description.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
-  const installmentNumber = Number(
-    metadata.installmentNumber ?? transaction.creditCardInstallmentNumber ?? descriptionMatch?.[1] ?? 0
+  const metadataInstallmentNumber = Number(
+    metadata.installmentNumber ?? transaction.creditCardInstallmentNumber ?? 0
   );
-  const totalInstallments = Number(
-    metadata.totalInstallments ?? transaction.creditCardTotalInstallments ?? descriptionMatch?.[2] ?? 0
+  const metadataTotalInstallments = Number(
+    metadata.totalInstallments ?? transaction.creditCardTotalInstallments ?? 0
   );
+  const installmentNumber = metadataInstallmentNumber > 0
+    ? metadataInstallmentNumber
+    : Number(descriptionMatch?.[1] || 0);
+  const totalInstallments = metadataTotalInstallments > 0
+    ? metadataTotalInstallments
+    : Number(descriptionMatch?.[2] || 0);
   const paymentType = normalizePaymentType(metadata.paymentType || transaction.creditCardPaymentType);
 
   if (['SINGLE', 'A_VISTA', 'AVISTA'].includes(paymentType)) return null;
@@ -24,6 +30,7 @@ export const getInstallmentDetails = (transaction = {}) => {
     !Number.isInteger(installmentNumber)
     || !Number.isInteger(totalInstallments)
     || totalInstallments < 2
+    || totalInstallments > 48
     || installmentNumber < 1
     || installmentNumber > totalInstallments
   ) return null;

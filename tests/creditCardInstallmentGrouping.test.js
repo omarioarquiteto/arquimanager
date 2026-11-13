@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildInstallmentPurchases } from '../src/financial/creditCardInstallmentGrouping.js';
+import { buildCreditCardPurchaseId } from '../src/financial/creditCardPurchaseIdentity.js';
 
 const tx = (number, date, extra = {}) => ({
   id: `tx-${number}-${date}`,
@@ -141,4 +142,68 @@ test('une a mesma compra quando a descrição vem abreviada ou com o nome repeti
   assert.equal(purchases[0].observedInstallments, 1);
   assert.equal(purchases[0].purchaseTotalCents, 8500);
   assert.equal(purchases[0].description, 'MERCADOLIVRE*MERCADOLIVRE');
+});
+
+test('gera o mesmo código interno para parcelas da mesma compra mesmo com descrições diferentes', () => {
+  const purchaseDateTime = '2026-11-08T13:42:18.000Z';
+  const common = {
+    creditCardPurchaseDateTime: purchaseDateTime,
+    creditCardCardLast4: '4321',
+    creditCardMerchantCnpj: '12345678000199',
+    creditCardTotalInstallments: 2,
+  };
+  const firstInstallment = tx(1, '2026-11-08', {
+    ...common,
+    description: 'MERCADOLIVRE*MERC',
+    amountCents: 4250,
+  });
+  const secondInstallment = tx(2, '2026-12-08', {
+    ...common,
+    description: 'MERCADOLIVRE*MERCADOLIVRE',
+    amountCents: 4250,
+  });
+
+  const firstCode = buildCreditCardPurchaseId({
+    transaction: firstInstallment,
+    cardId: firstInstallment.cardId,
+  });
+  const secondCode = buildCreditCardPurchaseId({
+    transaction: secondInstallment,
+    cardId: secondInstallment.cardId,
+  });
+
+  assert.ok(firstCode.startsWith('CMP-'));
+  assert.equal(firstCode, secondCode);
+
+  const purchases = buildInstallmentPurchases([
+    { ...firstInstallment, creditCardPurchaseId: firstCode },
+    { ...secondInstallment, creditCardPurchaseId: secondCode },
+  ]);
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].purchaseId, firstCode);
+  assert.equal(purchases[0].observedInstallments, 2);
+  assert.equal(purchases[0].purchaseTotalCents, 8500);
+});
+
+test('mantém códigos separados para duas compras do mesmo dia em horários distintos', () => {
+  const common = {
+    creditCardCardLast4: '4321',
+    creditCardMerchantCnpj: '12345678000199',
+    creditCardTotalInstallments: 2,
+  };
+  const first = tx(1, '2026-11-08', {
+    ...common,
+    creditCardPurchaseDateTime: '2026-11-08T13:42:18.000Z',
+    amountCents: 4250,
+  });
+  const second = tx(1, '2026-11-08', {
+    ...common,
+    creditCardPurchaseDateTime: '2026-11-08T17:08:02.000Z',
+    amountCents: 4250,
+  });
+
+  assert.notEqual(
+    buildCreditCardPurchaseId({ transaction: first, cardId: first.cardId }),
+    buildCreditCardPurchaseId({ transaction: second, cardId: second.cardId })
+  );
 });

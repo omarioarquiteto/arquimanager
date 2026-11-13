@@ -347,8 +347,23 @@ const makeTransactionPayload = ({
       ? 'SINGLE'
       : null;
   const cardNumberDigits = String(cardMetadata.cardNumber || '').replace(/\D/g, '');
+  const identityTransaction = {
+    ...transaction,
+    creditCardPurchaseDateTime: cardMetadata.purchaseDate
+      || transaction.creditCardPurchaseDateTime
+      || existing?.creditCardPurchaseDateTime,
+    creditCardCardLast4: cardNumberDigits.length >= 4
+      ? cardNumberDigits.slice(-4)
+      : existing?.creditCardCardLast4,
+    creditCardMerchantCnpj: transaction?.merchant?.cnpj
+      || existing?.creditCardMerchantCnpj,
+    creditCardTotalInstallments: providerTotalInstallments
+      || existing?.creditCardTotalInstallments,
+  };
   const creditCardPurchaseId = cardId
-    ? buildCreditCardPurchaseId({ transaction, cardId })
+    ? (buildCreditCardPurchaseId({ transaction: identityTransaction, cardId })
+      || existing?.creditCardPurchaseId
+      || '')
     : '';
   const base = {
     companyId,
@@ -389,13 +404,18 @@ const makeTransactionPayload = ({
     creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
     // Preserva os campos de origem necessários para uma identidade estável da compra.
     // O número completo do cartão nunca é armazenado: somente os quatro últimos dígitos.
-    creditCardPurchaseDateTime: cardMetadata.purchaseDate ? String(cardMetadata.purchaseDate) : null,
-    creditCardCardLast4: cardNumberDigits.length >= 4 ? cardNumberDigits.slice(-4) : null,
+    creditCardPurchaseDateTime: cardMetadata.purchaseDate
+      ? String(cardMetadata.purchaseDate)
+      : (existing?.creditCardPurchaseDateTime || null),
+    creditCardCardLast4: cardNumberDigits.length >= 4
+      ? cardNumberDigits.slice(-4)
+      : (existing?.creditCardCardLast4 || null),
     creditCardMerchantCnpj: transaction?.merchant?.cnpj
       ? String(transaction.merchant.cnpj).replace(/\D/g, '')
-      : null,
+      : (existing?.creditCardMerchantCnpj || null),
     creditCardTransactionDateTime: cardMetadata.transactionDateTime
       || transaction?.transactionDateTime
+      || existing?.creditCardTransactionDateTime
       || null,
     creditCardPayeeMCC: cardMetadata.payeeMCC || null,
     creditCardPurchaseId: creditCardPurchaseId || null,

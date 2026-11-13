@@ -22,6 +22,23 @@ const stripInstallmentSuffix = value => String(value || '')
   .replace(/\s+(?:(?:parcela|parc(?:ela)?)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
   .trim();
 
+// Algumas instituições repetem o nome do estabelecimento no fim do descritor
+// ou devolvem uma segunda cópia truncada (ex.: "MERCADOLIVRE MERC").
+// Canonicalizamos somente repetições consecutivas e prefixos truncados claros.
+const normalizeMerchantDescription = value => {
+  const tokens = normalizeText(stripInstallmentSuffix(value)).split(' ').filter(Boolean);
+  return tokens.reduce((result, token) => {
+    const previous = result[result.length - 1];
+    const repeated = previous === token;
+    const truncatedRepeat = token.length >= 4
+      && previous
+      && previous.length >= token.length + 2
+      && previous.startsWith(token);
+    if (!repeated && !truncatedRepeat) result.push(token);
+    return result;
+  }, []).join(' ');
+};
+
 const creditCardTransaction = transaction => (
   transaction?.accountType === 'CREDIT_CARD'
   || transaction?.isCreditCardTransaction === true
@@ -56,7 +73,7 @@ const getInstallmentRecord = transaction => {
   ).trim();
   const descriptionWithoutSuffix = stripInstallmentSuffix(descriptionRaw);
   const description = descriptionWithoutSuffix || String(transaction.merchant || descriptionRaw).trim();
-  const descriptionKey = normalizeText(description);
+  const descriptionKey = normalizeMerchantDescription(description);
   const descriptionMatch = descriptionRaw.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
   const metadataInstallmentNumber = Number(
     transaction.creditCardInstallmentNumber ?? metadata.installmentNumber ?? 0
@@ -209,6 +226,11 @@ export const buildInstallmentPurchases = (transactions = []) => {
         group.providerPurchaseTotalCents = record.providerPurchaseTotalCents;
       }
       if (record.purchaseDate < group.purchaseDate) group.purchaseDate = record.purchaseDate;
+      // Quando registros da mesma compra trazem descrições equivalentes,
+      // conserva a versão mais completa para exibição na tabela.
+      if (record.description.length > group.description.length) {
+        group.description = record.description;
+      }
 
       const slotKey = String(record.installmentNumber);
       const candidateSlot = {

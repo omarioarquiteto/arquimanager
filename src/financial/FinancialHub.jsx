@@ -471,8 +471,9 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         const card = cards.find(c => c.id === b.cardId);
         if (!card) return null;
         const billTotalCents = getBillTotalCents(b);
-        const remaining = Math.max(0, billTotalCents - Number(b.paidCents || 0));
-        const alreadyPaid = Number(b.paidCents || 0) >= billTotalCents && billTotalCents > 0;
+        const paidCents = b.paidWithAdvance ? billTotalCents : Number(b.paidCents || 0);
+        const remaining = Math.max(0, billTotalCents - paidCents);
+        const alreadyPaid = paidCents >= billTotalCents && billTotalCents > 0;
         const cardName = normalizeText(getCardDisplayName(card, '') || '');
         const cardInstitution = normalizeText(card.institution || '');
         const dateDiff = Math.abs(parseDate(date).getTime() - parseDate(b.dueDate).getTime()) / 86400000;
@@ -484,7 +485,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         if (cardName && normalizedDescription.includes(cardName)) score += 30;
         if (cardInstitution && normalizedDescription.includes(cardInstitution)) score += 10;
         if (dateDiff <= 10) score += 15;
-        return { bill: b, card, remaining, score, exact: amountCents === remaining, dateDiff };
+        return { bill: b, card, remaining, paidCents, score, exact: amountCents === remaining, dateDiff };
       })
       .filter(Boolean)
       .filter(x => x.score >= 115)
@@ -501,8 +502,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const reconcileCardPayment = async ({ transactionId, amountCents, date, description, accountId }) => {
     const match = findCardBillForPayment({ amountCents, date, description, accountId });
     if (match.status !== 'MATCH') return match;
-    const currentPaidCents = Number(match.bill.paidCents || 0);
     const totalCents = getBillTotalCents(match.bill);
+    const currentPaidCents = match.bill.paidWithAdvance ? totalCents : Number(match.bill.paidCents || 0);
     const alreadyPaid = currentPaidCents >= totalCents && totalCents > 0;
     const paidCents = alreadyPaid ? currentPaidCents : currentPaidCents + amountCents;
     if (!alreadyPaid) {
@@ -2570,7 +2571,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             </div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
               {cards.map(card => {
-                const openBills = bills.filter(b => isOfficialBill(b) && hasEffectiveBillTotal(b) && b.cardId === card.id && b.status !== 'PAID' && getBillTotalCents(b) > Number(b.paidCents || 0));
+                const openBills = bills.filter(b => isOfficialBill(b) && hasEffectiveBillTotal(b) && b.cardId === card.id && !b.paidWithAdvance && b.status !== 'PAID' && getBillTotalCents(b) > Number(b.paidCents || 0));
                 const openTotal = openBills.reduce((s,b) => s + getBillTotalCents(b) - Number(b.paidCents || 0), 0);
                 return <div key={card.id} className="border border-slate-200 rounded-2xl p-4 bg-white shadow-sm">
                   <div className="flex items-start justify-between gap-2">
@@ -3041,7 +3042,7 @@ function BillDetailsModal({
           <div className="border border-slate-200 rounded-2xl p-4">
             <div className="flex items-center justify-between mb-3">
               <div><h4 className="font-black text-slate-800">Pagamentos</h4><p className="text-[10px] text-slate-400">Pagamentos informados pela instituição.</p></div>
-              <span className="text-[10px] font-black text-emerald-600">{formatBRL(Number(bill.paidCents || 0))}</span>
+              <span className="text-[10px] font-black text-emerald-600">{formatBRL(paid)}</span>
             </div>
             <div className="space-y-2">
               {bill.payments.map((payment, index) => (

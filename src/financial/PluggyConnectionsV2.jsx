@@ -18,6 +18,7 @@ import {
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
 import { getExplicitTransactionBillMonth } from './billTransactionMatching.js';
 import { isInstallmentCreditTransaction } from './creditCardImport.js';
+import { buildCreditCardPurchaseId } from './creditCardPurchaseIdentity.js';
 
 const PLUGGY_WIDGET_SRC = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
 const PLUGGY_SOURCE = 'PLUGGY_REBUILT';
@@ -345,6 +346,10 @@ const makeTransactionPayload = ({
     : ['SINGLE', 'A_VISTA', 'AVISTA'].includes(providerPaymentTypeRaw)
       ? 'SINGLE'
       : null;
+  const cardNumberDigits = String(cardMetadata.cardNumber || '').replace(/\\D/g, '');
+  const creditCardPurchaseId = cardId
+    ? buildCreditCardPurchaseId({ transaction, cardId })
+    : '';
   const base = {
     companyId,
     source: PLUGGY_SOURCE,
@@ -382,6 +387,18 @@ const makeTransactionPayload = ({
     creditCardInstallmentNumber: providerInstallmentNumber || null,
     creditCardTotalInstallments: providerTotalInstallments || null,
     creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
+    // Preserva os campos de origem necessários para uma identidade estável da compra.
+    // O número completo do cartão nunca é armazenado: somente os quatro últimos dígitos.
+    creditCardPurchaseDateTime: cardMetadata.purchaseDate ? String(cardMetadata.purchaseDate) : null,
+    creditCardCardLast4: cardNumberDigits.length >= 4 ? cardNumberDigits.slice(-4) : null,
+    creditCardMerchantCnpj: transaction?.merchant?.cnpj
+      ? String(transaction.merchant.cnpj).replace(/\\D/g, '')
+      : null,
+    creditCardTransactionDateTime: cardMetadata.transactionDateTime
+      || transaction?.transactionDateTime
+      || null,
+    creditCardPayeeMCC: cardMetadata.payeeMCC || null,
+    creditCardPurchaseId: creditCardPurchaseId || null,
     // Keep only the cycle dates actually returned by the provider.
     creditCardBillForecastDate: cardMetadata.billForecastDate
       ? String(cardMetadata.billForecastDate).slice(0, 7)

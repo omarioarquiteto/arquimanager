@@ -1,6 +1,6 @@
 import { normalizeText } from './financialEngine.js';
 
-const isIsoDate = value => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(value || '').slice(0, 10));
+const isIsoDate = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').slice(0, 10));
 const monthOf = value => String(value || '').slice(0, 7);
 
 const shiftMonth = (value, offset) => {
@@ -19,7 +19,7 @@ const shiftMonth = (value, offset) => {
 // "3/10" em "3 10", portanto a ordem das operações é importante.
 const stripInstallmentSuffix = value => String(value || '')
   .trim()
-  .replace(/\\s+(?:(?:parcela|parc(?:ela)?)\\s*)?\\d+\\s*(?:\\/|de|of)\\s*\\d+\\s*$/i, '')
+  .replace(/\s+(?:(?:parcela|parc(?:ela)?)\s*)?\d+\s*(?:\/|de|of)\s*\d+\s*$/i, '')
   .trim();
 
 const creditCardTransaction = transaction => (
@@ -57,12 +57,19 @@ const getInstallmentRecord = transaction => {
   const descriptionWithoutSuffix = stripInstallmentSuffix(descriptionRaw);
   const description = descriptionWithoutSuffix || String(transaction.merchant || descriptionRaw).trim();
   const descriptionKey = normalizeText(description);
-  const installmentNumber = Number(
+  const descriptionMatch = descriptionRaw.match(/(?:\\b(?:parcela|parc)\\s*)?(\\d+)\\s*(?:\\/|de|of)\\s*(\\d+)\\s*$/i);
+  const metadataInstallmentNumber = Number(
     transaction.creditCardInstallmentNumber ?? metadata.installmentNumber ?? 0
   );
-  const totalInstallments = Number(
+  const metadataTotalInstallments = Number(
     transaction.creditCardTotalInstallments ?? metadata.totalInstallments ?? 0
   );
+  const installmentNumber = metadataInstallmentNumber > 0
+    ? metadataInstallmentNumber
+    : Number(descriptionMatch?.[1] || 0);
+  const totalInstallments = metadataTotalInstallments > 0
+    ? metadataTotalInstallments
+    : Number(descriptionMatch?.[2] || 0);
   const amountCents = Math.abs(Number(transaction.amountCents || 0));
   const cardId = String(transaction.cardId || transaction.accountId || '');
   const transactionDate = String(transaction.date || '').slice(0, 10);
@@ -100,12 +107,12 @@ const getInstallmentRecord = transaction => {
     || metadata.billPostDate
     || ''
   ).trim();
-  const cycleMonth = /^\\d{4}-\\d{2}$/.test(explicitCycle)
+  const cycleMonth = /^\d{4}-\d{2}$/.test(explicitCycle)
     ? explicitCycle
     : isIsoDate(explicitCycle)
       ? monthOf(explicitCycle)
       : monthOf(transactionDate);
-  if (!/^\\d{4}-\\d{2}$/.test(cycleMonth)) return null;
+  if (!/^\d{4}-\d{2}$/.test(cycleMonth)) return null;
 
   const providerTotalAmount = Number(
     transaction.creditCardTotalAmountCents

@@ -17,6 +17,7 @@ import {
 } from 'firebase/firestore';
 import { createConnectToken, readItemData } from './pluggyV2Service.js';
 import { getExplicitTransactionBillMonth } from './billTransactionMatching.js';
+import { isInstallmentCreditTransaction } from './creditCardImport.js';
 
 const PLUGGY_WIDGET_SRC = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
 const PLUGGY_SOURCE = 'PLUGGY_REBUILT';
@@ -545,6 +546,7 @@ export default function PluggyConnectionsV2({
     const creditAccounts = Array.isArray(data.creditAccounts) ? data.creditAccounts : [];
     const bankTransactions = Array.isArray(data.transactions) ? data.transactions : [];
     const creditTransactions = Array.isArray(data.creditTransactions) ? data.creditTransactions : [];
+    const installmentCreditTransactions = creditTransactions.filter(isInstallmentCreditTransaction);
     const rawBills = Array.isArray(data.bills) ? data.bills : [];
 
     const [transactionSnapshot, billSnapshot, rulesSnapshot, inboxSnapshot] = await Promise.all([
@@ -732,7 +734,7 @@ export default function PluggyConnectionsV2({
         accountId: transaction.accountId,
         cardId: null,
       })),
-      ...creditTransactions.map(transaction => ({
+      ...installmentCreditTransactions.map(transaction => ({
         transaction,
         accountId: transaction.accountId,
         cardId: cardByAccount.get(transaction.accountId) || null,
@@ -797,12 +799,33 @@ export default function PluggyConnectionsV2({
       });
     }
 
-    // Remove itens de Atenção criados pela nova integração quando o lançamento
-    // agora tem classificação automática ou já não está mais pendente.
+    // Remove do modelo antigo todas as compras à vista já gravadas como
+    // transações individuais. As faturas continuam sendo importadas acima,
+    // com o total oficial fornecido pela Pluggy.
+    const existingCreditTransactions = existingTransactions.filter(item => (
+      item.accountType === 'CREDIT_CARD' || item.isCreditCardTransaction === true || Boolean(item.cardId)
+    ));
+    const existingCreditTransactionIds = new Set(existingCreditTransactions.map(item => String(item.id)));
+    const retainedCreditTransactionIds = new Set(installmentCreditTransactions.map(transaction =>
+      `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`
+    ));
+    const obsoleteCreditTransactions = existingCreditTransactions.filter(item =>
+      !retainedCreditTransactionIds.has(String(item.id))
+    );
+    operations.push(...obsoleteCreditTransactions.map(item => ({
+      collection: 'financial_transactions', id: item.id, type: 'delete',
+    })));
+
+    // Compras parceladas não participam da caixa de Atenção: elas são exibidas
+    // agrupadas na visão de compras parceladas, sem classificação por fatura.
     const inboxOperations = [];
 
     inboxSnapshot.docs.forEach(item => {
       const data = item.data();
+      if (existingCreditTransactionIds.has(String(data.transactionId || ''))) {
+        inboxOperations.push({ collection: 'financial_inbox', id: item.id, type: 'delete' });
+        return;
+      }
       if (
         data.companyId === companyId
         && data.source === PLUGGY_SOURCE
@@ -837,7 +860,7 @@ export default function PluggyConnectionsV2({
     for (const entry of allTx) {
       const transaction = entry.transaction;
       const accountId = entry.accountId;
-      if (!transaction?.id || !accountId) continue;
+      if (!transaction?.id || !accountId || entry.cardId) continue;
 
       const transactionId = `${companyId}_pluggy_v2_tx_${hash(`pluggy-v2:${transaction.id}`)}`;
       const current = existingById.get(transactionId);
@@ -896,7 +919,7 @@ export default function PluggyConnectionsV2({
         lastSyncAccounts: bankAccounts.length,
         lastSyncTransactions: bankTransactions.length,
         lastSyncCreditAccounts: creditAccounts.length,
-        lastSyncCreditTransactions: creditTransactions.length,
+        lastSyncCreditTransactions: installmentCreditTransactions.length,
         lastSyncBills: rawBills.length,
         autoClassified: classified,
         warningCount: Array.isArray(data.warnings) ? data.warnings.length : 0,
@@ -948,7 +971,7 @@ export default function PluggyConnectionsV2({
         bankAccounts: bankAccounts.length,
         transactions: bankTransactions.length,
         creditAccounts: creditAccounts.length,
-        creditTransactions: creditTransactions.length,
+        creditTransactions: installmentCreditTransactions.length,
         bills: rawBills.length,
         newTransactions,
         classified,
@@ -967,7 +990,7 @@ export default function PluggyConnectionsV2({
       bankAccounts: bankAccounts.length,
       transactions: bankTransactions.length,
       creditAccounts: creditAccounts.length,
-      creditTransactions: creditTransactions.length,
+      creditTransactions: installmentCreditTransactions.length,
       bills: rawBills.length,
       warnings: data.warnings || [],
     };

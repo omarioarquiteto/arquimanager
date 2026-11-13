@@ -61,11 +61,11 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   const description = String(
     transaction.description || transaction.merchant?.name || transaction.merchant || transaction.descriptionRaw || ''
   );
-  const merchantKey = merchantCnpj
-    ? `cnpj:${merchantCnpj}`
-    : purchaseDate.startsWith('date:')
-      ? `merchant:${normalizeText(stripInstallmentSuffix(description))}`
-      : 'merchant:timestamp-anchored';
+  const merchantKey = purchaseDate.startsWith('date:')
+    ? (merchantCnpj
+      ? `cnpj:${merchantCnpj}`
+      : `merchant:${normalizeText(stripInstallmentSuffix(description))}`)
+    : 'merchant:timestamp-anchored';
 
   const amountCents = Math.abs(Number(
     transaction.amountCents != null

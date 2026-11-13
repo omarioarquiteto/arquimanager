@@ -170,7 +170,7 @@ const getInstallmentRecord = transaction => {
 };
 
 const groupBaseKey = record => record.purchaseId
-  ? [record.cardId, record.purchaseId, record.totalInstallments, record.type].join('|')
+  ? [record.cardId, record.purchaseId].join('|')
   : [
     record.cardId,
     record.descriptionKey,
@@ -242,6 +242,7 @@ export const buildInstallmentPurchases = (transactions = []) => {
         group.providerPurchaseTotalCents = record.providerPurchaseTotalCents;
       }
       if (record.purchaseDate < group.purchaseDate) group.purchaseDate = record.purchaseDate;
+      group.totalInstallments = Math.max(group.totalInstallments, record.totalInstallments);
       // Quando registros da mesma compra trazem descrições equivalentes,
       // conserva a versão mais completa para exibição na tabela.
       if (record.description.length > group.description.length) {

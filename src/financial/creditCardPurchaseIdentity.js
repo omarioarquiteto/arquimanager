@@ -109,8 +109,8 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   ));
 
   // O Open Finance não fornece um ID de grupo da compra. Este código interno
-  // usa a data/hora original, cartão, estabelecimento quando necessário e
-  // número total de parcelas; a descrição deixa de interferir quando há hora
+  // usa a data/hora original e o cartão; quando só existe a data, complementa
+  // com estabelecimento e valor. A descrição não interfere quando há horário
   // original, pois pode variar entre as parcelas da mesma compra.
   const identity = [
     resolvedCardId,

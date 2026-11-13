@@ -41,9 +41,7 @@ const purchaseDateAnchor = value => {
     const parsed = Date.parse(raw);
     return Number.isNaN(parsed) ? `instant:${raw}` : `instant:${new Date(parsed).toISOString()}`;
   }
-  // Sem horário, usa o mês da compra; a data de lançamento das parcelas
-  // pode mudar de dia entre faturas, mas continua apontando ao mês da compra.
-  return `month:${match[1].slice(0, 7)}`;
+  return `date:${match[1]}`;
 };
 
 export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}) => {
@@ -92,7 +90,7 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
   const description = String(
     transaction.description || transaction.merchant?.name || transaction.merchant || transaction.descriptionRaw || ''
   );
-  const merchantKey = purchaseDate.startsWith('month:')
+  const merchantKey = !purchaseDate.startsWith('instant:')
     ? (merchantCnpj
       ? `cnpj:${merchantCnpj}`
       : `merchant:${normalizeMerchantIdentity(description)}`)
@@ -113,7 +111,7 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
     cardLast4,
     purchaseDate,
     merchantKey,
-    purchaseDate.startsWith('month:') ? amountCents : '',
+    !purchaseDate.startsWith('instant:') ? amountCents : '',
   ].join('|');
 
   return `CMP-${stableHash(identity)}`;

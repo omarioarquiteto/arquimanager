@@ -346,7 +346,7 @@ const makeTransactionPayload = ({
     : ['SINGLE', 'A_VISTA', 'AVISTA'].includes(providerPaymentTypeRaw)
       ? 'SINGLE'
       : null;
-  const cardNumberDigits = String(cardMetadata.cardNumber || '').replace(/\\D/g, '');
+  const cardNumberDigits = String(cardMetadata.cardNumber || '').replace(/\D/g, '');
   const creditCardPurchaseId = cardId
     ? buildCreditCardPurchaseId({ transaction, cardId })
     : '';
@@ -392,7 +392,7 @@ const makeTransactionPayload = ({
     creditCardPurchaseDateTime: cardMetadata.purchaseDate ? String(cardMetadata.purchaseDate) : null,
     creditCardCardLast4: cardNumberDigits.length >= 4 ? cardNumberDigits.slice(-4) : null,
     creditCardMerchantCnpj: transaction?.merchant?.cnpj
-      ? String(transaction.merchant.cnpj).replace(/\\D/g, '')
+      ? String(transaction.merchant.cnpj).replace(/\D/g, '')
       : null,
     creditCardTransactionDateTime: cardMetadata.transactionDateTime
       || transaction?.transactionDateTime

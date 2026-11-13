@@ -113,9 +113,7 @@ export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}
     cardLast4,
     purchaseDate,
     merchantKey,
-    totalInstallments,
     purchaseDate.startsWith('month:') ? amountCents : '',
-    String(transaction.type || 'EXPENSE').toUpperCase(),
   ].join('|');
 
   return `CMP-${stableHash(identity)}`;

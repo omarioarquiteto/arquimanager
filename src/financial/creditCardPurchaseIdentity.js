@@ -47,21 +47,27 @@ const purchaseDateAnchor = value => {
 export const buildCreditCardPurchaseId = ({ transaction = {}, cardId = '' } = {}) => {
   const metadata = transaction.creditCardMetadata || {};
   const resolvedCardId = String(cardId || transaction.cardId || transaction.accountId || '').trim();
-  const totalInstallments = Number(
-    transaction.creditCardTotalInstallments ?? metadata.totalInstallments ?? 0
+  const descriptionForInstallment = String(
+    transaction.description || transaction.descriptionRaw || ''
   );
+  const descriptionInstallment = descriptionForInstallment.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*(\d+)\s*$/i);
+  const metadataTotalInstallments = Number(
+    transaction.creditCardTotalInstallments || metadata.totalInstallments || 0
+  );
+  const totalInstallments = metadataTotalInstallments > 0
+    ? metadataTotalInstallments
+    : Number(descriptionInstallment?.[2] || 0);
+  const metadataInstallmentNumber = Number(
+    transaction.creditCardInstallmentNumber || metadata.installmentNumber || 0
+  );
+  const installmentNumber = metadataInstallmentNumber > 0
+    ? metadataInstallmentNumber
+    : Number(descriptionInstallment?.[1] || 0);
   let purchaseDate = purchaseDateAnchor(
     transaction.creditCardPurchaseDateTime
     || transaction.creditCardPurchaseDate
     || metadata.purchaseDate
     || transaction.purchaseDate
-  );
-  const descriptionForInstallment = String(
-    transaction.description || transaction.descriptionRaw || ''
-  );
-  const descriptionInstallment = descriptionForInstallment.match(/(?:\b(?:parcela|parc)\s*)?(\d+)\s*(?:\/|de|of)\s*\d+\s*$/i);
-  const installmentNumber = Number(
-    transaction.creditCardInstallmentNumber ?? metadata.installmentNumber ?? descriptionInstallment?.[1] ?? 0
   );
   if (!purchaseDate && installmentNumber > 0) {
     const transactionDate = String(transaction.date || '').slice(0, 10);

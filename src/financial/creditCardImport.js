@@ -30,7 +30,7 @@ export const getInstallmentDetails = (transaction = {}) => {
     !Number.isInteger(installmentNumber)
     || !Number.isInteger(totalInstallments)
     || totalInstallments < 2
-    || totalInstallments > 48
+    || (metadataTotalInstallments <= 0 && totalInstallments > 48)
     || installmentNumber < 1
     || installmentNumber > totalInstallments
   ) return null;

@@ -1,5 +1,4 @@
 import { normalizeText } from './financialEngine.js';
-import { buildCreditCardPurchaseId } from './creditCardPurchaseIdentity.js';
 
 const isIsoDate = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').slice(0, 10));
 const monthOf = value => String(value || '').slice(0, 7);
@@ -90,11 +89,6 @@ const getInstallmentRecord = transaction => {
     : Number(descriptionMatch?.[2] || 0);
   const amountCents = Math.abs(Number(transaction.amountCents || 0));
   const cardId = String(transaction.cardId || transaction.accountId || '');
-  const purchaseId = String(
-    transaction.creditCardPurchaseId
-    || buildCreditCardPurchaseId({ transaction, cardId })
-    || ''
-  );
   const transactionDate = String(transaction.date || '').slice(0, 10);
 
   if (
@@ -119,11 +113,9 @@ const getInstallmentRecord = transaction => {
 
   // A data de transação pode variar entre a data da compra e a postagem na
   // fatura. Sem data original explícita, a âncora é o mês inferido, não o dia.
-  const purchaseAnchor = purchaseId
-    ? `purchase:${purchaseId}`
-    : isIsoDate(explicitPurchaseDate)
-      ? `date:${explicitPurchaseDate}`
-      : `month:${monthOf(purchaseDate)}`;
+  const purchaseAnchor = isIsoDate(explicitPurchaseDate)
+    ? `date:${explicitPurchaseDate}`
+    : `month:${monthOf(purchaseDate)}`;
 
   const explicitCycle = String(
     transaction.creditCardBillForecastDate
@@ -150,7 +142,6 @@ const getInstallmentRecord = transaction => {
 
   return {
     cardId,
-    purchaseId,
     description,
     descriptionKey,
     purchaseDate,
@@ -169,21 +160,15 @@ const getInstallmentRecord = transaction => {
   };
 };
 
-const groupBaseKey = record => record.purchaseId
-  ? record.purchaseId
-  : [
-    record.cardId,
-    record.descriptionKey,
-    record.purchaseAnchor,
-    record.totalInstallments,
-    record.type,
-  ].join('|');
+const groupBaseKey = record => [
+  record.cardId,
+  record.descriptionKey,
+  record.purchaseAnchor,
+  record.totalInstallments,
+  record.type,
+].join('|');
 
 const groupAcceptsRecord = (group, record) => {
-  // A identidade interna gerada a partir da data/hora original e do cartão
-  // prevalece sobre variações de descrição ou arredondamentos entre parcelas.
-  if (group.purchaseId && record.purchaseId && group.purchaseId === record.purchaseId) return true;
-
   if (
     group.providerPurchaseTotalCents > 0
     && record.providerPurchaseTotalCents > 0
@@ -222,7 +207,6 @@ export const buildInstallmentPurchases = (transactions = []) => {
           baseKey,
           groupIndex: candidates.length,
           cardId: record.cardId,
-          purchaseId: record.purchaseId,
           description: record.description,
           descriptionKey: record.descriptionKey,
           purchaseDate: record.purchaseDate,
@@ -242,7 +226,6 @@ export const buildInstallmentPurchases = (transactions = []) => {
         group.providerPurchaseTotalCents = record.providerPurchaseTotalCents;
       }
       if (record.purchaseDate < group.purchaseDate) group.purchaseDate = record.purchaseDate;
-      group.totalInstallments = Math.max(group.totalInstallments, record.totalInstallments);
       // Quando registros da mesma compra trazem descrições equivalentes,
       // conserva a versão mais completa para exibição na tabela.
       if (record.description.length > group.description.length) {
@@ -276,15 +259,8 @@ export const buildInstallmentPurchases = (transactions = []) => {
 
       const providerTotal = Number(group.providerPurchaseTotalCents || 0);
       const purchaseTotalCents = providerTotal || Math.round(group.referenceAmountCents * group.totalInstallments);
-      const fallbackCodeSource = `${group.baseKey}|${group.groupIndex}`;
-      let fallbackHash = 2166136261;
-      for (let index = 0; index < fallbackCodeSource.length; index += 1) {
-        fallbackHash ^= fallbackCodeSource.charCodeAt(index);
-        fallbackHash = Math.imul(fallbackHash, 16777619);
-      }
       const result = {
         key: `${group.baseKey}|${group.groupIndex}`,
-        purchaseId: group.purchaseId || `CMP-LEGACY-${(fallbackHash >>> 0).toString(36)}`,
         cardId: group.cardId,
         description: group.description,
         totalInstallments: group.totalInstallments,

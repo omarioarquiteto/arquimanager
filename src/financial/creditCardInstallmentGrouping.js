@@ -154,21 +154,30 @@ const getInstallmentRecord = transaction => {
     type: String(transaction.type || 'EXPENSE').toUpperCase(),
     transactionId: String(transaction.id || transaction.providerTransactionId || ''),
     providerTransactionId: String(transaction.providerTransactionId || ''),
+    manualPurchaseGroupId: String(transaction.manualPurchaseGroupId || ''),
     status: String(transaction.providerStatus || transaction.status || '').toUpperCase(),
     hasBillId: Boolean(transaction.providerBillId || transaction.billId || metadata.billId),
     hasExplicitCycle: Boolean(explicitCycle),
   };
 };
 
-const groupBaseKey = record => [
-  record.cardId,
-  record.descriptionKey,
-  record.purchaseAnchor,
-  record.totalInstallments,
-  record.type,
-].join('|');
+const groupBaseKey = record => record.manualPurchaseGroupId
+  ? [record.cardId, 'manual', record.manualPurchaseGroupId, record.type].join('|')
+  : [
+    record.cardId,
+    record.descriptionKey,
+    record.purchaseAnchor,
+    record.totalInstallments,
+    record.type,
+  ].join('|');
 
 const groupAcceptsRecord = (group, record) => {
+  if (
+    group.manualPurchaseGroupId
+    && record.manualPurchaseGroupId
+    && group.manualPurchaseGroupId === record.manualPurchaseGroupId
+  ) return true;
+
   if (
     group.providerPurchaseTotalCents > 0
     && record.providerPurchaseTotalCents > 0
@@ -207,6 +216,8 @@ export const buildInstallmentPurchases = (transactions = []) => {
           baseKey,
           groupIndex: candidates.length,
           cardId: record.cardId,
+          manualPurchaseGroupId: record.manualPurchaseGroupId,
+          transactionIds: new Set(),
           description: record.description,
           descriptionKey: record.descriptionKey,
           purchaseDate: record.purchaseDate,
@@ -225,6 +236,7 @@ export const buildInstallmentPurchases = (transactions = []) => {
       if (!group.providerPurchaseTotalCents && record.providerPurchaseTotalCents) {
         group.providerPurchaseTotalCents = record.providerPurchaseTotalCents;
       }
+      if (record.transactionId) group.transactionIds.add(record.transactionId);
       if (record.purchaseDate < group.purchaseDate) group.purchaseDate = record.purchaseDate;
       // Quando registros da mesma compra trazem descrições equivalentes,
       // conserva a versão mais completa para exibição na tabela.
@@ -262,6 +274,9 @@ export const buildInstallmentPurchases = (transactions = []) => {
       const result = {
         key: `${group.baseKey}|${group.groupIndex}`,
         cardId: group.cardId,
+        transactionIds: Array.from(group.transactionIds),
+        manuallyMerged: Boolean(group.manualPurchaseGroupId),
+        manualPurchaseGroupId: group.manualPurchaseGroupId || '',
         description: group.description,
         totalInstallments: group.totalInstallments,
         purchaseDate: group.purchaseDate,

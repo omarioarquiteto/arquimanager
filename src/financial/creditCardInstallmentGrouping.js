@@ -311,7 +311,7 @@ export const buildInstallmentPurchases = (transactions = []) => {
         0,
         Math.round(providerTotal > 0 ? providerTotal : estimatedTotalCents)
       );
-      const purchaseTotalEstimated = !(providerTotal > 0);
+      const purchaseTotalEstimated = !(providerTotal > 0) && missingNumbers.length > 0;
       const scheduledAmounts = new Map();
       observedByNumber.forEach((slot, key) => {
         scheduledAmounts.set(Number(key), Number(slot.amountCents || 0));

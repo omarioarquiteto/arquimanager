@@ -155,21 +155,30 @@ const getInstallmentRecord = transaction => {
     transactionId: String(transaction.id || transaction.providerTransactionId || ''),
     providerTransactionId: String(transaction.providerTransactionId || ''),
     manualPurchaseGroupId: String(transaction.manualPurchaseGroupId || ''),
+    manualPurchaseGroupAliases: Array.isArray(transaction.manualPurchaseGroupAliases)
+      ? transaction.manualPurchaseGroupAliases.map(String).filter(Boolean)
+      : [],
     status: String(transaction.providerStatus || transaction.status || '').toUpperCase(),
     hasBillId: Boolean(transaction.providerBillId || transaction.billId || metadata.billId),
     hasExplicitCycle: Boolean(explicitCycle),
   };
 };
 
+const automaticGroupBaseKey = record => [
+  record.cardId,
+  record.descriptionKey,
+  record.purchaseAnchor,
+  record.totalInstallments,
+  record.type,
+].join('|');
+
+const manualPurchaseAlias = record => (
+  `${automaticGroupBaseKey(record)}|amount:${record.amountCents}`
+);
+
 const groupBaseKey = record => record.manualPurchaseGroupId
   ? [record.cardId, 'manual', record.manualPurchaseGroupId, record.type].join('|')
-  : [
-    record.cardId,
-    record.descriptionKey,
-    record.purchaseAnchor,
-    record.totalInstallments,
-    record.type,
-  ].join('|');
+  : automaticGroupBaseKey(record);
 
 const groupAcceptsRecord = (group, record) => {
   if (
@@ -195,10 +204,26 @@ const groupAcceptsRecord = (group, record) => {
 
 export const buildInstallmentPurchases = (transactions = []) => {
   const grouped = new Map();
-
-  (Array.isArray(transactions) ? transactions : [])
+  const records = (Array.isArray(transactions) ? transactions : [])
     .map(getInstallmentRecord)
-    .filter(Boolean)
+    .filter(Boolean);
+
+  // Reaplica os aliases salvos na mesclagem manual a parcelas importadas
+  // futuramente, mesmo que ainda não tenham recebido o identificador manual.
+  const manualGroupByAlias = new Map();
+  records.forEach(record => {
+    if (!record.manualPurchaseGroupId) return;
+    record.manualPurchaseGroupAliases.forEach(alias => {
+      manualGroupByAlias.set(alias, record.manualPurchaseGroupId);
+    });
+  });
+  records.forEach(record => {
+    if (record.manualPurchaseGroupId) return;
+    const manualGroupId = manualGroupByAlias.get(manualPurchaseAlias(record));
+    if (manualGroupId) record.manualPurchaseGroupId = manualGroupId;
+  });
+
+  records
     .sort((a, b) => (
       a.purchaseAnchor.localeCompare(b.purchaseAnchor)
       || a.installmentNumber - b.installmentNumber
@@ -217,6 +242,7 @@ export const buildInstallmentPurchases = (transactions = []) => {
           groupIndex: candidates.length,
           cardId: record.cardId,
           manualPurchaseGroupId: record.manualPurchaseGroupId,
+          manualPurchaseGroupAliases: new Set(record.manualPurchaseGroupAliases),
           transactionIds: new Set(),
           description: record.description,
           descriptionKey: record.descriptionKey,
@@ -237,6 +263,10 @@ export const buildInstallmentPurchases = (transactions = []) => {
         group.providerPurchaseTotalCents = record.providerPurchaseTotalCents;
       }
       if (record.transactionId) group.transactionIds.add(record.transactionId);
+      if (group.manualPurchaseGroupId) {
+        group.manualPurchaseGroupAliases.add(manualPurchaseAlias(record));
+        record.manualPurchaseGroupAliases.forEach(alias => group.manualPurchaseGroupAliases.add(alias));
+      }
       if (record.purchaseDate < group.purchaseDate) group.purchaseDate = record.purchaseDate;
       // Quando registros da mesma compra trazem descrições equivalentes,
       // conserva a versão mais completa para exibição na tabela.
@@ -277,6 +307,7 @@ export const buildInstallmentPurchases = (transactions = []) => {
         transactionIds: Array.from(group.transactionIds),
         manuallyMerged: Boolean(group.manualPurchaseGroupId),
         manualPurchaseGroupId: group.manualPurchaseGroupId || '',
+        manualPurchaseGroupAliases: Array.from(group.manualPurchaseGroupAliases || []),
         description: group.description,
         totalInstallments: group.totalInstallments,
         purchaseDate: group.purchaseDate,

@@ -278,7 +278,7 @@ test('quando todas as parcelas chegaram sem total do provedor, usa a soma real c
   assert.equal(purchase.observedInstallments, 3);
   assert.equal(purchase.projectedInstallments, 0);
   assert.equal(purchase.purchaseTotalCents, 10000);
-  assert.equal(purchase.purchaseTotalEstimated, true);
+  assert.equal(purchase.purchaseTotalEstimated, false);
   assert.equal(purchase.planSumCents, purchase.purchaseTotalCents);
 });
 

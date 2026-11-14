@@ -384,6 +384,9 @@ const makeTransactionPayload = ({
     // Preserva a união manual feita pelo usuário quando novas sincronizações
     // atualizam o mesmo documento de transação.
     manualPurchaseGroupId: existing?.manualPurchaseGroupId || null,
+    manualPurchaseGroupAliases: Array.isArray(existing?.manualPurchaseGroupAliases)
+      ? existing.manualPurchaseGroupAliases
+      : [],
     manualPurchaseMergedAt: existing?.manualPurchaseMergedAt || null,
     creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
     // Keep only the cycle dates actually returned by the provider.

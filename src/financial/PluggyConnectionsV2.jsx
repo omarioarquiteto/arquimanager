@@ -381,6 +381,10 @@ const makeTransactionPayload = ({
     creditCardPaymentType: providerPaymentType,
     creditCardInstallmentNumber: providerInstallmentNumber || null,
     creditCardTotalInstallments: providerTotalInstallments || null,
+    // Preserva a união manual feita pelo usuário quando novas sincronizações
+    // atualizam o mesmo documento de transação.
+    manualPurchaseGroupId: existing?.manualPurchaseGroupId || null,
+    manualPurchaseMergedAt: existing?.manualPurchaseMergedAt || null,
     creditCardPurchaseDate: cardMetadata.purchaseDate ? dateOnly(cardMetadata.purchaseDate) : null,
     // Keep only the cycle dates actually returned by the provider.
     creditCardBillForecastDate: cardMetadata.billForecastDate

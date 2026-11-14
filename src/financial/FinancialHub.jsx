@@ -2434,10 +2434,11 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       {tab === 'installments' && (
         <div className="space-y-5 flex-1 overflow-auto pb-4">
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
             <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
             <Metric label="Parcelas do plano" value={String(installmentPurchases.reduce((sum, item) => sum + item.totalInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
             <Metric label="Parcelas importadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="blue"/>
+            <Metric label="Sem lançamento" value={String(installmentPurchases.reduce((sum, item) => sum + item.projectedInstallments, 0))} icon={<CalendarDays size={18}/>} tone="amber"/>
             <Metric label="Valor do plano (12 meses)" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
           </div>
 

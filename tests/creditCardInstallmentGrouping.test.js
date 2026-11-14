@@ -142,3 +142,32 @@ test('une a mesma compra quando a descrição vem abreviada ou com o nome repeti
   assert.equal(purchases[0].purchaseTotalCents, 8500);
   assert.equal(purchases[0].description, 'MERCADOLIVRE*MERCADOLIVRE');
 });
+
+test('mesclagem manual une lançamentos de compras diferentes e conserva os IDs originais', () => {
+  const purchases = buildInstallmentPurchases([
+    tx(1, '2026-11-08', {
+      id: 'doc-mercado-1',
+      description: 'MERCADOLIVRE*MERC 1/6',
+      amountCents: 4250,
+      creditCardTotalInstallments: 6,
+      manualPurchaseGroupId: 'manual-same-purchase',
+    }),
+    tx(2, '2026-12-08', {
+      id: 'doc-mercado-2',
+      description: 'MERCADOLIVRE*MERCADOLIVRE 2/6',
+      amountCents: 4250,
+      creditCardTotalInstallments: 6,
+      manualPurchaseGroupId: 'manual-same-purchase',
+    }),
+  ]);
+
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].manuallyMerged, true);
+  assert.equal(purchases[0].manualPurchaseGroupId, 'manual-same-purchase');
+  assert.equal(purchases[0].observedInstallments, 2);
+  assert.deepEqual(purchases[0].transactionIds.sort(), ['doc-mercado-1', 'doc-mercado-2']);
+  assert.deepEqual(purchases[0].monthly, {
+    '2026-11': 4250,
+    '2026-12': 4250,
+  });
+});

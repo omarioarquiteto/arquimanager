@@ -2434,17 +2434,18 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
 
       {tab === 'installments' && (
         <div className="space-y-5 flex-1 overflow-auto pb-4">
-          <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
-            <Metric label="Parcelas identificadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
-            <Metric label="Parcelas importadas próximos 12 meses" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
+            <Metric label="Parcelas do plano" value={String(installmentPurchases.reduce((sum, item) => sum + item.totalInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
+            <Metric label="Parcelas importadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="blue"/>
+            <Metric label="Valor no plano (12 meses)" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
           </div>
 
           <Card className="p-5">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
               <div>
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
-                <p className="text-xs text-slate-400 mt-1">Somente compras parceladas importadas são detalhadas. O total da fatura continua vindo separadamente da Pluggy.</p>
+                <p className="text-xs text-slate-400 mt-1">O plano mostra todas as parcelas contratadas. As já recebidas da Pluggy são identificadas como importadas; as ausentes são previstas apenas nesta planilha. O total da fatura continua vindo separadamente da Pluggy.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] font-bold text-slate-500">
@@ -2502,7 +2503,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         </td>
                         <td className="py-3 pr-4 min-w-[220px]">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
-                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas importadas</p>
+                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} importadas + {purchase.projectedInstallments} previstas de {purchase.totalInstallments}</p>
+                          {purchase.amountsAdjusted && <p className="text-[9px] text-amber-600 mt-0.5">Valores rateados para fechar o total da compra</p>}
                           {purchase.manuallyMerged && (
                             <div className="mt-1 flex flex-wrap items-center gap-2">
                               <span className="text-[9px] font-black text-blue-700">MESCLAGEM MANUAL</span>
@@ -2519,9 +2521,21 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         </td>
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs font-black text-slate-800 whitespace-nowrap">{formatBRL(purchase.purchaseTotalCents)}{purchase.purchaseTotalEstimated && <span className="block text-[9px] font-bold text-amber-600">Estimado</span>}</td>
-                        {installmentMonths.map(month => (
-                          <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">{purchase.monthly[month] ? formatBRL(purchase.monthly[month]) : '—'}</td>
-                        ))}
+                        {installmentMonths.map(month => {
+                          const amount = Number(purchase.monthly[month] || 0);
+                          const projected = Number(purchase.projectedMonthly?.[month] || 0);
+                          const hasInstallment = purchase.installmentSchedule.some(item => item.cycleMonth === month);
+                          return (
+                            <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">
+                              {hasInstallment ? (
+                                <>
+                                  <span>{formatBRL(amount)}</span>
+                                  {projected > 0 && <span className="block text-[9px] font-semibold text-amber-600">{formatBRL(projected)} prevista</span>}
+                                </>
+                              ) : '—'}
+                            </td>
+                          );
+                        })}
                       </tr>
                   ))}
                   {!installmentPurchases.length && (
@@ -2531,7 +2545,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              Selecione duas ou mais linhas do mesmo cartão quando reconhecer que representam a mesma compra e clique em “Mesclar selecionadas”. A união fica salva nos lançamentos e é mantida nas próximas sincronizações. Use “Desfazer mesclagem” para voltar ao agrupamento automático. A tabela distribui somente parcelas efetivamente importadas; nenhuma parcela futura é estimada ou criada.
+              As parcelas previstas completam a quantidade contratada sem criar lançamentos financeiros nem alterar transações ou faturas. A distribuição dos valores é feita em centavos, e a soma de todas as parcelas do plano fecha exatamente com o total da compra. “Prevista” identifica valores de parcelas que ainda não vieram da Pluggy.
+              Selecione duas ou mais linhas do mesmo cartão quando reconhecer que representam a mesma compra e clique em “Mesclar selecionadas”. A união fica salva nas próximas sincronizações; use “Desfazer mesclagem” para revertê-la.
             </p>
           </Card>
         </div>

@@ -349,7 +349,7 @@ export const buildInstallmentPurchases = (transactions = []) => {
           allocations[remainderOrder[index % remainderOrder.length].index] += 1;
         }
         installmentNumbers.forEach((number, index) => scheduledAmounts.set(number, allocations[index]));
-        amountsAdjusted = observedTotalCents !== purchaseTotalCents;
+        amountsAdjusted = missingNumbers.length > 0 || observedTotalCents !== purchaseTotalCents;
       } else {
         missingNumbers.forEach(number => scheduledAmounts.set(number, 0));
       }

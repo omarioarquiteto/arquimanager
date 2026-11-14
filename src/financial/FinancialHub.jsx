@@ -377,15 +377,28 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     [installmentPurchases, selectedInstallmentPurchaseKeys]
   );
 
-  const updatePurchaseMerge = async (transactionIds, manualPurchaseGroupId = null) => {
+  const updatePurchaseMerge = async (
+    transactionIds,
+    manualPurchaseGroupId = null,
+    manualPurchaseGroupAliases = []
+  ) => {
     const uniqueIds = Array.from(new Set(transactionIds.map(String).filter(Boolean)));
+    const aliases = Array.from(new Set(manualPurchaseGroupAliases.map(String).filter(Boolean)));
     for (let start = 0; start < uniqueIds.length; start += 400) {
       const chunk = uniqueIds.slice(start, start + 400);
       const batch = writeBatch(db);
       chunk.forEach(transactionId => {
         const changes = manualPurchaseGroupId
-          ? { manualPurchaseGroupId, manualPurchaseMergedAt: serverTimestamp() }
-          : { manualPurchaseGroupId: deleteField(), manualPurchaseMergedAt: deleteField() };
+          ? {
+            manualPurchaseGroupId,
+            manualPurchaseGroupAliases: aliases,
+            manualPurchaseMergedAt: serverTimestamp(),
+          }
+          : {
+            manualPurchaseGroupId: deleteField(),
+            manualPurchaseGroupAliases: deleteField(),
+            manualPurchaseMergedAt: deleteField(),
+          };
         batch.update(docPath(db, 'financial_transactions', transactionId), changes);
       });
       await batch.commit();
@@ -413,9 +426,12 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     }
 
     const mergeId = `manual_${hashText(`${companyId}|${transactionIds.slice().sort().join('|')}`)}`;
+    const manualPurchaseGroupAliases = Array.from(new Set(
+      selected.flatMap(purchase => purchase.manualPurchaseGroupAliases || [])
+    ));
     setPurchaseMergeBusy(true);
     try {
-      await updatePurchaseMerge(transactionIds, mergeId);
+      await updatePurchaseMerge(transactionIds, mergeId, manualPurchaseGroupAliases);
       setSelectedInstallmentPurchaseKeys([]);
       setNotice(`${selected.length} compras foram mescladas. A união ficará salva mesmo depois de sincronizar o cartão.`);
     } catch (error) {
@@ -430,7 +446,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     if (!purchase?.manuallyMerged || !transactionIds.length || purchaseMergeBusy) return;
     setPurchaseMergeBusy(true);
     try {
-      await updatePurchaseMerge(transactionIds, null);
+      await updatePurchaseMerge(transactionIds, null, []);
       setSelectedInstallmentPurchaseKeys([]);
       setNotice('Mesclagem desfeita. Os lançamentos voltaram a ser agrupados automaticamente.');
     } catch (error) {

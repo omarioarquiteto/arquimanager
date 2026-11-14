@@ -208,3 +208,102 @@ test('uma mesclagem manual também incorpora parcelas futuras da mesma referênc
     'doc-loja-b-2',
   ]);
 });
+
+test('completa 10 parcelas ausentes e faz a soma fechar exatamente com o total da compra', () => {
+  const purchases = buildInstallmentPurchases([
+    tx(1, '2026-01-10', {
+      id: 'purchase-ten-1',
+      creditCardTotalInstallments: 10,
+      creditCardTotalAmountCents: 10001,
+      amountCents: 1000,
+    }),
+    tx(2, '2026-02-10', {
+      id: 'purchase-ten-2',
+      creditCardTotalInstallments: 10,
+      creditCardTotalAmountCents: 10001,
+      amountCents: 1000,
+    }),
+  ]);
+
+  const purchase = purchases[0];
+  assert.equal(purchases.length, 1);
+  assert.equal(purchase.totalInstallments, 10);
+  assert.equal(purchase.observedInstallments, 2);
+  assert.equal(purchase.projectedInstallments, 8);
+  assert.equal(purchase.installmentSchedule.length, 10);
+  assert.equal(purchase.planSumCents, 10001);
+  assert.equal(
+    purchase.installmentSchedule.reduce((sum, item) => sum + item.amountCents, 0),
+    purchase.purchaseTotalCents
+  );
+  assert.equal(Object.keys(purchase.monthly).length, 10);
+});
+
+test('completa planos de 18 parcelas mesmo quando só uma parcela foi importada', () => {
+  const purchase = buildInstallmentPurchases([
+    tx(1, '2026-03-15', {
+      id: 'purchase-eighteen-1',
+      creditCardTotalInstallments: 18,
+      creditCardTotalAmountCents: 17999,
+      amountCents: 1000,
+    }),
+  ])[0];
+
+  assert.equal(purchase.totalInstallments, 18);
+  assert.equal(purchase.observedInstallments, 1);
+  assert.equal(purchase.projectedInstallments, 17);
+  assert.equal(purchase.installmentSchedule.length, 18);
+  assert.equal(purchase.planSumCents, 17999);
+  assert.equal(Object.keys(purchase.monthly).length, 18);
+});
+
+test('quando todas as parcelas chegaram sem total do provedor, usa a soma real como total', () => {
+  const purchase = buildInstallmentPurchases([
+    tx(1, '2026-01-10', {
+      creditCardTotalInstallments: 3,
+      amountCents: 3333,
+    }),
+    tx(2, '2026-02-10', {
+      creditCardTotalInstallments: 3,
+      amountCents: 3333,
+    }),
+    tx(3, '2026-03-10', {
+      creditCardTotalInstallments: 3,
+      amountCents: 3334,
+    }),
+  ])[0];
+
+  assert.equal(purchase.observedInstallments, 3);
+  assert.equal(purchase.projectedInstallments, 0);
+  assert.equal(purchase.purchaseTotalCents, 10000);
+  assert.equal(purchase.purchaseTotalEstimated, true);
+  assert.equal(purchase.planSumCents, purchase.purchaseTotalCents);
+});
+
+test('ajusta apenas a visualização quando o total do provedor diverge da soma das parcelas importadas', () => {
+  const purchase = buildInstallmentPurchases([
+    tx(1, '2026-01-10', {
+      creditCardTotalInstallments: 3,
+      creditCardTotalAmountCents: 2900,
+      amountCents: 1000,
+    }),
+    tx(2, '2026-02-10', {
+      creditCardTotalInstallments: 3,
+      creditCardTotalAmountCents: 2900,
+      amountCents: 1000,
+    }),
+    tx(3, '2026-03-10', {
+      creditCardTotalInstallments: 3,
+      creditCardTotalAmountCents: 2900,
+      amountCents: 1000,
+    }),
+  ])[0];
+
+  assert.equal(purchase.purchaseTotalCents, 2900);
+  assert.equal(purchase.planSumCents, 2900);
+  assert.equal(purchase.amountsAdjusted, true);
+  assert.deepEqual(
+    purchase.installmentSchedule.map(item => item.amountCents),
+    [967, 967, 966]
+  );
+});

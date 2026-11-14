@@ -171,3 +171,40 @@ test('mesclagem manual une lançamentos de compras diferentes e conserva os IDs 
     '2026-12': 4250,
   });
 });
+
+test('uma mesclagem manual também incorpora parcelas futuras da mesma referência original', () => {
+  const first = tx(1, '2026-11-08', {
+    id: 'doc-loja-a-1',
+    description: 'LOJA A 1/6',
+    creditCardTotalInstallments: 6,
+  });
+  const second = tx(2, '2026-12-08', {
+    id: 'doc-loja-b-2',
+    description: 'LOJA B 2/6',
+    creditCardTotalInstallments: 6,
+  });
+  const aliases = Array.from(new Set([
+    ...buildInstallmentPurchases([first])[0].manualPurchaseGroupAliases,
+    ...buildInstallmentPurchases([second])[0].manualPurchaseGroupAliases,
+  ]));
+  const merged = [
+    { ...first, manualPurchaseGroupId: 'manual-abc', manualPurchaseGroupAliases: aliases },
+    { ...second, manualPurchaseGroupId: 'manual-abc', manualPurchaseGroupAliases: aliases },
+  ];
+  const futureInstallment = tx(3, '2027-01-08', {
+    id: 'doc-loja-a-3',
+    description: 'LOJA A 3/6',
+    creditCardTotalInstallments: 6,
+  });
+
+  const purchases = buildInstallmentPurchases([...merged, futureInstallment]);
+
+  assert.equal(purchases.length, 1);
+  assert.equal(purchases[0].manuallyMerged, true);
+  assert.equal(purchases[0].observedInstallments, 3);
+  assert.deepEqual(purchases[0].transactionIds.sort(), [
+    'doc-loja-a-1',
+    'doc-loja-a-3',
+    'doc-loja-b-2',
+  ]);
+});

@@ -19,6 +19,16 @@ const root = 'artifacts/arquimanager-producao/public/data';
 const collectionPath = (db, name) => collection(db, root, name);
 const docPath = (db, name, id) => doc(db, root, name, id);
 
+const hashText = value => {
+  let result = 2166136261;
+  const text = String(value || '');
+  for (let index = 0; index < text.length; index += 1) {
+    result ^= text.charCodeAt(index);
+    result = Math.imul(result, 16777619);
+  }
+  return (result >>> 0).toString(36);
+};
+
 const monthKey = (date) => (date || '').slice(0, 7);
 const parseDate = (s) => {
   if (!s) return new Date();
@@ -227,6 +237,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
   const [bulkLimit, setBulkLimit] = useState(20);
   const [bulkBusyKey, setBulkBusyKey] = useState('');
   const [pluggySyncing, setPluggySyncing] = useState(false);
+  const [selectedInstallmentPurchaseKeys, setSelectedInstallmentPurchaseKeys] = useState([]);
+  const [purchaseMergeBusy, setPurchaseMergeBusy] = useState(false);
 
   // Keep all financial collections live from Firestore.
   useEffect(() => {
@@ -359,6 +371,81 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
         : sum
     ), 0);
   }, [installmentMonths, installmentMonthlyTotals]);
+
+  const selectedInstallmentPurchases = useMemo(
+    () => installmentPurchases.filter(purchase => selectedInstallmentPurchaseKeys.includes(purchase.key)),
+    [installmentPurchases, selectedInstallmentPurchaseKeys]
+  );
+
+  const updatePurchaseMerge = async (transactionIds, manualPurchaseGroupId = null) => {
+    const uniqueIds = Array.from(new Set(transactionIds.map(String).filter(Boolean)));
+    for (let start = 0; start < uniqueIds.length; start += 400) {
+      const chunk = uniqueIds.slice(start, start + 400);
+      const batch = writeBatch(db);
+      chunk.forEach(transactionId => {
+        const changes = manualPurchaseGroupId
+          ? { manualPurchaseGroupId, manualPurchaseMergedAt: serverTimestamp() }
+          : { manualPurchaseGroupId: deleteField(), manualPurchaseMergedAt: deleteField() };
+        batch.update(docPath(db, 'financial_transactions', transactionId), changes);
+      });
+      await batch.commit();
+    }
+  };
+
+  const mergeSelectedInstallmentPurchases = async () => {
+    if (purchaseMergeBusy) return;
+    const selected = installmentPurchases.filter(purchase =>
+      selectedInstallmentPurchaseKeys.includes(purchase.key)
+    );
+    if (selected.length < 2) {
+      setNotice('Selecione pelo menos duas compras para mesclar.');
+      return;
+    }
+    const cardIds = new Set(selected.map(purchase => purchase.cardId));
+    if (cardIds.size !== 1) {
+      setNotice('Para evitar misturar cartões diferentes, selecione compras do mesmo cartão.');
+      return;
+    }
+    const transactionIds = Array.from(new Set(selected.flatMap(purchase => purchase.transactionIds || []).map(String).filter(Boolean)));
+    if (transactionIds.length < 2) {
+      setNotice('Não encontrei lançamentos suficientes para mesclar essas compras.');
+      return;
+    }
+
+    const mergeId = `manual_${hashText(`${companyId}|${transactionIds.slice().sort().join('|')}`)}`;
+    setPurchaseMergeBusy(true);
+    try {
+      await updatePurchaseMerge(transactionIds, mergeId);
+      setSelectedInstallmentPurchaseKeys([]);
+      setNotice(`${selected.length} compras foram mescladas. A união ficará salva mesmo depois de sincronizar o cartão.`);
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível mesclar as compras selecionadas.');
+    } finally {
+      setPurchaseMergeBusy(false);
+    }
+  };
+
+  const unmergeInstallmentPurchase = async purchase => {
+    const transactionIds = Array.from(new Set((purchase?.transactionIds || []).map(String).filter(Boolean)));
+    if (!purchase?.manuallyMerged || !transactionIds.length || purchaseMergeBusy) return;
+    setPurchaseMergeBusy(true);
+    try {
+      await updatePurchaseMerge(transactionIds, null);
+      setSelectedInstallmentPurchaseKeys([]);
+      setNotice('Mesclagem desfeita. Os lançamentos voltaram a ser agrupados automaticamente.');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível desfazer a mesclagem.');
+    } finally {
+      setPurchaseMergeBusy(false);
+    }
+  };
+
+  const toggleInstallmentPurchaseSelection = (purchaseKey, checked) => {
+    setSelectedInstallmentPurchaseKeys(current => checked
+      ? (current.includes(purchaseKey) ? current : [...current, purchaseKey])
+      : current.filter(key => key !== purchaseKey)
+    );
+  };
 
   const days = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);

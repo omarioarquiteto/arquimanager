@@ -291,14 +291,92 @@ export const buildInstallmentPurchases = (transactions = []) => {
 
   return Array.from(grouped.values())
     .flatMap(groups => groups.map(group => {
-      group.installmentSlots.forEach(slot => {
-        group.monthly[slot.cycleMonth] = Number(group.monthly[slot.cycleMonth] || 0) + slot.amountCents;
-        group.observedInstallments += 1;
-        if (slot.cycleMonth > group.endMonth) group.endMonth = slot.cycleMonth;
+      const observedByNumber = new Map(group.installmentSlots);
+      const installmentNumbers = Array.from(
+        { length: group.totalInstallments },
+        (_, index) => index + 1
+      );
+      const missingNumbers = installmentNumbers.filter(number => !observedByNumber.has(String(number)));
+      const observedTotalCents = Array.from(observedByNumber.values())
+        .reduce((sum, slot) => sum + Number(slot.amountCents || 0), 0);
+      const providerTotal = Number(group.providerPurchaseTotalCents || 0);
+
+      // Sem total do provedor, usa as parcelas já observadas e estima cada
+      // parcela ausente pelo valor de referência. Quando o plano está completo,
+      // o total é a soma real de todas as parcelas recebidas.
+      const estimatedTotalCents = missingNumbers.length
+        ? observedTotalCents + (Math.abs(Number(group.referenceAmountCents || 0)) * missingNumbers.length)
+        : observedTotalCents;
+      const purchaseTotalCents = Math.max(
+        0,
+        Math.round(providerTotal > 0 ? providerTotal : estimatedTotalCents)
+      );
+      const purchaseTotalEstimated = !(providerTotal > 0);
+      const scheduledAmounts = new Map();
+      observedByNumber.forEach((slot, key) => {
+        scheduledAmounts.set(Number(key), Number(slot.amountCents || 0));
       });
 
-      const providerTotal = Number(group.providerPurchaseTotalCents || 0);
-      const purchaseTotalCents = providerTotal || Math.round(group.referenceAmountCents * group.totalInstallments);
+      let amountsAdjusted = false;
+      const remainingCents = purchaseTotalCents - observedTotalCents;
+      if (missingNumbers.length > 0 && remainingCents > 0) {
+        const baseAmount = Math.floor(remainingCents / missingNumbers.length);
+        let extraCents = remainingCents % missingNumbers.length;
+        missingNumbers.forEach(number => {
+          scheduledAmounts.set(number, baseAmount + (extraCents > 0 ? 1 : 0));
+          if (extraCents > 0) extraCents -= 1;
+        });
+      } else if (missingNumbers.length > 0 || observedTotalCents !== purchaseTotalCents) {
+        // Se o total oficial for menor que as parcelas observadas, ou se todos
+        // os registros chegarem mas houver divergência, rateia o total informado
+        // pelo provedor proporcionalmente, sempre fechando os centavos.
+        const weights = installmentNumbers.map(number => (
+          Math.max(
+            1,
+            Number(observedByNumber.get(String(number))?.amountCents || group.referenceAmountCents || 1)
+          )
+        ));
+        const weightTotal = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+        const allocations = weights.map(weight => Math.floor(purchaseTotalCents * weight / weightTotal));
+        let centsLeft = purchaseTotalCents - allocations.reduce((sum, amount) => sum + amount, 0);
+        const remainderOrder = weights
+          .map((weight, index) => ({
+            index,
+            remainder: (purchaseTotalCents * weight) % weightTotal,
+          }))
+          .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+        for (let index = 0; index < centsLeft; index += 1) {
+          allocations[remainderOrder[index % remainderOrder.length].index] += 1;
+        }
+        installmentNumbers.forEach((number, index) => scheduledAmounts.set(number, allocations[index]));
+        amountsAdjusted = observedTotalCents !== purchaseTotalCents;
+      } else {
+        missingNumbers.forEach(number => scheduledAmounts.set(number, 0));
+      }
+
+      const monthly = {};
+      const projectedMonthly = {};
+      const installmentSchedule = installmentNumbers.map(number => {
+        const importedSlot = observedByNumber.get(String(number));
+        const cycleMonth = importedSlot?.cycleMonth
+          || monthOf(shiftMonth(group.purchaseDate, number - 1))
+          || monthOf(group.purchaseDate);
+        const amountCents = Number(scheduledAmounts.get(number) || 0);
+        monthly[cycleMonth] = Number(monthly[cycleMonth] || 0) + amountCents;
+        if (!importedSlot) {
+          projectedMonthly[cycleMonth] = Number(projectedMonthly[cycleMonth] || 0) + amountCents;
+        }
+        return {
+          installmentNumber: number,
+          cycleMonth,
+          amountCents,
+          imported: Boolean(importedSlot),
+          projected: !importedSlot,
+          transactionId: importedSlot?.transactionId || '',
+        };
+      });
+
+      const planSumCents = installmentSchedule.reduce((sum, installment) => sum + installment.amountCents, 0);
       const result = {
         key: `${group.baseKey}|${group.groupIndex}`,
         cardId: group.cardId,
@@ -310,10 +388,18 @@ export const buildInstallmentPurchases = (transactions = []) => {
         totalInstallments: group.totalInstallments,
         purchaseDate: group.purchaseDate,
         purchaseTotalCents,
-        purchaseTotalEstimated: !providerTotal,
-        monthly: group.monthly,
-        observedInstallments: group.observedInstallments,
-        endMonth: group.endMonth,
+        purchaseTotalEstimated,
+        observedInstallments: observedByNumber.size,
+        projectedInstallments: missingNumbers.length,
+        amountsAdjusted,
+        monthly,
+        projectedMonthly,
+        installmentSchedule,
+        planSumCents,
+        endMonth: installmentSchedule.reduce(
+          (latest, installment) => installment.cycleMonth > latest ? installment.cycleMonth : latest,
+          ''
+        ),
       };
       return result;
     }))

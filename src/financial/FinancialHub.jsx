@@ -40,6 +40,13 @@ const dateLabel = (s) => {
   const [y, m, d] = s.split('-');
   return `${d}/${m}/${String(y).slice(2)}`;
 };
+const installmentMonthLabel = (value) => {
+  const [year, month] = String(value || '').slice(0, 7).split('-').map(Number);
+  if (!year || !month) return '—';
+  return new Date(year, month - 1, 1)
+    .toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })
+    .replace('.', '');
+};
 
 const getCardDisplayName = (card, fallback = 'Cartão') =>
   card?.displayName || card?.name || fallback;
@@ -359,6 +366,14 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
     totals[month] = installmentPurchases.reduce((sum, purchase) => sum + Number(purchase.monthly[month] || 0), 0);
     return totals;
   }, {}), [installmentMonths, installmentPurchases]);
+
+  const installmentOverviewMonths = useMemo(() => {
+    const [year, month] = todayLocal().slice(0, 7).split('-').map(Number);
+    return Array.from({ length: 12 }, (_, index) => {
+      const date = new Date(year, month - 1 + index, 1);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    });
+  }, []);
 
   const installmentUpcomingTotal = useMemo(() => {
     const currentMonth = todayLocal().slice(0, 7);
@@ -2433,8 +2448,8 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
       )}
 
       {tab === 'installments' && (
-        <div className="space-y-5 flex-1 overflow-auto pb-4">
-          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
+        <div className="w-full min-w-0 max-w-full space-y-5 flex-1 overflow-y-auto overflow-x-hidden pb-4">
+          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 min-w-0">
             <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
             <Metric label="Parcelas do plano" value={String(installmentPurchases.reduce((sum, item) => sum + item.totalInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
             <Metric label="Parcelas importadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="blue"/>
@@ -2442,14 +2457,16 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <Metric label="Valor do plano (12 meses)" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
           </div>
 
-          <Card className="p-5">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
-              <div>
+          <Card className="p-4 sm:p-5 min-w-0 overflow-hidden">
+            <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+              <div className="min-w-0">
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
-                <p className="text-xs text-slate-400 mt-1">O plano mostra todas as parcelas contratadas. As já recebidas da Pluggy são identificadas como importadas; as ausentes são previstas apenas nesta planilha. O total da fatura continua vindo separadamente da Pluggy.</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-3xl leading-relaxed">
+                  Acompanhe cada compra e todas as parcelas contratadas em cartões que se reorganizam conforme o tamanho da tela. As parcelas sem lançamento aparecem separadas, sem criar movimentações financeiras.
+                </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[10px] font-bold text-slate-500">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <span className="text-[10px] font-bold text-slate-500 mr-1">
                   {selectedInstallmentPurchaseKeys.length} selecionada(s)
                 </span>
                 <button
@@ -2470,86 +2487,137 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 </button>
               </div>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1040px] text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400">
-                    <th className="py-3 px-2 sticky left-0 bg-white">Mesclar</th>
-                    <th className="py-3 pr-4 bg-white">Descrição da compra</th>
-                    <th className="py-3 px-3 whitespace-nowrap">Quantidade de parcelas</th>
-                    <th className="py-3 px-3 whitespace-nowrap">Valor total da compra</th>
-                    {installmentMonths.map(month => (
-                      <th key={month} className="py-3 px-3 text-right whitespace-nowrap">{new Date(Number(month.slice(0,4)), Number(month.slice(5,7))-1, 1).toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' })}</th>
-                    ))}
-                  </tr>
-                  <tr className="bg-slate-50 border-b border-slate-200">
-                    <th colSpan={4} className="py-2 px-3 text-[10px] font-black uppercase text-slate-500">Total de parcelas por mês</th>
-                    {installmentMonths.map(month => (
-                      <th key={month} className="py-2 px-3 text-right text-[10px] font-black text-slate-700 whitespace-nowrap">{formatBRL(installmentMonthlyTotals[month] || 0)}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {installmentPurchases.map(purchase => (
 
-                      <tr key={purchase.key} className="hover:bg-slate-50/70">
-                        <td className="py-3 px-2 sticky left-0 bg-white">
-                          <input
-                            type="checkbox"
-                            aria-label={`Selecionar compra ${purchase.description} para mesclar`}
-                            checked={selectedInstallmentPurchaseKeys.includes(purchase.key)}
-                            onChange={event => toggleInstallmentPurchaseSelection(purchase.key, event.target.checked)}
-                            className="h-4 w-4 accent-[#1e5aa0] cursor-pointer"
-                          />
-                        </td>
-                        <td className="py-3 pr-4 min-w-[220px]">
-                          <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
-                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} importadas + {purchase.projectedInstallments} sem lançamento de {purchase.totalInstallments}</p>
-                          {purchase.amountsAdjusted && <p className="text-[9px] text-amber-600 mt-0.5">Valores rateados para fechar o total da compra</p>}
-                          {purchase.manuallyMerged && (
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <span className="text-[9px] font-black text-blue-700">MESCLAGEM MANUAL</span>
-                              <button
-                                type="button"
-                                onClick={() => unmergeInstallmentPurchase(purchase)}
-                                disabled={purchaseMergeBusy}
-                                className="text-[9px] font-black text-red-600 underline disabled:opacity-40"
-                              >
-                                Desfazer mesclagem
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
-                        <td className="py-3 px-3 text-xs font-black text-slate-800 whitespace-nowrap">{formatBRL(purchase.purchaseTotalCents)}{purchase.purchaseTotalEstimated && <span className="block text-[9px] font-bold text-amber-600">Estimado</span>}</td>
-                        {installmentMonths.map(month => {
-                          const amount = Number(purchase.monthly[month] || 0);
-                          const projected = Number(purchase.projectedMonthly?.[month] || 0);
-                          const hasInstallment = purchase.installmentSchedule.some(item => item.cycleMonth === month);
-                          return (
-                            <td key={month} className="py-3 px-3 text-right text-xs font-bold text-slate-700 whitespace-nowrap">
-                              {hasInstallment ? (
-                                <>
-                                  <span>{formatBRL(amount)}</span>
-                                  {projected > 0 && <span className="block text-[9px] font-semibold text-amber-600">{formatBRL(projected)} sem lançamento</span>}
-                                </>
-                              ) : '—'}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                  ))}
-                  {!installmentPurchases.length && (
-                    <tr><td colSpan={4 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
-                  )}
-                </tbody>
-              </table>
+            <div className="mt-5 border-t border-slate-100 pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h5 className="text-[11px] font-black uppercase tracking-wider text-slate-700">Compromissos mensais</h5>
+                <span className="text-[10px] font-semibold text-slate-400">Próximos 12 meses · soma de todas as compras</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2 min-w-0">
+                {installmentOverviewMonths.map(month => {
+                  const amount = Number(installmentMonthlyTotals[month] || 0);
+                  return (
+                    <div key={month} className="min-w-0 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                      <p className="text-[10px] font-bold uppercase text-slate-500">{installmentMonthLabel(month)}</p>
+                      <p className="mt-1 text-sm sm:text-base font-black text-slate-800 break-words">{formatBRL(amount)}</p>
+                      <p className="mt-0.5 text-[9px] text-slate-400">Total do mês</p>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              As parcelas sem lançamento completam a quantidade contratada apenas na planilha; não criam movimentações financeiras nem alteram transações ou faturas. A distribuição dos valores é feita em centavos, e a soma de todas as parcelas do plano fecha exatamente com o total da compra.
-              Selecione duas ou mais linhas do mesmo cartão quando reconhecer que representam a mesma compra e clique em “Mesclar selecionadas”. A união fica salva nas próximas sincronizações; use “Desfazer mesclagem” para revertê-la.
-            </p>
           </Card>
+
+          <div className="space-y-3 min-w-0">
+            {installmentPurchases.map(purchase => (
+              <Card key={purchase.key} className="p-4 sm:p-5 min-w-0 max-w-full overflow-hidden">
+                <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                    <input
+                      type="checkbox"
+                      aria-label={`Selecionar compra ${purchase.description} para mesclar`}
+                      checked={selectedInstallmentPurchaseKeys.includes(purchase.key)}
+                      onChange={event => toggleInstallmentPurchaseSelection(purchase.key, event.target.checked)}
+                      className="mt-1 h-4 w-4 shrink-0 accent-[#1e5aa0] cursor-pointer"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-black text-sm sm:text-base text-slate-800 break-words">{purchase.description}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
+                        <span className="font-bold">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), 'Cartão')}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>Compra em {dateLabel(purchase.purchaseDate)}</span>
+                        {purchase.manuallyMerged && <span className="rounded-full bg-blue-50 px-2 py-0.5 font-black text-blue-700">MESCLAGEM MANUAL</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="sm:text-right sm:shrink-0 sm:min-w-[150px] pl-7 sm:pl-0">
+                    <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Valor total da compra</p>
+                    <p className="text-lg sm:text-xl font-black text-slate-900 break-words">{formatBRL(purchase.purchaseTotalCents)}</p>
+                    {purchase.purchaseTotalEstimated && <span className="text-[9px] font-bold text-amber-700">Total estimado</span>}
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <div className="min-w-0 rounded-xl bg-slate-50 border border-slate-100 px-3 py-2">
+                    <p className="text-[9px] font-bold uppercase text-slate-400">Plano</p>
+                    <p className="text-sm font-black text-slate-800">{purchase.totalInstallments}x</p>
+                  </div>
+                  <div className="min-w-0 rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2">
+                    <p className="text-[9px] font-bold uppercase text-emerald-700">Importadas</p>
+                    <p className="text-sm font-black text-emerald-800">{purchase.observedInstallments}</p>
+                  </div>
+                  <div className="min-w-0 rounded-xl bg-amber-50 border border-amber-100 px-3 py-2">
+                    <p className="text-[9px] font-bold uppercase text-amber-700">Sem lançamento</p>
+                    <p className="text-sm font-black text-amber-800">{purchase.projectedInstallments}</p>
+                  </div>
+                </div>
+
+                {purchase.amountsAdjusted && (
+                  <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[10px] font-semibold text-amber-700">
+                    Os valores individuais foram rateados para que a soma do cronograma feche com o total informado.
+                  </p>
+                )}
+
+                {purchase.manuallyMerged && (
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => unmergeInstallmentPurchase(purchase)}
+                      disabled={purchaseMergeBusy}
+                      className="text-[10px] font-black text-red-600 underline disabled:opacity-40"
+                    >
+                      Desfazer mesclagem
+                    </button>
+                  </div>
+                )}
+
+                <div className="mt-4 border-t border-slate-100 pt-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <h5 className="text-[11px] font-black uppercase tracking-wider text-slate-700">Cronograma completo</h5>
+                    <span className="text-[10px] font-semibold text-slate-400">{purchase.installmentSchedule.length} parcelas no plano</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 min-w-0">
+                    {purchase.installmentSchedule.map(item => (
+                      <div
+                        key={`${purchase.key}-${item.installmentNumber}`}
+                        className={`min-w-0 rounded-xl border p-2.5 ${item.imported ? 'border-emerald-200 bg-emerald-50/70' : 'border-amber-200 bg-amber-50/70'}`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[9px] font-black uppercase tracking-wide text-slate-500">Parcela {String(item.installmentNumber).padStart(2, '0')}</span>
+                          <span className={`h-2 w-2 rounded-full shrink-0 ${item.imported ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                        </div>
+                        <p className="mt-1 text-[10px] font-semibold text-slate-500">{installmentMonthLabel(item.cycleMonth)}</p>
+                        <p className="mt-1 text-sm font-black text-slate-900 break-words">{formatBRL(item.amountCents)}</p>
+                        <div className={`mt-2 border-t pt-1.5 text-[9px] font-bold ${item.imported ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'}`}>
+                          {item.imported ? 'Importada' : 'Sem lançamento'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <span className="text-[10px] font-bold text-slate-500">Soma de todas as parcelas</span>
+                    <div className="text-right">
+                      <span className="text-sm font-black text-slate-900">{formatBRL(purchase.planSumCents)}</span>
+                      <span className="block text-[9px] font-semibold text-emerald-700">Confere com o valor total da compra</span>
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            ))}
+
+            {!installmentPurchases.length && (
+              <Card className="p-5">
+                <EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/>
+              </Card>
+            )}
+          </div>
+
+          <p className="px-1 text-[10px] leading-relaxed text-slate-400">
+            As parcelas sem lançamento completam o plano apenas nesta visualização; não criam movimentações financeiras nem alteram transações ou faturas. Quando o total da compra não é fornecido pela instituição e faltam parcelas importadas, o valor é identificado como estimado. A mesclagem manual continua disponível: selecione duas ou mais compras do mesmo cartão e use “Mesclar selecionadas”.
+          </p>
         </div>
       )}
 

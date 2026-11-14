@@ -2370,7 +2370,6 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
                           <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas importadas</p>
-                          <p className="text-[9px] text-slate-400 font-mono mt-0.5">{purchase.purchaseId}</p>
                         </td>
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs font-black text-slate-800 whitespace-nowrap">{formatBRL(purchase.purchaseTotalCents)}{purchase.purchaseTotalEstimated && <span className="block text-[9px] font-bold text-amber-600">Estimado</span>}</td>

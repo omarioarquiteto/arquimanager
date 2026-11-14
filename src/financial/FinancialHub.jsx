@@ -2438,7 +2438,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
             <Metric label="Compras parceladas" value={String(installmentPurchases.length)} icon={<WalletCards size={18}/>} tone="blue"/>
             <Metric label="Parcelas do plano" value={String(installmentPurchases.reduce((sum, item) => sum + item.totalInstallments, 0))} icon={<Check size={18}/>} tone="green"/>
             <Metric label="Parcelas importadas" value={String(installmentPurchases.reduce((sum, item) => sum + item.observedInstallments, 0))} icon={<Check size={18}/>} tone="blue"/>
-            <Metric label="Valor no plano (12 meses)" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
+            <Metric label="Valor do plano (12 meses)" value={formatBRL(installmentUpcomingTotal)} icon={<CalendarDays size={18}/>} tone="amber"/>
           </div>
 
           <Card className="p-5">
@@ -2503,7 +2503,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                         </td>
                         <td className="py-3 pr-4 min-w-[220px]">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
-                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} importadas + {purchase.projectedInstallments} previstas de {purchase.totalInstallments}</p>
+                          <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} importadas + {purchase.projectedInstallments} sem lançamento de {purchase.totalInstallments}</p>
                           {purchase.amountsAdjusted && <p className="text-[9px] text-amber-600 mt-0.5">Valores rateados para fechar o total da compra</p>}
                           {purchase.manuallyMerged && (
                             <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -2530,7 +2530,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                               {hasInstallment ? (
                                 <>
                                   <span>{formatBRL(amount)}</span>
-                                  {projected > 0 && <span className="block text-[9px] font-semibold text-amber-600">{formatBRL(projected)} prevista</span>}
+                                  {projected > 0 && <span className="block text-[9px] font-semibold text-amber-600">{formatBRL(projected)} sem lançamento</span>}
                                 </>
                               ) : '—'}
                             </td>
@@ -2545,7 +2545,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              As parcelas previstas completam a quantidade contratada sem criar lançamentos financeiros nem alterar transações ou faturas. A distribuição dos valores é feita em centavos, e a soma de todas as parcelas do plano fecha exatamente com o total da compra. “Prevista” identifica valores de parcelas que ainda não vieram da Pluggy.
+              As parcelas sem lançamento completam a quantidade contratada apenas na planilha; não criam movimentações financeiras nem alteram transações ou faturas. A distribuição dos valores é feita em centavos, e a soma de todas as parcelas do plano fecha exatamente com o total da compra.
               Selecione duas ou mais linhas do mesmo cartão quando reconhecer que representam a mesma compra e clique em “Mesclar selecionadas”. A união fica salva nas próximas sincronizações; use “Desfazer mesclagem” para revertê-la.
             </p>
           </Card>

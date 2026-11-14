@@ -263,10 +263,8 @@ export const buildInstallmentPurchases = (transactions = []) => {
         group.providerPurchaseTotalCents = record.providerPurchaseTotalCents;
       }
       if (record.transactionId) group.transactionIds.add(record.transactionId);
-      if (group.manualPurchaseGroupId) {
-        group.manualPurchaseGroupAliases.add(manualPurchaseAlias(record));
-        record.manualPurchaseGroupAliases.forEach(alias => group.manualPurchaseGroupAliases.add(alias));
-      }
+      group.manualPurchaseGroupAliases.add(manualPurchaseAlias(record));
+      record.manualPurchaseGroupAliases.forEach(alias => group.manualPurchaseGroupAliases.add(alias));
       if (record.purchaseDate < group.purchaseDate) group.purchaseDate = record.purchaseDate;
       // Quando registros da mesma compra trazem descrições equivalentes,
       // conserva a versão mais completa para exibição na tabela.

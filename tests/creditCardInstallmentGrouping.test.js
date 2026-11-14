@@ -231,6 +231,8 @@ test('completa 10 parcelas ausentes e faz a soma fechar exatamente com o total d
   assert.equal(purchase.observedInstallments, 2);
   assert.equal(purchase.projectedInstallments, 8);
   assert.equal(purchase.installmentSchedule.length, 10);
+  assert.equal(purchase.installmentSchedule.filter(item => item.projected).length, 8);
+  assert.ok(purchase.installmentSchedule.filter(item => item.projected).every(item => !item.transactionId));
   assert.equal(purchase.planSumCents, 10001);
   assert.equal(
     purchase.installmentSchedule.reduce((sum, item) => sum + item.amountCents, 0),
@@ -305,5 +307,29 @@ test('ajusta apenas a visualização quando o total do provedor diverge da soma 
   assert.deepEqual(
     purchase.installmentSchedule.map(item => item.amountCents),
     [967, 967, 966]
+  );
+});
+
+test('completa plano de 8 parcelas e mantém a soma exata em centavos', () => {
+  const purchase = buildInstallmentPurchases([
+    tx(1, '2026-05-10', {
+      creditCardTotalInstallments: 8,
+      creditCardTotalAmountCents: 8003,
+      amountCents: 1000,
+    }),
+    tx(2, '2026-06-10', {
+      creditCardTotalInstallments: 8,
+      creditCardTotalAmountCents: 8003,
+      amountCents: 1000,
+    }),
+  ])[0];
+
+  assert.equal(purchase.installmentSchedule.length, 8);
+  assert.equal(purchase.projectedInstallments, 6);
+  assert.equal(purchase.planSumCents, 8003);
+  assert.equal(purchase.monthly['2026-07'], 1001);
+  assert.equal(
+    Object.values(purchase.monthly).reduce((sum, value) => sum + value, 0),
+    purchase.purchaseTotalCents
   );
 });

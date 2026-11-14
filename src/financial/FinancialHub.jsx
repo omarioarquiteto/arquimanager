@@ -2430,13 +2430,34 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                 <h4 className="font-black text-xl text-slate-800">Compras parceladas dos cartões</h4>
                 <p className="text-xs text-slate-400 mt-1">Somente compras parceladas importadas são detalhadas. O total da fatura continua vindo separadamente da Pluggy.</p>
               </div>
-              <span className="text-[10px] font-bold text-slate-500">Agrupamento de parcelas reais, sem duplicidades</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-bold text-slate-500">
+                  {selectedInstallmentPurchaseKeys.length} selecionada(s)
+                </span>
+                <button
+                  type="button"
+                  onClick={mergeSelectedInstallmentPurchases}
+                  disabled={purchaseMergeBusy || selectedInstallmentPurchases.length < 2}
+                  className="px-3 py-2 rounded-xl bg-[#1e5aa0] text-white text-[10px] font-black disabled:opacity-40"
+                >
+                  {purchaseMergeBusy ? 'Salvando...' : 'Mesclar selecionadas'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedInstallmentPurchaseKeys([])}
+                  disabled={purchaseMergeBusy || !selectedInstallmentPurchaseKeys.length}
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-[10px] font-black disabled:opacity-40"
+                >
+                  Limpar seleção
+                </button>
+              </div>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] text-left border-collapse">
+              <table className="w-full min-w-[1040px] text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400">
-                    <th className="py-3 pr-4 sticky left-0 bg-white">Descrição da compra</th>
+                    <th className="py-3 px-2 sticky left-0 bg-white">Mesclar</th>
+                    <th className="py-3 pr-4 bg-white">Descrição da compra</th>
                     <th className="py-3 px-3 whitespace-nowrap">Quantidade de parcelas</th>
                     <th className="py-3 px-3 whitespace-nowrap">Valor total da compra</th>
                     {installmentMonths.map(month => (
@@ -2444,7 +2465,7 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                     ))}
                   </tr>
                   <tr className="bg-slate-50 border-b border-slate-200">
-                    <th colSpan={3} className="py-2 px-3 text-[10px] font-black uppercase text-slate-500">Total de parcelas por mês</th>
+                    <th colSpan={4} className="py-2 px-3 text-[10px] font-black uppercase text-slate-500">Total de parcelas por mês</th>
                     {installmentMonths.map(month => (
                       <th key={month} className="py-2 px-3 text-right text-[10px] font-black text-slate-700 whitespace-nowrap">{formatBRL(installmentMonthlyTotals[month] || 0)}</th>
                     ))}
@@ -2454,9 +2475,31 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                   {installmentPurchases.map(purchase => (
 
                       <tr key={purchase.key} className="hover:bg-slate-50/70">
-                        <td className="py-3 pr-4 min-w-[220px] sticky left-0 bg-white">
+                        <td className="py-3 px-2 sticky left-0 bg-white">
+                          <input
+                            type="checkbox"
+                            aria-label={`Selecionar compra ${purchase.description} para mesclar`}
+                            checked={selectedInstallmentPurchaseKeys.includes(purchase.key)}
+                            onChange={event => toggleInstallmentPurchaseSelection(purchase.key, event.target.checked)}
+                            className="h-4 w-4 accent-[#1e5aa0] cursor-pointer"
+                          />
+                        </td>
+                        <td className="py-3 pr-4 min-w-[220px]">
                           <p className="font-bold text-sm text-slate-800">{purchase.description}</p>
                           <p className="text-[10px] text-slate-400">{getCardDisplayName(cards.find(card => card.id === purchase.cardId), "Cartão")} · compra em {dateLabel(purchase.purchaseDate)} · {purchase.observedInstallments} de {purchase.totalInstallments} parcelas importadas</p>
+                          {purchase.manuallyMerged && (
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <span className="text-[9px] font-black text-blue-700">MESCLAGEM MANUAL</span>
+                              <button
+                                type="button"
+                                onClick={() => unmergeInstallmentPurchase(purchase)}
+                                disabled={purchaseMergeBusy}
+                                className="text-[9px] font-black text-red-600 underline disabled:opacity-40"
+                              >
+                                Desfazer mesclagem
+                              </button>
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-xs font-bold text-slate-600 whitespace-nowrap">{purchase.totalInstallments} parcelas</td>
                         <td className="py-3 px-3 text-xs font-black text-slate-800 whitespace-nowrap">{formatBRL(purchase.purchaseTotalCents)}{purchase.purchaseTotalEstimated && <span className="block text-[9px] font-bold text-amber-600">Estimado</span>}</td>
@@ -2466,13 +2509,13 @@ export default function FinancialHub({ appUser, projects = [], clients = [], db 
                       </tr>
                   ))}
                   {!installmentPurchases.length && (
-                    <tr><td colSpan={3 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
+                    <tr><td colSpan={4 + installmentMonths.length} className="py-10 text-center"><EmptyState text="Nenhuma compra parcelada foi identificada nos dados sincronizados da Pluggy."/></td></tr>
                   )}
                 </tbody>
               </table>
             </div>
             <p className="mt-4 text-[10px] leading-relaxed text-slate-400">
-              A tabela mostra o valor total de cada compra e distribui somente as parcelas efetivamente importadas pelos meses correspondentes. Meses sem lançamento identificado ficam vazios; nenhuma parcela futura é estimada ou criada.
+              Selecione duas ou mais linhas do mesmo cartão quando reconhecer que representam a mesma compra e clique em “Mesclar selecionadas”. A união fica salva nos lançamentos e é mantida nas próximas sincronizações. Use “Desfazer mesclagem” para voltar ao agrupamento automático. A tabela distribui somente parcelas efetivamente importadas; nenhuma parcela futura é estimada ou criada.
             </p>
           </Card>
         </div>
